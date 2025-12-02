@@ -1,99 +1,160 @@
 # Sip - Serve Bubble Tea Apps Through the Browser
 
-> Drinking tea through the browser
+> Drinking tea through the browser 🍵
 
-**Status:** Planning/Design Phase
+**Status:** v0.1.0 - Initial Release
 
-Sip will be a Go library that allows you to serve any [Bubble Tea](https://github.com/charmbracelet/bubbletea) application through a web browser with full terminal emulation, mouse support, and hardware-accelerated rendering.
+Sip is a Go library that allows you to serve any [Bubble Tea](https://github.com/charmbracelet/bubbletea) application through a web browser with full terminal emulation, mouse support, and hardware-accelerated rendering.
 
-## Vision
-
-Extract the web terminal functionality from [TUIOS](https://github.com/Gaurav-Gosain/tuios) into a reusable library that any Bubble Tea developer can use to make their TUI applications accessible through a web browser.
-
-## Planned Features
+## Features
 
 - **WebGL Rendering** - GPU-accelerated terminal rendering via xterm.js for smooth 60fps
 - **Dual Protocol Support** - WebTransport (HTTP/3 over QUIC) with automatic WebSocket fallback  
 - **Embedded Assets** - All static files (HTML, CSS, JS, fonts) bundled in the binary via go:embed
 - **Bundled Nerd Fonts** - JetBrains Mono Nerd Font included, no client-side installation needed
 - **Session Management** - Handle multiple concurrent users with isolated sessions
-- **Mouse Support** - Full mouse interaction with cell-based event deduplication
+- **Mouse Support** - Full mouse interaction support
 - **Auto-Reconnect** - Automatic reconnection with exponential backoff
 - **Pure Go** - No CGO dependencies, statically compiled binaries
 - **Zero Configuration** - Works out of the box with sensible defaults
+- **Wish-like API** - Familiar handler pattern for Charm ecosystem users
 
-## Planned API
+## Installation
+
+```bash
+go get github.com/Gaurav-Gosain/sip
+```
+
+## Quick Start
 
 ```go
 package main
 
 import (
     "context"
+    "os"
+    "os/signal"
+
     tea "github.com/charmbracelet/bubbletea/v2"
     "github.com/Gaurav-Gosain/sip"
 )
 
+type model struct {
+    count int
+}
+
+func (m model) Init() tea.Cmd { return nil }
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    switch msg := msg.(type) {
+    case tea.KeyPressMsg:
+        switch msg.String() {
+        case "q":
+            return m, tea.Quit
+        case "up":
+            m.count++
+        case "down":
+            m.count--
+        }
+    }
+    return m, nil
+}
+
+func (m model) View() tea.View {
+    return tea.NewView(fmt.Sprintf("Count: %d\n\nPress up/down to change, q to quit", m.count))
+}
+
 func main() {
-    config := sip.DefaultConfig()
-    config.Port = "8080"
+    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer cancel()
+
+    server := sip.NewServer(sip.DefaultConfig())
     
-    server := sip.NewServer(config)
-    server.Serve(context.Background(), func() tea.Model {
-        return myBubbleTeaModel{}
+    server.Serve(ctx, func(sess sip.Session) (tea.Model, []tea.ProgramOption) {
+        return model{}, nil
     })
 }
 ```
 
-## Current Status
+Then open http://localhost:7681 in your browser.
 
-Sip is currently in the planning phase. The web terminal functionality exists in [tuios-web](https://github.com/Gaurav-Gosain/tuios) and will be extracted into this library once the API is stabilized.
+## API
 
-## Roadmap
+### Handler Pattern (Recommended)
 
-1. **Phase 1: Extraction** (Current)
-   - Extract web functionality from TUIOS into tuios-web binary
-   - Identify reusable components
-   - Design public API
+Similar to [Wish](https://github.com/charmbracelet/wish)'s Bubble Tea middleware:
 
-2. **Phase 2: Library Development**
-   - Create standalone sip repository  
-   - Implement core server functionality
-   - Add comprehensive tests
-   - Write documentation and examples
+```go
+// Handler creates a model and options for each session
+type Handler func(sess Session) (tea.Model, []tea.ProgramOption)
 
-3. **Phase 3: Integration**
-   - Update tuios-web to use sip library
-   - Create example apps
-   - Publish to GitHub
-   - Announce to Charm community
+// Use with Serve()
+server.Serve(ctx, func(sess sip.Session) (tea.Model, []tea.ProgramOption) {
+    pty := sess.Pty()
+    return myModel{width: pty.Width, height: pty.Height}, nil
+})
+```
 
-4. **Phase 4: Community**
-   - Gather feedback from Bubble Tea developers
-   - Add requested features
-   - Create more examples
-   - Build ecosystem integrations
+### ProgramHandler Pattern (Advanced)
 
-## Use Cases
+For more control over tea.Program creation:
 
-### Remote Access
-Make any TUI application accessible through a web browser
+```go
+// ProgramHandler creates a tea.Program directly
+type ProgramHandler func(sess Session) *tea.Program
 
-### Live Demos
-Create interactive documentation for your TUI apps with read-only mode
+// Use with ServeWithProgram()
+server.ServeWithProgram(ctx, func(sess sip.Session) *tea.Program {
+    return tea.NewProgram(myModel{}, sip.MakeOptions(sess)...)
+})
+```
 
-### Development Tools
-Transform CLI dev tools into web-accessible dashboards
+### Session Interface
+
+```go
+type Session interface {
+    Pty() Pty                        // Get terminal dimensions
+    Context() context.Context        // Session context (cancelled on disconnect)
+    Read(p []byte) (n int, err error)   // Read from terminal
+    Write(p []byte) (n int, err error)  // Write to terminal
+    WindowChanges() <-chan WindowSize   // Receive window resize events
+}
+
+type Pty struct {
+    Width  int
+    Height int
+}
+```
+
+### Configuration
+
+```go
+config := sip.Config{
+    Host:           "localhost",   // Bind address
+    Port:           "7681",        // HTTP port (WebTransport uses Port+1)
+    ReadOnly:       false,         // Disable input
+    MaxConnections: 0,             // Connection limit (0 = unlimited)
+    IdleTimeout:    0,             // Idle timeout (0 = no timeout)
+    AllowOrigins:   nil,           // CORS origins (nil = all)
+    Debug:          false,         // Enable debug logging
+}
+```
+
+## How It Works
+
+1. Browser connects via WebSocket (or WebTransport if available)
+2. Sip creates a PTY (pseudo-terminal) for proper terminal semantics
+3. Your Bubble Tea model is created via the handler
+4. Terminal I/O is bridged between the PTY and browser via xterm.js
+5. Mouse events, keyboard input, and window resizes are forwarded to your model
 
 ## Related Projects
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - The TUI framework Sip is built for
+- [Wish](https://github.com/charmbracelet/wish) - SSH server for Bubble Tea apps (Sip's API is inspired by Wish)
 - [TUIOS](https://github.com/Gaurav-Gosain/tuios) - Terminal window manager where Sip originated
 - [xterm.js](https://xtermjs.org/) - Terminal emulator used in the browser
 - [ttyd](https://github.com/tsl0922/ttyd) - Share terminal over the web (C implementation)
-
-## Contributing
-
-This project is in early planning stages. Ideas and discussions are welcome! Please open an issue to share your thoughts on the API design or features you'd like to see.
 
 ## License
 
@@ -101,4 +162,4 @@ MIT License - see [LICENSE](LICENSE) for details
 
 ## Acknowledgments
 
-Sip is being developed as part of the TUIOS project and builds on the excellent work of the Charm team and the xterm.js community.
+Sip is developed as part of the [TUIOS](https://github.com/Gaurav-Gosain/tuios) project and builds on the excellent work of the [Charm](https://charm.sh) team and the xterm.js community.
