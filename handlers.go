@@ -288,7 +288,7 @@ func (s *httpServer) streamPTYToWebSocket(ctx context.Context, conn *websocket.C
 	}
 }
 
-func (s *httpServer) streamPTYToWebTransport(ctx context.Context, stream webtransport.Stream, session *webSession) {
+func (s *httpServer) streamPTYToWebTransport(ctx context.Context, stream *webtransport.Stream, session *webSession) {
 	bufPtr := readBufPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer readBufPool.Put(bufPtr)
@@ -368,7 +368,7 @@ func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.C
 	}
 }
 
-func (s *httpServer) handleWebTransportInput(ctx context.Context, stream webtransport.Stream, session *webSession) {
+func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtransport.Stream, session *webSession) {
 	lenBuf := make([]byte, 4)
 	var totalBytes int64
 	var msgCount int64
