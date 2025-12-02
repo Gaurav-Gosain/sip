@@ -58,6 +58,13 @@ func (s *webSession) WindowChanges() <-chan WindowSize {
 	return s.windowChanges
 }
 
+func (s *webSession) Fd() uintptr {
+	if s.ptySlave != nil {
+		return s.ptySlave.Fd()
+	}
+	return 0
+}
+
 func (s *webSession) Done() <-chan struct{} {
 	return s.ctx.Done()
 }

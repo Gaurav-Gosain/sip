@@ -44,6 +44,10 @@ type Session interface {
 	// Write writes output to the web terminal.
 	Write(p []byte) (n int, err error)
 
+	// Fd returns the file descriptor for TTY detection.
+	// This is required for Bubble Tea to properly detect terminal mode.
+	Fd() uintptr
+
 	// WindowChanges returns a channel that receives window size changes.
 	WindowChanges() <-chan WindowSize
 }
