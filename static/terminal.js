@@ -40,11 +40,9 @@
             this.wtReader = null;
             this.resizeTimeout = null;
             
-            // Performance: Pre-allocate reusable buffers
-            this.sendBuffer = new Uint8Array(1024);
-            this.frameBuffer = new Uint8Array(1028);
-            this.pingBuffer = new Uint8Array([MSG_PING]); // Pre-allocated ping
-            this.writeBuffer = new Uint8Array(64 * 1024); // Pre-allocated for combining writes
+            // Performance: Pre-allocate buffers (only for read-path, not write to avoid races)
+            this.pingBuffer = new Uint8Array([MSG_PING]); // Pre-allocated ping (safe: single byte, immutable)
+            this.writeBuffer = new Uint8Array(64 * 1024); // Pre-allocated for combining terminal writes
             
             // Performance: Batch terminal writes with requestAnimationFrame
             this.pendingWrites = [];
@@ -618,29 +616,16 @@
 
         async sendInput(data) {
             const encoded = this.encoder.encode(data);
-            const len = encoded.length + 1;
-            
-            let msg;
-            if (len <= this.sendBuffer.length) {
-                msg = this.sendBuffer.subarray(0, len);
-            } else {
-                msg = new Uint8Array(len);
-            }
-            
+            // Always allocate fresh to avoid race conditions with concurrent sends
+            const msg = new Uint8Array(encoded.length + 1);
             msg[0] = MSG_INPUT;
             msg.set(encoded, 1);
             await this.send(msg);
         }
 
         async sendBinary(data) {
-            const len = data.length + 1;
-            let msg;
-            if (len <= this.sendBuffer.length) {
-                msg = this.sendBuffer.subarray(0, len);
-            } else {
-                msg = new Uint8Array(len);
-            }
-            
+            // Always allocate fresh to avoid race conditions with concurrent sends
+            const msg = new Uint8Array(data.length + 1);
             msg[0] = MSG_INPUT;
             for (let i = 0; i < data.length; i++) {
                 msg[i + 1] = data.charCodeAt(i);
@@ -670,14 +655,10 @@
 
             try {
                 if (this.useWebTransport && this.wtWriter) {
-                    const frameLen = 4 + data.length;
-                    let frame;
-                    if (frameLen <= this.frameBuffer.length) {
-                        frame = this.frameBuffer.subarray(0, frameLen);
-                    } else {
-                        frame = new Uint8Array(frameLen);
-                    }
-                    new DataView(frame.buffer, frame.byteOffset).setUint32(0, data.length);
+                    // Always allocate fresh buffer to avoid race conditions
+                    // when multiple sends happen concurrently
+                    const frame = new Uint8Array(4 + data.length);
+                    new DataView(frame.buffer).setUint32(0, data.length);
                     frame.set(data, 4);
                     await this.wtWriter.write(frame);
                 } else if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
