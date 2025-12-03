@@ -3,5 +3,5 @@
 .DS_Store
 *.exe
 dist/
-sip
-simple
+/sip
+/simple
