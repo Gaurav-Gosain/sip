@@ -6,6 +6,11 @@
 
 Sip is a Go library that allows you to serve any [Bubble Tea](https://github.com/charmbracelet/bubbletea) application through a web browser with full terminal emulation, mouse support, and hardware-accelerated rendering.
 
+## Demonstration 
+*Take a sip!*
+
+[demonstration-tuios-sip.webm](https://github.com/user-attachments/assets/fc43cd32-a624-43f3-82ff-7721c5bb03da)
+
 ## Features
 
 - **WebGL Rendering** - GPU-accelerated terminal rendering via xterm.js for smooth 60fps
