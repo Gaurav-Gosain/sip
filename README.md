@@ -56,48 +56,52 @@ Then open http://localhost:7681 in your browser.
 package main
 
 import (
-    "context"
-    "os"
-    "os/signal"
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
 
-    tea "github.com/charmbracelet/bubbletea/v2"
-    "github.com/Gaurav-Gosain/sip"
+	tea "charm.land/bubbletea/v2"
+	"github.com/Gaurav-Gosain/sip"
 )
 
 type model struct {
-    count int
+	count int
 }
 
 func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    switch msg := msg.(type) {
-    case tea.KeyPressMsg:
-        switch msg.String() {
-        case "q":
-            return m, tea.Quit
-        case "up":
-            m.count++
-        case "down":
-            m.count--
-        }
-    }
-    return m, nil
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "up":
+			m.count++
+		case "down":
+			m.count--
+		}
+	}
+	return m, nil
 }
 
 func (m model) View() tea.View {
-    return tea.NewView(fmt.Sprintf("Count: %d\n\nPress up/down to change, q to quit", m.count))
+	return tea.NewView(fmt.Sprintf("Count: %d\n\nPress up/down to change, q to quit", m.count))
 }
 
 func main() {
-    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-    defer cancel()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
-    server := sip.NewServer(sip.DefaultConfig())
-    
-    server.Serve(ctx, func(sess sip.Session) (tea.Model, []tea.ProgramOption) {
-        return model{}, nil
-    })
+	server := sip.NewServer(sip.DefaultConfig())
+
+	err := server.Serve(ctx, func(sess sip.Session) (tea.Model, []tea.ProgramOption) {
+		return model{}, nil
+	})
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 ```
 
