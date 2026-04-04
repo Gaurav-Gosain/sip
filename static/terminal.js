@@ -24,6 +24,7 @@
             this.fitAddon = null;
             this.webglAddon = null;
             this.canvasAddon = null;
+            this.imageAddon = null;
             this.webLinksAddon = null;
             this.connected = false;
             this.readOnly = false;
@@ -158,6 +159,23 @@
                 this.webLinksAddon = new WebLinksAddon.WebLinksAddon();
                 this.term.loadAddon(this.webLinksAddon);
             } catch (e) {}
+
+            // Load image addon with kitty graphics support
+            try {
+                this.imageAddon = new ImageAddon.ImageAddon({
+                    enableSizeReports: true,
+                    sixelSupport: true,
+                    sixelScrolling: true,
+                    sixelPaletteLimit: 4096,
+                    sixelSizeLimit: 25000000,
+                    kittySupport: true,
+                    kittySizeLimit: 25000000,
+                    storageLimit: 128
+                });
+                this.term.loadAddon(this.imageAddon);
+            } catch (e) {
+                console.warn('Image addon failed to load:', e);
+            }
 
             this.fitAddon.fit();
 
