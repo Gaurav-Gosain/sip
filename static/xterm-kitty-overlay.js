@@ -298,11 +298,34 @@
                 throw new Error(`unsupported format f=${fmt}`);
             }
 
-            this.images.set(imageId, {
+            // If an image with this id already exists we're in a
+            // re-transmit path (e.g. per-frame video playback by youterm
+            // or mpv, which keeps i= constant and just refreshes the data).
+            // Close the previous bitmap to free GPU memory, then re-render
+            // every placement that references this id so the new frame is
+            // actually shown instead of the stale bitmap the canvases
+            // already painted.
+            const previous = this.images.get(imageId);
+            if (previous && previous.bitmap && previous.bitmap.close) {
+                try {
+                    previous.bitmap.close();
+                } catch (e) {}
+            }
+
+            const entry = {
                 bitmap,
                 width: bitmap.width,
                 height: bitmap.height,
-            });
+            };
+            this.images.set(imageId, entry);
+
+            if (previous) {
+                for (const placement of this.placements.values()) {
+                    if (placement.imageId === imageId) {
+                        this._renderPlacement(placement, entry);
+                    }
+                }
+            }
         }
 
         _base64Decode(b64) {
@@ -443,19 +466,21 @@
 
         _positionPlacement(p) {
             const cellPx = this._cellPixels();
-            // Account for viewport scroll: the cell row we stored is an
-            // ABSOLUTE row (buffer.ybase + cursorY at place time). As the
-            // user scrolls, what's visible shifts, so we translate by the
-            // current viewportY.
-            const visibleY = p.cellY - (this.term.buffer.active.viewportY || 0);
+            // Placements are stored in VIEWPORT-relative cell coordinates.
+            // This matches tuios's compositor model: tuios draws on the
+            // active screen and does not participate in xterm.js scrollback.
+            // If we tracked absolute buffer rows, any LF emitted by the
+            // guest (e.g. chafa's ReserveImageSpace) would advance ybase
+            // and leave the placement parked in scrollback history,
+            // visible only to the user scrolling up. Instead we pin
+            // placements to the visible viewport; tuios re-emits a=p on
+            // every render cycle to keep positions fresh.
             const left = p.cellX * cellPx.width;
-            const top = visibleY * cellPx.height;
+            const top = p.cellY * cellPx.height;
             p.canvas.style.transform = `translate(${left}px, ${top}px)`;
 
-            // Hide if fully outside the viewport (we keep the canvas
-            // attached so it's cheap to show again on scroll back).
             const rows = this.term.rows;
-            const visible = visibleY + p.rows > 0 && visibleY < rows;
+            const visible = p.cellY + p.rows > 0 && p.cellY < rows;
             p.canvas.style.display = visible ? "block" : "none";
         }
 
@@ -532,12 +557,13 @@
         }
 
         _currentCursorCell() {
+            // Viewport-relative cursor cell. See _positionPlacement for
+            // the rationale on storing viewport coordinates rather than
+            // absolute buffer rows.
             const buf = this.term.buffer.active;
-            // cursorY is viewport-relative; ybase is scrollback base.
-            // We want an ABSOLUTE line so placements survive scrolling.
             return {
-                x: buf.cursorX,
-                y: (buf.ybase | 0) + (buf.cursorY | 0),
+                x: buf.cursorX | 0,
+                y: buf.cursorY | 0,
             };
         }
 
