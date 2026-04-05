@@ -181,8 +181,9 @@
             // handler by default, so apps that emit `\e]52;c;<base64>\a` to
             // copy to the clipboard (tmux, vim, bubbletea's tea.SetClipboard,
             // etc.) are silently ignored. Wire it to navigator.clipboard.
+            // Note: the public API is on term.parser, not on term itself.
             try {
-                this.term.registerOscHandler(52, (data) => {
+                this.term.parser.registerOscHandler(52, (data) => {
                     // Format: "<targets>;<payload>"  targets = p|s|c|q|...
                     const sep = data.indexOf(';');
                     if (sep < 0) return false;
