@@ -160,7 +160,12 @@
                 this.term.loadAddon(this.webLinksAddon);
             } catch (e) {}
 
-            // Load image addon with kitty graphics support
+            // Load image addon for sixel only. Kitty graphics are handled
+            // by our own KittyOverlay (see xterm-kitty-overlay.js), which
+            // renders into an absolutely-positioned DOM layer above the
+            // terminal instead of baking images into the cell buffer. The
+            // addon's kitty implementation cannot reposition placements,
+            // which is fatal for tuios's window manager.
             try {
                 this.imageAddon = new ImageAddon.ImageAddon({
                     enableSizeReports: true,
@@ -168,13 +173,24 @@
                     sixelScrolling: true,
                     sixelPaletteLimit: 4096,
                     sixelSizeLimit: 25000000,
-                    kittySupport: true,
-                    kittySizeLimit: 25000000,
+                    kittySupport: false,
                     storageLimit: 128
                 });
                 this.term.loadAddon(this.imageAddon);
             } catch (e) {
                 console.warn('Image addon failed to load:', e);
+            }
+
+            // Install our custom kitty graphics overlay. It registers its
+            // own APC 'G' handler, parses kitty commands directly, decodes
+            // image data, and renders each placement as an absolutely
+            // positioned canvas in a layer above xterm.js.
+            try {
+                if (typeof KittyOverlay !== 'undefined') {
+                    this.kittyOverlay = new KittyOverlay(this.term, container);
+                }
+            } catch (e) {
+                console.warn('KittyOverlay failed to initialize:', e);
             }
 
             // OSC 52 clipboard handler. xterm.js does not register an OSC 52
