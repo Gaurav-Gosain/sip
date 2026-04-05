@@ -59,6 +59,20 @@
             // phase and needs to also place. Keyed like `pending`.
             this.pendingPlacement = new Map();
 
+            // Place commands that arrived before the referenced image
+            // finished decoding. createImageBitmap is asynchronous and
+            // tuios typically emits a=t then a=p back-to-back in the
+            // same render cycle, so the place hits before the bitmap
+            // lands in `images`. We queue them here and drain when the
+            // decode settles. Keyed by imageId, value is an array of
+            // place spec objects.
+            this.deferredPlacements = new Map();
+
+            // Image ids for which a decode is currently in-flight. Used
+            // so _handlePlace can decide between "retry later" (pending
+            // decode) and "drop" (never transmitted).
+            this.decoding = new Set();
+
             // Create the overlay layer. It sits above xterm.js's canvas
             // but below any other UI. We position canvases inside it via
             // absolute CSS with pixel coordinates derived from cell coords.
@@ -254,13 +268,28 @@
 
             const imageId = params.i | 0;
 
+            this.decoding.add(imageId);
             this._decodeAndStore(imageId, params, fullB64)
                 .then(() => {
+                    this.decoding.delete(imageId);
                     if (placementSpec) {
                         this._placeImage(imageId, placementSpec);
                     }
+                    // Drain any place commands that arrived while we
+                    // were decoding (tuios emits a=t then a=p back to
+                    // back; the place lands on the parser thread before
+                    // createImageBitmap resolves).
+                    const queued = this.deferredPlacements.get(imageId);
+                    if (queued) {
+                        this.deferredPlacements.delete(imageId);
+                        for (const spec of queued) {
+                            this._placeImage(imageId, spec);
+                        }
+                    }
                 })
                 .catch((err) => {
+                    this.decoding.delete(imageId);
+                    this.deferredPlacements.delete(imageId);
                     console.warn("[kitty-overlay] decode failed:", err);
                 });
         }
@@ -361,17 +390,42 @@
 
         _handlePlace(cmd) {
             const imageId = cmd.i | 0;
-            if (!this.images.has(imageId)) {
-                // Image hasn't been transmitted (or was evicted by delete).
-                // Silently drop; tuios's passthrough may retry.
-                return;
-            }
             const cursor = this._currentCursorCell();
-            this._placeImage(imageId, {
+            const spec = {
                 cellX: cursor.x,
                 cellY: cursor.y,
                 ...cmd,
-            });
+            };
+
+            if (this.images.has(imageId)) {
+                this._placeImage(imageId, spec);
+                return;
+            }
+
+            if (this.decoding.has(imageId)) {
+                // Decode in flight. Queue the latest spec; if multiple
+                // places come in before decode finishes (e.g. tuios's
+                // RefreshAllPlacements firing between frames), we only
+                // need to apply the most recent position, so replace
+                // any previous queued entry for the same placement id.
+                let queue = this.deferredPlacements.get(imageId);
+                if (!queue) {
+                    queue = [];
+                    this.deferredPlacements.set(imageId, queue);
+                }
+                const pid = (spec.p | 0) || 1;
+                const existingIdx = queue.findIndex(
+                    (s) => ((s.p | 0) || 1) === pid,
+                );
+                if (existingIdx >= 0) {
+                    queue[existingIdx] = spec;
+                } else {
+                    queue.push(spec);
+                }
+                return;
+            }
+
+            // Image was never transmitted (or got evicted). Drop.
         }
 
         _placeImage(imageId, spec) {
