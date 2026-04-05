@@ -177,6 +177,47 @@
                 console.warn('Image addon failed to load:', e);
             }
 
+            // OSC 52 clipboard handler. xterm.js does not register an OSC 52
+            // handler by default, so apps that emit `\e]52;c;<base64>\a` to
+            // copy to the clipboard (tmux, vim, bubbletea's tea.SetClipboard,
+            // etc.) are silently ignored. Wire it to navigator.clipboard.
+            try {
+                this.term.registerOscHandler(52, (data) => {
+                    // Format: "<targets>;<payload>"  targets = p|s|c|q|...
+                    const sep = data.indexOf(';');
+                    if (sep < 0) return false;
+                    const payload = data.slice(sep + 1);
+                    // "?" is a read request. The spec wants us to reply with
+                    // the current clipboard contents, but reading the system
+                    // clipboard requires an explicit user gesture in browsers
+                    // and would leak it to any page the app runs in. Ignore.
+                    if (payload === '?') return true;
+                    try {
+                        const text = atob(payload);
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text).catch(err => {
+                                console.warn('OSC 52: clipboard write rejected', err);
+                            });
+                        } else {
+                            // Fallback for insecure contexts / old browsers.
+                            const ta = document.createElement('textarea');
+                            ta.value = text;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            try { document.execCommand('copy'); } catch (e) {}
+                            document.body.removeChild(ta);
+                        }
+                    } catch (e) {
+                        console.warn('OSC 52: decode failed', e);
+                    }
+                    return true;
+                });
+            } catch (e) {
+                console.warn('OSC 52 handler registration failed:', e);
+            }
+
             this.fitAddon.fit();
 
             // Handle terminal input
