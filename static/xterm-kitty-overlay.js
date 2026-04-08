@@ -316,8 +316,22 @@
             } else if (fmt === 24 || fmt === 32) {
                 // Raw RGB / RGBA, width x height pixels
                 if (!width || !height) throw new Error("missing s/v for raw");
-                const rgba =
-                    fmt === 32 ? bytes : this._rgbToRgba(bytes, width, height);
+                const expectedLen = width * height * 4;
+                let rgba;
+                if (fmt === 24) {
+                    rgba = this._rgbToRgba(bytes, width, height);
+                } else {
+                    rgba = bytes;
+                }
+                // Pad or trim to exact expected length. Broadcast channel
+                // drops can cause the data to be slightly short. Padding
+                // with zeros (transparent black) is better than failing.
+                if (rgba.byteLength !== expectedLen) {
+                    const padded = new Uint8Array(expectedLen);
+                    padded.set(rgba.byteLength > expectedLen
+                        ? rgba.subarray(0, expectedLen) : rgba);
+                    rgba = padded;
+                }
                 const imageData = new ImageData(
                     new Uint8ClampedArray(
                         rgba.buffer,
