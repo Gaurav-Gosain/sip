@@ -152,6 +152,11 @@
             const cmd = this._parseControl(controlStr);
             const action = cmd.a || "t";
 
+            // Debug: log every kitty action to help trace chafa issues
+            if (action === 'p' || (action === 't' && !cmd.m) || action === 'T' || action === 'd') {
+                console.log(`[kitty-overlay] action=${action} i=${cmd.i} m=${cmd.m} payloadLen=${payload.length} images=${this.images.size} placements=${this.placements.size} pending=${this.pending.size} decoding=${this.decoding.size}`);
+            }
+
             try {
                 switch (action) {
                     case "t":
