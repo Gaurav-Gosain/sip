@@ -316,21 +316,25 @@
             } else if (fmt === 24 || fmt === 32) {
                 // Raw RGB / RGBA, width x height pixels
                 if (!width || !height) throw new Error("missing s/v for raw");
-                const expectedLen = width * height * 4;
                 let rgba;
                 if (fmt === 24) {
                     rgba = this._rgbToRgba(bytes, width, height);
                 } else {
                     rgba = bytes;
                 }
-                // Pad or trim to exact expected length. Broadcast channel
-                // drops can cause the data to be slightly short. Padding
-                // with zeros (transparent black) is better than failing.
-                if (rgba.byteLength !== expectedLen) {
-                    const padded = new Uint8Array(expectedLen);
-                    padded.set(rgba.byteLength > expectedLen
-                        ? rgba.subarray(0, expectedLen) : rgba);
-                    rgba = padded;
+                // If broadcast channel dropped chunks, we have fewer bytes
+                // than expected. Render only the complete rows we have
+                // instead of padding (which shifts all subsequent rows and
+                // produces a visually broken image).
+                const bytesPerRow = width * 4;
+                let actualHeight = height;
+                const expectedLen = width * height * 4;
+                if (rgba.byteLength < expectedLen) {
+                    actualHeight = Math.floor(rgba.byteLength / bytesPerRow);
+                    if (actualHeight < 1) actualHeight = 1;
+                    rgba = rgba.subarray(0, actualHeight * bytesPerRow);
+                } else if (rgba.byteLength > expectedLen) {
+                    rgba = rgba.subarray(0, expectedLen);
                 }
                 const imageData = new ImageData(
                     new Uint8ClampedArray(
@@ -339,7 +343,7 @@
                         rgba.byteLength,
                     ),
                     width,
-                    height,
+                    actualHeight,
                 );
                 bitmap = await createImageBitmap(imageData);
             } else {
@@ -502,8 +506,14 @@
         _renderPlacement(p, img) {
             const cellPx = this._cellPixels();
             const dpr = window.devicePixelRatio || 1;
-            const cssW = p.cols * cellPx.width;
-            const cssH = p.rows * cellPx.height;
+            // Clamp to terminal viewport so images don't overflow
+            // window boundaries when the terminal is resized smaller.
+            const maxCols = Math.max(1, this.term.cols - p.cellX);
+            const maxRows = Math.max(1, this.term.rows - p.cellY);
+            const visibleCols = Math.min(p.cols, maxCols);
+            const visibleRows = Math.min(p.rows, maxRows);
+            const cssW = visibleCols * cellPx.width;
+            const cssH = visibleRows * cellPx.height;
 
             const canvas = p.canvas;
             canvas.width = Math.max(1, Math.round(cssW * dpr));
