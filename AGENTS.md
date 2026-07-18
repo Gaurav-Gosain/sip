@@ -8,6 +8,10 @@
 # Build library and CLI
 go build ./...
 
+# Client-side tests
+node --test 'clienttests/*.test.mjs'         # fast, no browser
+(cd clienttests && npm install && npx playwright test)  # drives a real server
+
 # Run example (Bubble Tea mode)
 go run ./examples/simple
 
@@ -49,6 +53,7 @@ Limits:
       --idle-timeout duration Close sessions idle for this long (0 = off)
 
 Renderer / fonts:
+      --renderer string       Client renderer: "webgl" for vtgl, empty for canvas 2D
       --font path             Custom font (.ttf/.otf/.woff/.woff2)
       --font-family string    CSS font-family (overrides default JBM Nerd Font)
       --disable-kitty-transcoder
@@ -106,9 +111,13 @@ sip/
 │   ├── ghostty-web/        # Vendored MIT (NimbleMarkets fork of coder/ghostty-web, nm-kitty-meow)
 │   │   ├── ghostty-vt.wasm   (~611 KB)
 │   │   └── ghostty-web.js    (~1.1 MB)
+│   ├── vtgl/               # Vendored MIT glyph-atlas WebGL2 renderer (built artifact)
+│   │   ├── vtgl.js           (~30 KB minified ESM)
+│   │   └── README.md         # Provenance + how to refresh
 │   ├── sip-client/         # ES modules adapted from go-booba's TS bundle (MIT, NimbleMarkets):
 │   │   sip.js, adapter.js, websocket_adapter.js, webtransport_adapter.js,
-│   │   auto_adapter.js, protocol.js, clipboard.js, urls.js, types.js
+│   │   auto_adapter.js, protocol.js, clipboard.js, urls.js, types.js,
+│   │   vtgl_source.js, vtgl_bridge.js
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 └── examples/simple/        # Counter example (Bubble Tea mode)
 ```
@@ -145,10 +154,52 @@ sip/
 ### Renderer
 
 - **libghostty** parses VT sequences (correctness on par with ghostty proper)
-- Renders to a single 2D `<canvas>` (NOT WebGL/WebGPU — that's a future project)
+- Renders to a single 2D `<canvas>` by default
 - Kitty graphics protocol supported natively via the NimbleMarkets ghostty-web fork
 - Kitty keyboard protocol forwardable through `MsgKittyKbd` ('8')
 - OSC 52 clipboard writes routed to `navigator.clipboard` (gated by `allowOSC52`)
+
+#### Optional WebGL renderer (vtgl)
+
+Opt in with `--renderer webgl`, `?renderer=webgl`, or the settings panel. The
+2D path remains the default until this has had burn-in. There is no VT change:
+ghostty-vt still parses everything, and vtgl only draws.
+
+Layering. A WebGL2 context and a 2D context cannot share one canvas, so vtgl
+gets its own, positioned behind the bundle's. The bundle's canvas stays in
+normal flow (page layout is unchanged) and becomes a transparent overlay:
+
+```
+z 0  canvas.sip-vtgl-canvas   text grid + cell backgrounds   (pointer-events: none)
+z 1  bundle canvas            selection tint, kitty graphics, cursor, scrollbar
+```
+
+Input, selection tracking, clipboard, scrollback, link detection and kitty
+graphics all keep running in the bundle untouched, which is why this mode does
+not fork the bundle's behavior.
+
+The seam is one hook, `renderer.__sipRenderHook`, in the same surgical style as
+the existing `__sip*` patch points. Three lines in `ghostty-web.js`:
+
+- `renderLine()` clears its row and returns early when the hook is set, so the
+  overlay stays transparent and stale overlay pixels are still cleared.
+- The hook is called once per frame after the row pass, before the kitty and
+  cursor passes, so z-order comes out right.
+- `resize()` clears rather than filling the background when the hook is set.
+
+`vtgl_source.js` adapts the wasm buffer to vtgl's `VtSource` (absolute row
+coordinates, theme-resolved colors). `vtgl_bridge.js` owns the canvas, the
+geometry sync and the selection tint.
+
+Cell geometry stays the bundle's, so toggling the renderer never reflows the
+terminal or shifts mouse hit-testing; vtgl is coerced onto it via derived
+lineHeight/letterSpacing. The one value flowing the other way is the text
+baseline, because the bundle's block cursor redraws its cell's glyph with the
+2D text path.
+
+Known gaps in this mode: link underlines and selection foreground recoloring
+are not drawn (selection is a translucent overlay instead), and kitty virtual
+placeholder cells are not rendered by vtgl.
 
 ### Wire protocol
 
