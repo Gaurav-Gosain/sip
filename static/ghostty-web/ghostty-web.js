@@ -5699,8 +5699,15 @@ const Ji = 1109742, II = {
   brightCyan: "#29b8db",
   brightWhite: "#ffffff"
 };
+function kSig(A) {
+  let g = A.length >>> 0;
+  const B = Math.max(1, A.length >> 5 | 0);
+  for (let I = 0; I < A.length; I += B)
+    g = Math.imul(g, 31) + A[I] >>> 0;
+  return A.length > 0 ? Math.imul(g, 31) + A[A.length - 1] >>> 0 : g;
+}
 function QI(A, g) {
-  return A.width === g.width && A.height === g.height && A.format === g.format && A.dataPtr === g.data.byteOffset && A.dataLen === g.data.length;
+  return A.width === g.width && A.height === g.height && A.format === g.format && A.dataPtr === g.data.byteOffset && A.dataLen === g.data.length && A.sig === kSig(g.data);
 }
 class ni {
   constructor(g, B = {}) {
@@ -5767,7 +5774,7 @@ class ni {
   render(g, B = !1, I = 0, Q, C = 1) {
     var n;
     this.__sipLastFontIdx = -1; this.__sipLastFill = null; this.__sipLastFillPacked = -1;
-    this.currentBuffer = g, this.currentRenderBuffer = g;
+    this.currentBuffer = g, this.currentRenderBuffer = g, this.currentViewportY = I;
     const E = g.getCursor(), i = g.getDimensions();
     this.precomputeKittyState(g, i.rows);
     const D = Q ? Q.getScrollbackLength() : 0;
@@ -5851,7 +5858,7 @@ class ni {
         G = g.getLine(c);
       G && this.renderLine(G, c, i.cols);
     }
-    this.currentDirectPlacements.length > 0 && M && this.renderKittyImages(), I === 0 && E.visible && this.cursorVisible && this.renderCursor(E.x, E.y), Q && C > 0 && this.renderScrollbar(I, D, i.rows, C), this.lastCursorPosition = { x: E.x, y: E.y }, g.clearDirty();
+    this.currentDirectPlacements.length > 0 && M && this.renderKittyImages(I), I === 0 && E.visible && this.cursorVisible && this.renderCursor(E.x, E.y), Q && C > 0 && this.renderScrollbar(I, D, i.rows, C), this.lastCursorPosition = { x: E.x, y: E.y }, g.clearDirty();
   }
   /**
    * Render a single line using two-pass approach:
@@ -6005,17 +6012,25 @@ class ni {
             imgHeight: (o == null ? void 0 : o.height) ?? 0,
             imgFormat: (o == null ? void 0 : o.format) ?? 0,
             dataPtr: (o == null ? void 0 : o.data.byteOffset) ?? 0,
-            dataLen: (o == null ? void 0 : o.data.length) ?? 0
+            dataLen: (o == null ? void 0 : o.data.length) ?? 0,
+            imgSig: o == null ? 0 : kSig(o.data)
           };
           I.set(D.imageId, w);
           const t = this.lastKittyDirectSigs.get(D.imageId);
-          (!t || t.viewportCol !== w.viewportCol || t.viewportRow !== w.viewportRow || t.pixelWidth !== w.pixelWidth || t.pixelHeight !== w.pixelHeight || t.sourceX !== w.sourceX || t.sourceY !== w.sourceY || t.sourceWidth !== w.sourceWidth || t.sourceHeight !== w.sourceHeight || t.imgWidth !== w.imgWidth || t.imgHeight !== w.imgHeight || t.imgFormat !== w.imgFormat || t.dataPtr !== w.dataPtr || t.dataLen !== w.dataLen) && (C(w.viewportRow, w.pixelHeight), t && C(t.viewportRow, t.pixelHeight));
+          (!t || t.viewportCol !== w.viewportCol || t.viewportRow !== w.viewportRow || t.pixelWidth !== w.pixelWidth || t.pixelHeight !== w.pixelHeight || t.sourceX !== w.sourceX || t.sourceY !== w.sourceY || t.sourceWidth !== w.sourceWidth || t.sourceHeight !== w.sourceHeight || t.imgWidth !== w.imgWidth || t.imgHeight !== w.imgHeight || t.imgFormat !== w.imgFormat || t.dataPtr !== w.dataPtr || t.dataLen !== w.dataLen || t.imgSig !== w.imgSig) && (C(w.viewportRow, w.pixelHeight), t && C(t.viewportRow, t.pixelHeight));
         }
       }
     }
     for (const [i, D] of this.lastKittyDirectSigs)
       I.has(i) || C(D.viewportRow, D.pixelHeight);
     this.lastKittyDirectSigs = I;
+    if (this.kittyImageCache.size > 0) {
+      const live = /* @__PURE__ */ new Set(this.kittyVirtualPlacements.keys());
+      for (const D of this.currentDirectPlacements)
+        live.add(D.imageId);
+      for (const id of this.kittyImageCache.keys())
+        live.has(id) || this.kittyImageCache.delete(id);
+    }
   }
   /**
    * Get (or decode + cache) the canvas-ready bitmap for a kitty image.
@@ -6037,7 +6052,8 @@ class ni {
       height: C.height,
       format: C.format,
       dataPtr: C.data.byteOffset,
-      dataLen: C.data.length
+      dataLen: C.data.length,
+      sig: kSig(C.data)
     }), E) : null;
   }
   /**
@@ -6060,7 +6076,13 @@ class ni {
     const Q = this.currentRenderBuffer, C = this.currentKittyGraphics;
     if (!Q || C === null || !Q.getGrapheme)
       return !1;
-    const E = Q.getGrapheme(I, B);
+    const vy = Math.floor(this.currentViewportY || 0);
+    let E;
+    if (vy > 0 && I < vy) {
+      const sb = Q.getScrollbackLength ? Q.getScrollbackLength() : 0;
+      E = Q.getScrollbackGrapheme ? Q.getScrollbackGrapheme(sb - vy + I, B) : null;
+    } else
+      E = Q.getGrapheme(I - vy, B);
     if (!E || E.length < 3)
       return !1;
     const i = dB(E[1]), D = dB(E[2]);
@@ -6094,13 +6116,16 @@ class ni {
       this.metrics.height
     ), !0;
   }
-  renderKittyImages() {
-    const g = this.currentRenderBuffer, B = this.currentKittyGraphics;
+  renderKittyImages(vy = 0) {
+    const g = this.currentRenderBuffer, B = this.currentKittyGraphics, S = Math.floor(vy || 0), rows = g ? g.getDimensions().rows : 0;
     if (!(!g || B === null || !g.getKittyImagePixels))
       for (const I of this.currentDirectPlacements) {
         let Q = this.kittyImageCache.get(I.imageId);
         const C = g.getKittyImagePixels(B, I.imageId);
         if (C) {
+          const destRow = I.viewportRow + S, rowSpan = Math.ceil(I.pixelHeight / this.metrics.height);
+          if (destRow + rowSpan <= 0 || destRow >= rows)
+            continue;
           if (!Q || !QI(Q, C)) {
             const E = this.decodeKittyImageToCanvas(C);
             if (!E)
@@ -6111,7 +6136,8 @@ class ni {
               height: C.height,
               format: C.format,
               dataPtr: C.data.byteOffset,
-              dataLen: C.data.length
+              dataLen: C.data.length,
+              sig: kSig(C.data)
             }, this.kittyImageCache.set(I.imageId, Q);
           }
           this.ctx.drawImage(
@@ -6121,7 +6147,7 @@ class ni {
             I.sourceWidth,
             I.sourceHeight,
             I.viewportCol * this.metrics.width,
-            I.viewportRow * this.metrics.height,
+            destRow * this.metrics.height,
             I.pixelWidth,
             I.pixelHeight
           );
@@ -6329,7 +6355,7 @@ class ni {
    * Clear entire canvas
    */
   clear() {
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height), this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.kittyImageCache.clear(), this.kittyVirtualPlacements.clear(), this.lastKittyDirectSigs.clear(), this.currentDirectPlacements = [], this.currentKittyGraphics = null, this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height), this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
   }
   /**
    * Cleanup resources
