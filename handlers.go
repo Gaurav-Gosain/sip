@@ -190,6 +190,17 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()
 
+	// Watchdog: when the context is cancelled — client disconnect, child
+	// exit (cmd reaper), or handler return — close the session so its PTY
+	// closes and the output goroutine's blocking Read unblocks. Without
+	// this, teardown deadlocks on wg.Wait() (the read never observes ctx
+	// cancellation) and leaks the PTY, child, goroutines, and the
+	// connection slot.
+	go func() {
+		<-ctx.Done()
+		closeFunc()
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -309,6 +320,13 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 
 	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()
+
+	// Watchdog: see handleWebSocket. Closing the session on ctx.Done
+	// unblocks the output goroutine's PTY Read so teardown can't deadlock.
+	go func() {
+		<-ctx.Done()
+		closeFunc()
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
