@@ -5,3 +5,5 @@
 dist/
 /sip
 /simple
+node_modules/
+clienttests/test-results/
