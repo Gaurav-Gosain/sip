@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -712,8 +713,10 @@ func (s *httpServer) originPatterns() []string {
 // checkOrigin enforces same-origin by default for the WebTransport
 // handshake, mirroring the coder/websocket policy applied to WS upgrades.
 // Requests without an Origin header (non-browser clients) pass. Otherwise
-// the Origin host must equal the request Host or match an entry in the
-// merged allowlist (path.Match glob); an explicit "*" opts into any origin.
+// the Origin must be this server's own origin (either the WebTransport
+// endpoint itself or the HTTP listener that served the page) or match an
+// entry in the merged allowlist (path.Match glob); an explicit "*" opts
+// into any origin.
 func (s *httpServer) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -723,7 +726,16 @@ func (s *httpServer) checkOrigin(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
+	// The WebTransport origin itself.
 	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	// The HTTP origin that served the page. The HTTP and WebTransport
+	// listeners deliberately sit on different ports, so a page loaded from
+	// http://host:7681 sends that Origin to the WT endpoint on host:7682.
+	// A strict host comparison never matches and would leave WebTransport
+	// permanently unreachable under the default policy.
+	if s.isOwnHTTPOrigin(u, r.Host) {
 		return true
 	}
 	for _, pattern := range s.originPatterns() {
@@ -731,5 +743,46 @@ func (s *httpServer) checkOrigin(r *http.Request) bool {
 			return true
 		}
 	}
+	logger.Warn("WebTransport origin rejected; client will fall back to WebSocket",
+		"origin", origin,
+		"request_host", r.Host,
+		"http_port", s.config.Port,
+		"allowlist", s.originPatterns(),
+		"hint", "add the origin to OriginPatterns, or \"*\" to allow any origin",
+	)
 	return false
+}
+
+// isOwnHTTPOrigin reports whether u is this server's HTTP origin: the same
+// hostname the WebTransport request was addressed to, on the HTTP port.
+// Both the hostname and the port must match, so a genuinely foreign origin
+// is still rejected.
+func (s *httpServer) isOwnHTTPOrigin(u *url.URL, reqHost string) bool {
+	originHost, originPort := splitOriginHostPort(u.Host, u.Scheme)
+	wtHost, _ := splitOriginHostPort(reqHost, "")
+	if originHost == "" || wtHost == "" || originHost != wtHost {
+		return false
+	}
+	httpPort := s.config.Port
+	if httpPort == "" {
+		httpPort = "7681"
+	}
+	return originPort != "" && originPort == httpPort
+}
+
+// splitOriginHostPort lowercases hostport and splits it, falling back to
+// the scheme's default port when hostport carries no explicit port.
+func splitOriginHostPort(hostport, scheme string) (host, port string) {
+	host = hostport
+	if h, p, err := net.SplitHostPort(hostport); err == nil {
+		host, port = h, p
+	} else {
+		switch strings.ToLower(scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return strings.ToLower(host), port
 }

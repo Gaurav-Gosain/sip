@@ -52,8 +52,15 @@ export class SipAutoAdapter {
             }
             catch (err) {
                 // WebTransport failed — fall through to WebSocket, but say so
-                // instead of failing silently.
-                console.info('sip: WebTransport unavailable, using WebSocket', err);
+                // instead of failing silently. This is a degradation, so warn:
+                // a rejected origin or an untrusted cert otherwise looks
+                // exactly like a working session that is merely slower.
+                console.warn(
+                    'sip: WebTransport handshake failed, falling back to WebSocket. ' +
+                    'A rejected Origin shows as "request origin not allowed" in the server log; ' +
+                    'add the page origin to OriginPatterns if the server is behind a proxy.',
+                    err);
+                this.wtError = err;
             }
         }
         // Fall back to WebSocket
