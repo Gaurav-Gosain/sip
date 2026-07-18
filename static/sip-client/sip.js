@@ -3,6 +3,7 @@ import { SipWasmAdapter } from './adapter.js';
 import { SipProtocolAdapter } from './websocket_adapter.js';
 import { SipAutoAdapter } from './auto_adapter.js';
 import { OSC52Scanner } from './clipboard.js';
+import { VtglBridge } from './vtgl_bridge.js';
 export class SipTerminal {
     constructor(containerId, options = {}) {
         this.container = null;
@@ -11,6 +12,7 @@ export class SipTerminal {
         this.fitAddon = null;
         this._resizeHandler = null;
         this._dprCleanup = null;
+        this.vtglBridge = null;
         // --- Event Callbacks ---
         this.onStatusChange = null;
         this.onBell = null;
@@ -27,6 +29,10 @@ export class SipTerminal {
             rows: 24,
             allowOSC52: false,
             convertEol: true,
+            // 'canvas' (default) keeps the bundle's 2D renderer. 'webgl'
+            // hands the text grid to vtgl, falling back to 'canvas' if
+            // WebGL2 is unavailable.
+            renderer: 'canvas',
             theme: {
                 background: '#1e1e1e',
                 foreground: '#d4d4d4',
@@ -50,6 +56,7 @@ export class SipTerminal {
         this.fitAddon = new FitAddon();
         term.loadAddon(this.fitAddon);
         term.open(this.container);
+        await this._maybeInstallVtgl();
         this.fitAddon.fit();
         this.fitAddon.observeResize();
         // Handle window resize as fallback
@@ -89,6 +96,40 @@ export class SipTerminal {
             this.onCursorMove?.();
         });
     }
+    /**
+     * Stand up the vtgl renderer when renderer: 'webgl' is requested.
+     *
+     * The vendored vtgl bundle is imported lazily so the default 2D path never
+     * pays for the download. Any failure here (no WebGL2, import error, context
+     * creation failure) leaves the bundle's own renderer untouched and the
+     * terminal fully working, so this is deliberately not fatal.
+     */
+    async _maybeInstallVtgl() {
+        if (this.options.renderer !== 'webgl' || !this.term) return;
+        try {
+            const vtgl = await import('../vtgl/vtgl.js');
+            const bridge = new VtglBridge(this.term, vtgl, this.options.theme);
+            if (bridge.install()) {
+                this.vtglBridge = bridge;
+                console.log('Renderer: vtgl', bridge.backend);
+            } else {
+                console.warn('Renderer: vtgl unavailable, using canvas 2D');
+            }
+        } catch (err) {
+            console.warn('Renderer: vtgl failed to load, using canvas 2D', err);
+        }
+    }
+
+    /** Which renderer is actually drawing: 'webgl' or 'canvas'. */
+    get activeRenderer() {
+        return this.vtglBridge && this.vtglBridge.active ? 'webgl' : 'canvas';
+    }
+
+    /** Most recent vtgl frame stats, or null when the 2D path is active. */
+    getRenderStats() {
+        return this.vtglBridge ? this.vtglBridge.lastStats : null;
+    }
+
     /**
      * Connect to a BubbleTea backend via WebSocket
      * @param url WebSocket URL (e.g., 'ws://localhost:8080/ws')
@@ -302,6 +343,8 @@ export class SipTerminal {
         }
         this._dprCleanup?.();
         this._dprCleanup = null;
+        this.vtglBridge?.uninstall();
+        this.vtglBridge = null;
         this.term?.dispose();
         this.term = null;
         this.fitAddon = null;
