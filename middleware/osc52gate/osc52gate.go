@@ -10,6 +10,7 @@ package osc52gate
 import (
 	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/Gaurav-Gosain/sip"
 )
@@ -62,10 +63,21 @@ type gatedSession struct {
 	sip.SessionIO
 	mode  Mode
 	audit auditFn
+
+	once   sync.Once
+	reader io.Reader
 }
 
+// OutputReader returns a single persistent scanner for the session's
+// lifetime. Handlers call OutputReader().Read in a loop, so a fresh
+// scanner per call would discard the byte-level parse state buffered
+// mid-escape, corrupting sequences split across reads (and letting
+// ModeDeny fail open on an OSC 52 spanning two reads).
 func (g *gatedSession) OutputReader() io.Reader {
-	return newScanner(g.SessionIO.OutputReader(), g.mode, g.audit)
+	g.once.Do(func() {
+		g.reader = newScanner(g.SessionIO.OutputReader(), g.mode, g.audit)
+	})
+	return g.reader
 }
 
 type auditFn func(selection string, dataLen int)
