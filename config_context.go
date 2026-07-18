@@ -11,6 +11,7 @@ const (
 	defaultMaxWindowCols        = 4096
 	defaultMaxWindowRows        = 4096
 	defaultInitialResizeTimeout = 10 * time.Second
+	defaultWriteTimeout         = 30 * time.Second
 )
 
 func pasteMaxOrDefault(v int) int {
@@ -40,6 +41,19 @@ func windowDimsOrDefault(v WindowSize) WindowSize {
 func initialResizeTimeoutOrDefault(v time.Duration) time.Duration {
 	if v <= 0 {
 		return defaultInitialResizeTimeout
+	}
+	return v
+}
+
+// writeTimeoutOrDefault resolves the per-write output deadline. A zero
+// value uses the default; a negative value disables the deadline (returns
+// 0, which callers treat as "no deadline").
+func writeTimeoutOrDefault(v time.Duration) time.Duration {
+	if v < 0 {
+		return 0
+	}
+	if v == 0 {
+		return defaultWriteTimeout
 	}
 	return v
 }

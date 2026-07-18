@@ -163,6 +163,13 @@ type Config struct {
 	// 0 = default 10s.
 	InitialResizeTimeout time.Duration
 
+	// WriteTimeout bounds how long a single output write to the client
+	// may block before the session is torn down. A stalled-but-alive
+	// client (stopped reading, socket buffers full) otherwise pins the
+	// output goroutine and its connection slot indefinitely. 0 = default
+	// 30s. Negative disables the deadline.
+	WriteTimeout time.Duration
+
 	// FontPath is an optional filesystem path to a custom font (.ttf,
 	// .otf, .woff, .woff2). When set, the file is served at
 	// /static/fonts/custom and registered as a @font-face named

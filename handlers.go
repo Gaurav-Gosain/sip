@@ -381,7 +381,20 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 	defer readBufPool.Put(bufPtr)
 
 	filter := s.outputFilter()
+	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
 	var totalBytes int64
+
+	// wsWrite bounds a single write so a stalled-but-alive client (stopped
+	// reading, send buffer full) can't pin this goroutine and its
+	// connection slot forever.
+	wsWrite := func(msg []byte) error {
+		if writeTimeout <= 0 {
+			return conn.Write(ctx, websocket.MessageBinary, msg)
+		}
+		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+		defer cancel()
+		return conn.Write(wctx, websocket.MessageBinary, msg)
+	}
 
 	for {
 		select {
@@ -390,7 +403,7 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 			return
 		case <-session.Done():
 			logger.Debug("session ended, sending close", "session", info.id)
-			_ = conn.Write(ctx, websocket.MessageBinary, []byte{MsgClose})
+			_ = wsWrite([]byte{MsgClose})
 			return
 		default:
 		}
@@ -398,7 +411,7 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 		n, err := session.OutputReader().Read(buf)
 		if err != nil {
 			logger.Debug("output closed", "session", info.id, "bytes_sent", totalBytes, "error", err)
-			_ = conn.Write(ctx, websocket.MessageBinary, []byte{MsgClose})
+			_ = wsWrite([]byte{MsgClose})
 			return
 		}
 		if n == 0 {
@@ -421,7 +434,7 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 			msg := make([]byte, len(chunk)+1)
 			msg[0] = MsgOutput
 			copy(msg[1:], chunk)
-			if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+			if err := wsWrite(msg); err != nil {
 				logger.Debug("WebSocket write error", "session", info.id, "err", err)
 				return
 			}
@@ -436,7 +449,16 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 	defer readBufPool.Put(bufPtr)
 
 	filter := s.outputFilter()
+	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
 	var totalBytes int64
+
+	// setDeadline bounds a single stream write so a stalled client can't
+	// pin this goroutine and its connection slot forever.
+	setDeadline := func() {
+		if writeTimeout > 0 {
+			_ = stream.SetWriteDeadline(time.Now().Add(writeTimeout))
+		}
+	}
 
 	for {
 		select {
@@ -445,6 +467,7 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 			return
 		case <-session.Done():
 			logger.Debug("session ended, sending close", "session", info.id)
+			setDeadline()
 			_ = writeFramed(stream, []byte{MsgClose})
 			return
 		default:
@@ -453,6 +476,7 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 		n, err := session.OutputReader().Read(buf)
 		if err != nil {
 			logger.Debug("output closed", "session", info.id, "bytes_sent", totalBytes, "error", err)
+			setDeadline()
 			_ = writeFramed(stream, []byte{MsgClose})
 			return
 		}
@@ -480,6 +504,7 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 			binary.BigEndian.PutUint32(frame[0:4], uint32(msgLen))
 			frame[4] = MsgOutput
 			copy(frame[5:], chunk)
+			setDeadline()
 			if _, err := stream.Write(frame); err != nil {
 				logger.Debug("WebTransport write error", "session", info.id, "err", err)
 				return

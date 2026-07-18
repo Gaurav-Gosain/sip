@@ -1,6 +1,23 @@
 package sip
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// TestWriteTimeoutOrDefault checks zero picks the default, negative disables
+// the deadline (0), and a positive value passes through.
+func TestWriteTimeoutOrDefault(t *testing.T) {
+	if got := writeTimeoutOrDefault(0); got != defaultWriteTimeout {
+		t.Fatalf("zero = %v, want default %v", got, defaultWriteTimeout)
+	}
+	if got := writeTimeoutOrDefault(-1); got != 0 {
+		t.Fatalf("negative = %v, want 0 (disabled)", got)
+	}
+	if got := writeTimeoutOrDefault(5 * time.Second); got != 5*time.Second {
+		t.Fatalf("positive = %v, want 5s", got)
+	}
+}
 
 // TestWTURLFromHost checks the advertised WebTransport endpoint reuses the
 // hostname the browser reached the HTTP server on and swaps in the QUIC port.
