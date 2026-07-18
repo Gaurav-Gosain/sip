@@ -4,55 +4,192 @@
  * Scans terminal output for OSC 52 sequences and copies decoded
  * content to the system clipboard.
  *
- * OSC 52 format: \x1b]52;c;<base64-data>\a (or \x1b\\ as terminator)
+ * OSC 52 format: \x1b]52;<selection>;<base64-data>\a (or \x1b\\ as terminator)
+ *
+ * Implemented as a byte-level state machine mirroring the server-side gate
+ * (middleware/osc52gate). Operating on raw bytes (never on a per-chunk
+ * TextDecoder) is what keeps multi-byte UTF-8 copies from turning into
+ * mojibake and lets a sequence split across reads decode correctly. Only the
+ * OSC 52 payload is ever buffered, and it is capped, so an unrelated OSC (a
+ * shell's title sequence on every prompt) can never pin memory.
  */
-const OSC_START = '\x1b]52;';
-const ST_BEL = '\x07';
-const ST_ESC = '\x1b\\';
+const ESC = 0x1b;
+const BEL = 0x07;
+const SEMI = 0x3b; // ';'
+const BACKSLASH = 0x5c; // '\' (second byte of ST)
+const BRACKET = 0x5d; // ']'
+
+// Cap the buffered base64 payload. ~4 MiB of base64 decodes to ~3 MiB of
+// clipboard text; past this we drop the sequence rather than grow unbounded.
+const MAX_PAYLOAD = 4 * 1024 * 1024;
+
+// Parser states.
+const S_TEXT = 0; // normal output
+const S_ESC = 1; // saw ESC
+const S_OSC_NUM = 2; // in OSC, reading the numeric Ps
+const S_OSC_SKIP = 3; // in a non-52 OSC, skipping to its terminator
+const S_OSC_SKIP_ESC = 4; // saw ESC while skipping (maybe ST)
+const S_PAYLOAD = 5; // in OSC 52, accumulating payload
+const S_PAYLOAD_ESC = 6; // saw ESC in payload (maybe ST terminator)
+
 export class OSC52Scanner {
     constructor(allowOSC52 = false) {
         this.allowOSC52 = allowOSC52;
-        this.buffer = '';
+        this.state = S_TEXT;
+        this.numDigits = ''; // Ps digits collected so far
+        this.payload = []; // bytes after "52;" (selection + base64)
+        this.pending = null; // clipboard text awaiting a user gesture
+        this.gestureBound = false;
+    }
+    _reset() {
+        this.state = S_TEXT;
+        this.numDigits = '';
+        this.payload = [];
     }
     /** Process a chunk of output data, extracting OSC 52 clipboard sequences. */
     scan(data) {
         if (!this.allowOSC52)
             return;
-        const text = new TextDecoder().decode(data);
-        this.buffer += text;
-        let startIdx;
-        while ((startIdx = this.buffer.indexOf(OSC_START)) !== -1) {
-            const afterStart = startIdx + OSC_START.length;
-            let endIdx = this.buffer.indexOf(ST_BEL, afterStart);
-            let endLen = 1;
-            if (endIdx === -1) {
-                endIdx = this.buffer.indexOf(ST_ESC, afterStart);
-                endLen = 2;
-            }
-            if (endIdx === -1) {
-                // Incomplete sequence — keep buffering from start
-                this.buffer = this.buffer.substring(startIdx);
-                return;
-            }
-            const payload = this.buffer.substring(afterStart, endIdx);
-            const semiIdx = payload.indexOf(';');
-            if (semiIdx !== -1) {
-                const base64Data = payload.substring(semiIdx + 1);
-                if (base64Data.length > 0) {
-                    try {
-                        const decoded = atob(base64Data);
-                        navigator.clipboard.writeText(decoded).catch(() => { });
+        for (let i = 0; i < data.length; i++) {
+            const b = data[i];
+            switch (this.state) {
+                case S_TEXT:
+                    if (b === ESC)
+                        this.state = S_ESC;
+                    break;
+                case S_ESC:
+                    if (b === BRACKET) {
+                        this.state = S_OSC_NUM;
+                        this.numDigits = '';
                     }
-                    catch {
-                        // Invalid base64
+                    else if (b !== ESC) {
+                        this.state = S_TEXT;
                     }
-                }
+                    break;
+                case S_OSC_NUM:
+                    if (b === SEMI) {
+                        if (this.numDigits === '52') {
+                            this.state = S_PAYLOAD;
+                            this.payload = [];
+                        }
+                        else {
+                            this.state = S_OSC_SKIP;
+                        }
+                    }
+                    else if (b >= 0x30 && b <= 0x39 && this.numDigits.length < 4) {
+                        this.numDigits += String.fromCharCode(b);
+                    }
+                    else if (b === BEL) {
+                        this.state = S_TEXT;
+                    }
+                    else if (b === ESC) {
+                        this.state = S_ESC;
+                    }
+                    else {
+                        // Non-numeric OSC (e.g. a string command); skip it.
+                        this.state = S_OSC_SKIP;
+                    }
+                    break;
+                case S_OSC_SKIP:
+                    if (b === BEL)
+                        this.state = S_TEXT;
+                    else if (b === ESC)
+                        this.state = S_OSC_SKIP_ESC;
+                    break;
+                case S_OSC_SKIP_ESC:
+                    if (b === BACKSLASH)
+                        this.state = S_TEXT;
+                    else if (b === BRACKET) {
+                        this.state = S_OSC_NUM;
+                        this.numDigits = '';
+                    }
+                    else if (b !== ESC)
+                        this.state = S_OSC_SKIP;
+                    break;
+                case S_PAYLOAD:
+                    if (b === BEL) {
+                        this._finalize();
+                        this.state = S_TEXT;
+                    }
+                    else if (b === ESC) {
+                        this.state = S_PAYLOAD_ESC;
+                    }
+                    else {
+                        this.payload.push(b);
+                        if (this.payload.length > MAX_PAYLOAD) {
+                            // Runaway payload — abandon it.
+                            this._reset();
+                            this.state = S_OSC_SKIP;
+                        }
+                    }
+                    break;
+                case S_PAYLOAD_ESC:
+                    if (b === BACKSLASH) {
+                        this._finalize();
+                        this.state = S_TEXT;
+                    }
+                    else if (b === ESC) {
+                        // Stay: ESC ESC, keep waiting for the ST terminator.
+                    }
+                    else {
+                        // Bare ESC inside a base64 payload is malformed; abandon.
+                        this._reset();
+                    }
+                    break;
             }
-            this.buffer = this.buffer.substring(endIdx + endLen);
         }
-        // No OSC start found — clear buffer
-        if (this.buffer.indexOf('\x1b]') === -1) {
-            this.buffer = '';
+    }
+    _finalize() {
+        const payload = this.payload;
+        this.payload = [];
+        // payload is "<selection>;<base64>"; split on the first ';'.
+        const semi = payload.indexOf(SEMI);
+        if (semi === -1)
+            return;
+        const b64bytes = payload.slice(semi + 1);
+        if (b64bytes.length === 0)
+            return;
+        // base64 is ASCII; latin1 maps each byte 1:1 to a char.
+        const b64 = new TextDecoder('latin1').decode(Uint8Array.from(b64bytes));
+        // "?" is a read query, not clipboard data — never feed it to atob.
+        if (b64 === '?')
+            return;
+        let text;
+        try {
+            const binary = atob(b64);
+            const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+            text = new TextDecoder().decode(bytes);
         }
+        catch {
+            return; // invalid base64
+        }
+        this._writeClipboard(text);
+    }
+    _writeClipboard(text) {
+        if (typeof navigator === 'undefined' || !navigator.clipboard) {
+            this.pending = text;
+            return;
+        }
+        navigator.clipboard.writeText(text).catch(() => {
+            // Rejected without user activation — retry on the next gesture.
+            this.pending = text;
+            this._bindGestureFlush();
+        });
+    }
+    _bindGestureFlush() {
+        if (this.gestureBound || typeof window === 'undefined')
+            return;
+        this.gestureBound = true;
+        const flush = () => {
+            const text = this.pending;
+            this.pending = null;
+            this.gestureBound = false;
+            window.removeEventListener('pointerdown', flush, true);
+            window.removeEventListener('keydown', flush, true);
+            if (text != null && navigator.clipboard)
+                navigator.clipboard.writeText(text).catch(() => { });
+        };
+        window.addEventListener('pointerdown', flush, true);
+        window.addEventListener('keydown', flush, true);
     }
 }
