@@ -96,16 +96,24 @@ const sipTerm = new SipTerminal('terminal', {
 
 let activeAdapter = null;
 let currentTransport = 'unknown';
+let lastStatusState = 'disconnected';
+let lastStatusMessage = '';
 
-sipTerm.onStatusChange = (state, message) => {
-    let display = message;
-    if (state === 'connected') {
+function renderStatus() {
+    let display = lastStatusMessage;
+    if (lastStatusState === 'connected') {
         if (currentTransport === 'webtransport') display = 'Connected (WebTransport)';
         else if (currentTransport === 'websocket') display = 'Connected (WebSocket)';
     }
-    updateStatus(state === 'connected' && currentTransport === 'webtransport' ? 'webtransport' : state, display);
+    updateStatus(lastStatusState === 'connected' && currentTransport === 'webtransport' ? 'webtransport' : lastStatusState, display);
     const info = document.getElementById('transport-info');
     if (info) info.textContent = `Transport: ${currentTransport}`;
+}
+
+sipTerm.onStatusChange = (state, message) => {
+    lastStatusState = state;
+    lastStatusMessage = message;
+    renderStatus();
 };
 
 sipTerm.onTitleChange = (title) => {
@@ -151,6 +159,13 @@ function pickAdapter() {
         onOptions: (_) => {},
         onClose: (reason) => {
             sipTerm.term?.write(`\r\n${reason}\r\n`);
+        },
+        // The auto adapter reports the transport it actually settled on, so
+        // a WebTransport→WebSocket fallback updates the status line instead
+        // of leaving the pre-connect guess showing.
+        onTransport: (t) => {
+            currentTransport = t;
+            renderStatus();
         },
     };
     switch (settings.transport) {

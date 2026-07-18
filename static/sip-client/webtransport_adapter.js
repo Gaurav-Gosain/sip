@@ -56,8 +56,13 @@ export class SipWebTransportAdapter {
         this.closed = false;
         onStateChange('connecting', 'Connecting (WebTransport)...');
         try {
-            // Convert hex cert hash to Uint8Array for serverCertificateHashes
-            const hashBytes = new Uint8Array(this.certHash.match(/.{2}/g).map(h => parseInt(h, 16)));
+            // Accept the cert hash as the server's int array (or a Uint8Array),
+            // falling back to a hex string for older callers.
+            const hashBytes = this.certHash instanceof Uint8Array
+                ? this.certHash
+                : Array.isArray(this.certHash)
+                    ? new Uint8Array(this.certHash)
+                    : new Uint8Array(String(this.certHash).match(/.{2}/g).map(h => parseInt(h, 16)));
             this.transport = new WebTransport(this.url, {
                 serverCertificateHashes: [{
                         algorithm: 'sha-256',

@@ -85,7 +85,11 @@ func (s *httpServer) start(ctx context.Context) error {
 	wtPort := strconv.Itoa(wtPortNum)
 
 	httpAddr := net.JoinHostPort(s.config.Host, httpPort)
-	wtAddr := net.JoinHostPort("127.0.0.1", wtPort)
+	// Bind WebTransport to the same host as HTTP so the advertised wtUrl
+	// (derived per-request from the client's Host header) is actually
+	// reachable. Hardcoding 127.0.0.1 here left WT dead for any non-loopback
+	// or hostname-based deployment.
+	wtAddr := net.JoinHostPort(s.config.Host, wtPort)
 
 	if err := s.configureCert(); err != nil {
 		return err
@@ -408,7 +412,7 @@ func (s *httpServer) handleCertHash(wtPort string) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"algorithm": "sha-256",
 			"hashBytes": hashArray,
-			"wtUrl":     fmt.Sprintf("https://127.0.0.1:%s/webtransport", wtPort),
+			"wtUrl":     wtURLFromHost(r.Host, wtPort),
 		})
 	}
 }
@@ -439,6 +443,22 @@ func (s *httpServer) hasBasicAuth() bool {
 
 func (s *httpServer) mainTLSEnabled() bool {
 	return s.config.TLSCert != "" && s.config.TLSKey != ""
+}
+
+// wtURLFromHost builds the WebTransport endpoint the client should dial,
+// reusing the hostname the browser reached the HTTP server on and swapping
+// in the QUIC/UDP port. Deriving it from the request Host keeps WT working
+// under hostname-based and reverse-proxied deployments instead of pinning
+// loopback.
+func wtURLFromHost(reqHost, wtPort string) string {
+	host := reqHost
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		host = h
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("https://%s/webtransport", net.JoinHostPort(host, wtPort))
 }
 
 func isLoopbackHost(host string) bool {

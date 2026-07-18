@@ -16,9 +16,16 @@
 export function resolveSipURLs(baseURI) {
     const base = new URL('./', baseURI);
     const wsScheme = base.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Best-effort WebTransport fallback: the QUIC listener runs on the HTTP
+    // port + 1 and serves /webtransport. This is only used when /cert-hash
+    // omits a `wtUrl`; normally the server advertises the authoritative
+    // endpoint (which also handles reverse-proxy host/port remapping) and the
+    // auto adapter prefers that.
+    const httpPort = base.port ? parseInt(base.port, 10) : (base.protocol === 'https:' ? 443 : 80);
+    const wtHost = `${base.hostname}:${httpPort + 1}`;
     return {
         wsUrl: `${wsScheme}//${base.host}${base.pathname}ws`,
-        wtUrl: `https://${base.host}${base.pathname}wt`,
+        wtUrl: `https://${wtHost}/webtransport`,
         certHashUrl: `${base.origin}${base.pathname}cert-hash`,
     };
 }
