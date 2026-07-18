@@ -288,6 +288,22 @@ WebTransport framing: `[uint32 BE length][type][payload]`.
 
 `MaxMessageSize` = 1 MiB. `MaxPasteBytes` defaults to 1 MiB; oversized inbound messages drop the connection.
 
+**Ground truth for "what did the client actually send" is the server, not the
+browser.** Run with `SIP_DEBUG_INPUT=1` and every inbound frame is logged with
+its type, length and hex payload, for both transports:
+
+```
+SIP_DEBUG_INPUT=1 sip -p 7711 -- sh
+INFO sip: SIPDEBUG input frame session=... msgType=48 len=1 hex=0c
+```
+
+Off by default because keystrokes are sensitive. Reach for it whenever a
+keyboard report is ambiguous: "ctrl does nothing" is at least two different
+bugs, and `hex=6c` (the chord leaked as its bare character) versus no frame at
+all (the chord was swallowed) tells them apart immediately. Client-side capture
+cannot, because it only sees what the client *believed* it sent. Two separate
+investigations have been misled by trusting it.
+
 ### Middleware
 
 Three composable layers, modeled after Wish:
@@ -405,6 +421,29 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 - `//go:embed static/*` ships everything in the binary (~3 MB total: JBM fonts + ghostty-web wasm)
 - Fonts cached 1 year client-side; wasm cached 1 year
 - Custom font (`--font`) is served from disk, not embedded
+
+**Editing `static/` does nothing until you rebuild.** The server never reads
+those files at runtime; `go:embed` bakes them into the binary at build time, so
+a running server keeps serving the bundle it was compiled with no matter what
+the working tree says. Restarting the same binary does not help either.
+
+This has already burned a whole debugging session. A keyboard fix was confirmed
+present in `static/ghostty-web/ghostty-web.js`, the server went on serving the
+previous build of that file, the chords stayed broken, and the investigation
+went hunting for a second bug that did not exist. Verifying a fix by grepping
+the file on disk proves nothing about what the browser is running.
+
+Two guards exist now, use them instead of trusting the tree:
+- On startup, if `static/` exists next to the process and differs from the
+  embedded copy, the server logs `serving a STALE embedded bundle` and names
+  the files. Watch for it whenever a frontend fix appears to do nothing.
+- `curl -s $URL/static/ghostty-web/ghostty-web.js | grep <your marker>` asks
+  the running server what it is actually serving, which is the only answer that
+  matters.
+
+`clienttests` runs the server via `go run`, so the suite always builds the
+current tree and never sees a stale bundle. That is also why a green suite can
+coexist with a broken running server.
 
 ### Concurrency
 - 2 goroutines per connection (input + output streams) plus the resize throttler

@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,50 @@ import (
 
 //go:embed static/*
 var staticFiles embed.FS
+
+// warnStaleEmbed reports assets that differ between the binary's embedded
+// copy and the working directory.
+//
+// Every asset the client runs is baked in by go:embed at build time, so
+// editing static/ and restarting without rebuilding silently keeps serving
+// the old bundle. That has already cost a debugging session: a keyboard fix
+// was verified present in static/ghostty-web/ghostty-web.js while the server
+// went on serving the previous build of it, so the fix appeared to do
+// nothing and the investigation went looking for a second bug that did not
+// exist.
+//
+// Only runs when static/ exists next to the process, which means a developer
+// running from the source tree; an installed binary elsewhere stays quiet.
+func warnStaleEmbed() {
+	if fi, err := os.Stat("static"); err != nil || !fi.IsDir() {
+		return
+	}
+	var stale []string
+	err := fs.WalkDir(staticFiles, "static", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		onDisk, err := os.ReadFile(p)
+		if err != nil {
+			return nil // not a mismatch: the file simply is not there
+		}
+		embedded, err := staticFiles.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		if !bytes.Equal(onDisk, embedded) {
+			stale = append(stale, p)
+		}
+		return nil
+	})
+	if err != nil || len(stale) == 0 {
+		return
+	}
+	logger.Warn("serving a STALE embedded bundle: static/ on disk differs from the binary; rebuild to pick the changes up",
+		"files", strings.Join(stale, ", "),
+		"count", len(stale),
+	)
+}
 
 // Package-level logger
 var logger *log.Logger
@@ -177,6 +222,7 @@ func (s *httpServer) start(ctx context.Context) error {
 	logger.Info("server ready",
 		"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
 	)
+	warnStaleEmbed()
 
 	select {
 	case <-ctx.Done():

@@ -3,6 +3,7 @@ package sip
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -19,6 +21,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/quic-go/webtransport-go"
 )
+
+// debugInput logs every inbound frame's raw bytes. Keystrokes are
+// sensitive, so this is opt-in via SIP_DEBUG_INPUT and off by default.
+var debugInput = os.Getenv("SIP_DEBUG_INPUT") != ""
 
 // Message types for WebSocket/WebTransport communication.
 const (
@@ -612,6 +618,12 @@ func (s *httpServer) processInput(data []byte, session internalSession, info ses
 
 	msgType := data[0]
 	payload := data[1:]
+
+	if debugInput {
+		logger.Info("SIPDEBUG input frame",
+			"session", info.id, "msgType", msgType, "len", len(payload),
+			"hex", hex.EncodeToString(payload))
+	}
 
 	switch msgType {
 	case MsgInput:
