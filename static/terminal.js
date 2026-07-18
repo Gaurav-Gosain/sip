@@ -44,9 +44,9 @@ const CATPPUCCIN_MOCHA = {
 function loadSettings() {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) return { transport: 'auto', fontSize: 14, ...JSON.parse(saved) };
+        if (saved) return { transport: 'auto', fontSize: 14, copyOnSelect: false, ...JSON.parse(saved) };
     } catch (_) {}
-    return { transport: 'auto', fontSize: 14 };
+    return { transport: 'auto', fontSize: 14, copyOnSelect: false };
 }
 
 function saveSettings(s) {
@@ -210,10 +210,12 @@ const closeBtn = document.getElementById('settings-close');
 const transportSelect = document.getElementById('transport-select');
 const fontSizeInput = document.getElementById('font-size');
 const fontSizeValue = document.getElementById('font-size-value');
+const copyOnSelectInput = document.getElementById('copy-on-select');
 
 transportSelect.value = settings.transport;
 fontSizeInput.value = settings.fontSize;
 fontSizeValue.textContent = settings.fontSize + 'px';
+if (copyOnSelectInput) copyOnSelectInput.checked = !!settings.copyOnSelect;
 
 toggle.addEventListener('click', () => {
     panel.classList.toggle('hidden');
@@ -228,6 +230,7 @@ fontSizeInput.addEventListener('input', () => {
 apply.addEventListener('click', () => {
     settings.transport = transportSelect.value;
     settings.fontSize = parseInt(fontSizeInput.value, 10);
+    if (copyOnSelectInput) settings.copyOnSelect = copyOnSelectInput.checked;
     saveSettings(settings);
 
     // Live font-size update; full reconnect would lose scrollback.
@@ -258,6 +261,25 @@ if (window.visualViewport) {
         sipTerm.fitAddon?.fit();
     });
 }
+
+// Copy-on-select (opt-in, default off). The terminal's own selection
+// manager already auto-copies a completed left-drag. What it doesn't own is
+// the *native* browser selection produced by Shift+drag while an app holds
+// mouse tracking (Shift bypasses mouse reporting and lets the browser select
+// over the VT screen). When enabled, copy that native selection on mouseup so
+// the user doesn't have to press Ctrl+Shift+C. Reads settings live, so an
+// Apply toggle takes effect without re-binding.
+document.addEventListener('mouseup', () => {
+    if (!settings.copyOnSelect) return;
+    const sel = window.getSelection?.();
+    if (!sel || sel.isCollapsed) return;
+    const text = sel.toString();
+    if (!text) return;
+    const container = document.getElementById('terminal-container');
+    // Only copy when the selection anchors inside the terminal.
+    if (container && sel.anchorNode && !container.contains(sel.anchorNode)) return;
+    sipTerm.copyText(text);
+});
 
 // The ghostty-web SelectionManager wires up the native right-click
 // copy/paste flow, so leave the browser context menu alone.

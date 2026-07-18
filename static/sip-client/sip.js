@@ -176,6 +176,15 @@ export class SipTerminal {
     copySelection() {
         return this.term?.copySelection() ?? false;
     }
+    /**
+     * Copy arbitrary text to the clipboard using the OSC 52 scanner's layered
+     * write strategy (async Clipboard API, then execCommand, then a
+     * gesture-deferred retry). Works on insecure origins where the native
+     * copy path's requirements are the same.
+     */
+    copyText(text) {
+        this.osc52Scanner.copyText(text);
+    }
     /** Select all text in the terminal */
     selectAll() {
         this.term?.selectAll();
