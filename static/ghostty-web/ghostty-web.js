@@ -6167,7 +6167,7 @@ class ni {
     const E = new Uint8ClampedArray(new ArrayBuffer(B * I * 4));
     switch (Q) {
       case RA.RGBA:
-        E.set(C);
+        E.set(C.length > E.length ? C.subarray(0, E.length) : C);
         break;
       case RA.RGB:
         for (let o = 0, w = 0; o < C.length; o += 3, w += 4)
