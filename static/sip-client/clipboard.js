@@ -147,11 +147,17 @@ export class OSC52Scanner {
         if (semi === -1)
             return;
         const b64bytes = payload.slice(semi + 1);
-        if (b64bytes.length === 0)
+        if (b64bytes.length === 0) {
+            // Clear form ("52;c;" with no data): per the OSC 52 spec this
+            // clears the selection. Mirror it by writing an empty string.
+            this._writeClipboard('');
             return;
+        }
         // base64 is ASCII; latin1 maps each byte 1:1 to a char.
         const b64 = new TextDecoder('latin1').decode(Uint8Array.from(b64bytes));
-        // "?" is a read query, not clipboard data — never feed it to atob.
+        // "?" is a read query, not clipboard data. We never answer it: doing
+        // so would echo the clipboard back to the remote (an exfiltration
+        // hole). Silently ignore the query rather than atob() it.
         if (b64 === '?')
             return;
         let text;
@@ -165,16 +171,65 @@ export class OSC52Scanner {
         }
         this._writeClipboard(text);
     }
+    /** Copy arbitrary text using the same layered strategy as OSC 52 writes. */
+    copyText(text) {
+        this._writeClipboard(text);
+    }
     _writeClipboard(text) {
-        if (typeof navigator === 'undefined' || !navigator.clipboard) {
-            this.pending = text;
+        // Preferred path: the async Clipboard API, available only in secure
+        // contexts (https or localhost).
+        if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {
+                // Rejected (no user activation, or permission denied). Retry
+                // on the next gesture, falling back to execCommand there.
+                this.pending = text;
+                this._bindGestureFlush();
+            });
             return;
         }
-        navigator.clipboard.writeText(text).catch(() => {
-            // Rejected without user activation — retry on the next gesture.
+        // Insecure context (LAN IP, or an http reverse proxy without TLS):
+        // navigator.clipboard is undefined. The old code stopped here and the
+        // copy failed silently forever. Try the legacy execCommand path now;
+        // if that fails because it needs a user gesture, defer to the next one.
+        if (!this._execCopy(text)) {
             this.pending = text;
             this._bindGestureFlush();
-        });
+        }
+    }
+    /**
+     * Legacy clipboard write via a hidden textarea + document.execCommand.
+     * Works on insecure origins where navigator.clipboard is unavailable, but
+     * most browsers only honor it inside a user-gesture callstack. Returns
+     * true on success. Mirrors the ghostty-web native copy fallback.
+     */
+    _execCopy(text) {
+        if (typeof document === 'undefined' || typeof document.execCommand !== 'function')
+            return false;
+        const active = document.activeElement;
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        ta.style.width = '1px';
+        ta.style.height = '1px';
+        ta.style.opacity = '0';
+        (document.body || document.documentElement).appendChild(ta);
+        let ok = false;
+        try {
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, text.length);
+            ok = document.execCommand('copy');
+        }
+        catch {
+            ok = false;
+        }
+        ta.remove();
+        if (active && typeof active.focus === 'function')
+            active.focus();
+        return ok;
     }
     _bindGestureFlush() {
         if (this.gestureBound || typeof window === 'undefined')
@@ -186,8 +241,14 @@ export class OSC52Scanner {
             this.gestureBound = false;
             window.removeEventListener('pointerdown', flush, true);
             window.removeEventListener('keydown', flush, true);
-            if (text != null && navigator.clipboard)
-                navigator.clipboard.writeText(text).catch(() => { });
+            if (text == null)
+                return;
+            // Inside a real gesture now: the async API usually succeeds, and
+            // execCommand is the last resort on insecure origins.
+            if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText)
+                navigator.clipboard.writeText(text).catch(() => { this._execCopy(text); });
+            else
+                this._execCopy(text);
         };
         window.addEventListener('pointerdown', flush, true);
         window.addEventListener('keydown', flush, true);
