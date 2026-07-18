@@ -54,15 +54,22 @@ function ctrlLUnder(page, condition) {
   return page.evaluate((cond) => {
     window.__sent.length = 0;
 
+    // An IME can also strip the physical code while leaving event.key intact,
+    // so the code the encoder normally keys off is gone.
+    const CODES = {
+      unmappedCode: 'Bogus999',
+      sentinelNoCode: '',
+      sentinelUnidentifiedCode: 'Unidentified',
+    };
     const event = new KeyboardEvent('keydown', {
-      key: 'l',
-      code: cond === 'unmappedCode' ? 'Bogus999' : 'KeyL',
+      key: cond === 'sentinelProcessKey' ? 'Process' : 'l',
+      code: cond in CODES ? CODES[cond] : 'KeyL',
       ctrlKey: true,
       bubbles: true,
       cancelable: true,
       composed: true,
     });
-    if (cond === 'imeSentinel') {
+    if (cond.startsWith('sentinel') || cond === 'imeSentinel') {
       Object.defineProperty(event, 'keyCode', { get: () => 229 });
       Object.defineProperty(event, 'which', { get: () => 229 });
     }
@@ -93,16 +100,34 @@ const CTRL_L = 0x0c;
 test.describe('modifier chords never leak as text', () => {
   test.beforeEach(async ({ page }) => { await boot(page); });
 
-  for (const condition of ['imeSentinel', 'composing']) {
+  // Every shape an IME-enabled Firefox can deliver a chord in. Each one must
+  // produce the control byte -- not the bare character, and not silence.
+  //
+  // The last three exist because the first fix for the leak turned "sends the
+  // wrong byte" into "sends nothing at all" whenever the IME had also stripped
+  // event.code: the chord hit the unmapped-code path and was swallowed. Both
+  // failures look identical to a user ("ctrl+anything does nothing"), so
+  // asserting only the absence of 0x6c cannot tell them apart.
+  for (const condition of [
+    'imeSentinel',
+    'composing',
+    'sentinelProcessKey',
+    'sentinelNoCode',
+    'sentinelUnidentifiedCode',
+  ]) {
     test(`Ctrl+L sends 0x0c under ${condition}`, async ({ page }) => {
       const { bytes } = await ctrlLUnder(page, condition);
       expect(bytes, 'the chord must not arrive as the literal character')
         .not.toContain(LITERAL_L);
-      expect(bytes, 'the chord must arrive as its control byte').toContain(CTRL_L);
+      expect(bytes, 'the chord must arrive as its control byte, not silence')
+        .toContain(CTRL_L);
     });
   }
 
   test('an unmapped key code swallows the chord rather than leaking it', async ({ page }) => {
+    // A genuinely unmappable code has no letter to recover, so silence is the
+    // correct outcome here -- but it must still be prevented, or beforeinput
+    // emits the bare character.
     const { bytes, prevented } = await ctrlLUnder(page, 'unmappedCode');
     expect(prevented, 'a chord on an unmapped code must still be prevented').toBe(true);
     expect(bytes).not.toContain(LITERAL_L);

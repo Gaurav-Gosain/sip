@@ -4611,6 +4611,26 @@ const hi = {
     return g.ctrlKey && !g.altKey || g.altKey && !g.ctrlKey || g.metaKey ? !1 : g.key.length === 1;
   }
   /**
+   * __sip: recover a physical `code` from `event.key`.
+   *
+   * An IME can deliver a chord with the physical code stripped -- empty, or
+   * "Unidentified" -- while `event.key` still names the character. Without
+   * this the chord hits the unmapped-code path and is swallowed outright, so
+   * Ctrl+L sends nothing at all rather than 0x0c. Only single characters are
+   * recovered; anything else has no physical key to name.
+   */
+  sipCodeFromKey(g) {
+    if (typeof g != "string" || g.length !== 1)
+      return null;
+    if (g >= "a" && g <= "z")
+      return "Key" + g.toUpperCase();
+    if (g >= "A" && g <= "Z")
+      return "Key" + g;
+    if (g >= "0" && g <= "9")
+      return "Digit" + g;
+    return null;
+  }
+  /**
    * Handle keydown event
    * @param event - KeyboardEvent
    */
@@ -4655,7 +4675,15 @@ const hi = {
       g.preventDefault(), this.onDataCallback(g.key), this.recordKeyDownData(g.key);
       return;
     }
-    const B = this.mapKeyCode(g.code);
+    let B = this.mapKeyCode(g.code);
+    if (B === null && sipChord) {
+      // __sip: an IME can strip the physical code off a chord while leaving
+      // event.key intact. Re-derive a code from the key so the chord takes the
+      // normal encoder path below, instead of being swallowed and sending
+      // nothing at all.
+      const o = this.sipCodeFromKey(g.key);
+      o && (B = this.mapKeyCode(o));
+    }
     if (B === null) {
       // __sip: an unmapped code must not fall through to the text path while a
       // chord is held, or beforeinput emits the bare character. Unmodified keys
@@ -4763,12 +4791,22 @@ const hi = {
    * are not reported.
    */
   handleKeyUp(g) {
-    if (this.isDisposed || this.isComposing || g.isComposing || g.keyCode === 229)
+    if (this.isDisposed)
+      return;
+    // __sip: mirror handleKeyDown. A chord is never a composition, and under
+    // the kitty protocol's report-event-types flag a swallowed release leaves
+    // the application believing the key is still held down.
+    const Y = g.ctrlKey && !g.altKey || g.altKey && !g.ctrlKey || g.metaKey;
+    if (!Y && (this.isComposing || g.isComposing || g.keyCode === 229))
       return;
     const K = this.getKittyFlagsCallback ? this.getKittyFlagsCallback() : 0;
     if (!(K & 2))
       return;
-    const B = this.mapKeyCode(g.code);
+    let B = this.mapKeyCode(g.code);
+    if (B === null && Y) {
+      const o = this.sipCodeFromKey(g.key);
+      o && (B = this.mapKeyCode(o));
+    }
     if (B === null)
       return;
     const I = this.extractModifiers(g);
