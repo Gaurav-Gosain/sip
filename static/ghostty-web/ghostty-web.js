@@ -5947,7 +5947,7 @@ class ni {
     g.flags & l.FAINT && (this.ctx.globalAlpha = 0.5);
     const w = C, t = E + this.metrics.baseline;
     let e;
-    if (g.grapheme_len > 0 && ((s = this.currentBuffer) != null && s.getGraphemeString) ? e = this.currentBuffer.getGraphemeString(I, B) : e = String.fromCodePoint(g.codepoint || 32), this.ctx.fillText(e, w, t), g.flags & l.FAINT && (this.ctx.globalAlpha = 1), g.flags & l.UNDERLINE) {
+    if (g.grapheme_len > 0 && ((s = this.currentBuffer) != null && s.getGraphemeString) ? e = this.currentBuffer.getGraphemeString(I, B) : e = String.fromCodePoint(g.codepoint || 32), (g.grapheme_len === 0 && (g.codepoint === 32 || g.codepoint === 0) ? void 0 : this.ctx.fillText(e, w, t)), g.flags & l.FAINT && (this.ctx.globalAlpha = 1), g.flags & l.UNDERLINE) {
       const a = E + this.metrics.baseline + 2;
       this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(C, a), this.ctx.lineTo(C + i, a), this.ctx.stroke();
     }
