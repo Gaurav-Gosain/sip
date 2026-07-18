@@ -44,9 +44,9 @@ const CATPPUCCIN_MOCHA = {
 function loadSettings() {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) return { transport: 'auto', fontSize: 14, copyOnSelect: false, ...JSON.parse(saved) };
+        if (saved) return { transport: 'auto', fontSize: 14, copyOnSelect: false, renderer: 'canvas', ...JSON.parse(saved) };
     } catch (_) {}
-    return { transport: 'auto', fontSize: 14, copyOnSelect: false };
+    return { transport: 'auto', fontSize: 14, copyOnSelect: false, renderer: 'canvas' };
 }
 
 function saveSettings(s) {
@@ -70,6 +70,18 @@ const settings = loadSettings();
 const sipConfig = window.__sipConfig || {};
 const fontFamily = sipConfig.fontFamily || FONT_FAMILY;
 
+// Renderer selection, most specific first: a ?renderer= query param (used by
+// the browser tests so they can pin a backend without touching stored
+// settings), then the per-deployment config, then the saved setting. Anything
+// other than 'webgl' means the bundle's 2D path.
+function resolveRenderer() {
+    const q = new URLSearchParams(window.location.search).get('renderer');
+    const choice = q || sipConfig.renderer || settings.renderer || 'canvas';
+    return choice === 'webgl' ? 'webgl' : 'canvas';
+}
+
+const rendererChoice = resolveRenderer();
+
 const statusEl = document.getElementById('connection-status');
 const statusTextEl = document.getElementById('status-text');
 
@@ -91,8 +103,19 @@ const sipTerm = new SipTerminal('terminal', {
     // Alt sends an ESC prefix (readline M- navigation, Alt-as-meta). Defaults
     // off on macOS so Option composes characters; override via saved settings.
     altIsMeta: settings.altIsMeta ?? !isMac,
+    renderer: rendererChoice,
     theme: CATPPUCCIN_MOCHA,
 });
+
+function updateRendererInfo() {
+    const el = document.getElementById('renderer-info');
+    if (!el) return;
+    const active = sipTerm.activeRenderer;
+    el.textContent = active === 'webgl'
+        ? 'Renderer: vtgl (webgl2)'
+        : 'Renderer: libghostty (canvas2d)';
+    el.dataset.renderer = active;
+}
 
 let activeAdapter = null;
 let currentTransport = 'unknown';
@@ -148,6 +171,10 @@ if (document.fonts?.load) {
 }
 
 await sipTerm.init();
+updateRendererInfo();
+
+// Handle for the browser tests and for debugging from the console.
+window.sipTerm = sipTerm;
 
 const urls = resolveSipURLs(document.baseURI);
 const wtSupported = typeof WebTransport !== 'undefined' &&
@@ -211,7 +238,9 @@ const transportSelect = document.getElementById('transport-select');
 const fontSizeInput = document.getElementById('font-size');
 const fontSizeValue = document.getElementById('font-size-value');
 const copyOnSelectInput = document.getElementById('copy-on-select');
+const rendererSelect = document.getElementById('renderer-select');
 
+if (rendererSelect) rendererSelect.value = rendererChoice;
 transportSelect.value = settings.transport;
 fontSizeInput.value = settings.fontSize;
 fontSizeValue.textContent = settings.fontSize + 'px';
@@ -231,7 +260,16 @@ apply.addEventListener('click', () => {
     settings.transport = transportSelect.value;
     settings.fontSize = parseInt(fontSizeInput.value, 10);
     if (copyOnSelectInput) settings.copyOnSelect = copyOnSelectInput.checked;
+    const rendererChanged = rendererSelect && rendererSelect.value !== rendererChoice;
+    if (rendererSelect) settings.renderer = rendererSelect.value;
     saveSettings(settings);
+
+    // The renderer is chosen when the terminal is opened, so switching it
+    // needs a reload rather than a reconnect.
+    if (rendererChanged) {
+        window.location.reload();
+        return;
+    }
 
     // Live font-size update; full reconnect would lose scrollback.
     if (sipTerm.term && sipTerm.term.options) {

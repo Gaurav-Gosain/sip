@@ -316,6 +316,9 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	} else if s.config.FontFamily != "" {
 		cfg["fontFamily"] = s.config.FontFamily
 	}
+	if s.config.Renderer != "" {
+		cfg["renderer"] = s.config.Renderer
+	}
 	if len(cfg) > 0 {
 		blob, _ := json.Marshal(cfg)
 		extra.WriteString("<script>window.__sipConfig=")

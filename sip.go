@@ -182,6 +182,12 @@ type Config struct {
 	// "JetBrainsMono Nerd Font Mono".
 	FontFamily string
 
+	// Renderer selects the client-side terminal renderer. "webgl" uses the
+	// vendored vtgl glyph-atlas renderer; anything else (including empty)
+	// uses the canvas 2D renderer, which remains the default. A user's
+	// saved setting and a ?renderer= query param both override this.
+	Renderer string
+
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
 	// + connection-limit middleware are appended after the user chain
 	// so they run innermost (last).

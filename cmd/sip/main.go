@@ -42,6 +42,7 @@ var (
 	enableKitty        bool
 	fontPath           string
 	fontFamily         string
+	rendererChoice     string
 )
 
 func main() {
@@ -114,6 +115,8 @@ The command to run must be specified after "--".`,
 		"Custom font file (.ttf/.otf/.woff/.woff2) served at /static/fonts/custom*")
 	rootCmd.Flags().StringVar(&fontFamily, "font-family", "",
 		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
+	rootCmd.Flags().StringVar(&rendererChoice, "renderer", "",
+		"Client terminal renderer: \"webgl\" for the vtgl glyph-atlas renderer, empty for canvas 2D")
 	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,
 		"Force the server-side kitty graphics PNG → RGBA transcoder (client decodes PNG by default)")
 
@@ -174,6 +177,7 @@ func runServer(cmdArgs []string) error {
 		IdleTimeout:           idleTimeout,
 		FontPath:              fontPath,
 		FontFamily:            fontFamily,
+		Renderer:              rendererChoice,
 		EnableKittyTranscoder: enableKitty,
 	}
 
