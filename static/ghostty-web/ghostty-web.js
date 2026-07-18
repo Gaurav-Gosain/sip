@@ -4908,6 +4908,8 @@ const hi = {
     var Q;
     if (this.isDisposed || !((Q = this.mouseConfig) != null && Q.hasMouseTracking()))
       return;
+    if (g.shiftKey)
+      return;
     const B = this.pixelToCell(g);
     if (!B)
       return;
@@ -4920,6 +4922,8 @@ const hi = {
   handleMouseUp(g) {
     var Q;
     if (this.isDisposed || !((Q = this.mouseConfig) != null && Q.hasMouseTracking()))
+      return;
+    if (g.shiftKey && this.mouseButtonsPressed === 0)
       return;
     const B = this.pixelToCell(g);
     if (!B)
@@ -4934,6 +4938,8 @@ const hi = {
     var E, i, D;
     if (this.isDisposed || !((E = this.mouseConfig) != null && E.hasMouseTracking()))
       return;
+    if (g.shiftKey && this.mouseButtonsPressed === 0)
+      return;
     const B = ((i = this.getModeCallback) == null ? void 0 : i.call(this, 1002)) ?? !1, I = ((D = this.getModeCallback) == null ? void 0 : D.call(this, 1003)) ?? !1;
     if (!B && !I || B && !I && this.mouseButtonsPressed === 0)
       return;
@@ -4941,7 +4947,7 @@ const hi = {
     if (!Q)
       return;
     let C = 32;
-    this.mouseButtonsPressed & 1 ? C += 0 : this.mouseButtonsPressed & 2 ? C += 1 : this.mouseButtonsPressed & 4 && (C += 2), this.sendMouseEvent(C, Q.col, Q.row, !1, g);
+    this.mouseButtonsPressed & 1 ? C += 0 : this.mouseButtonsPressed & 2 ? C += 1 : this.mouseButtonsPressed & 4 ? C += 2 : C += 3, this.sendMouseEvent(C, Q.col, Q.row, !1, g);
   }
   /**
    * Handle wheel event (scroll)
