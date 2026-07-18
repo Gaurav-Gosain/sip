@@ -4613,10 +4613,18 @@ const hi = {
       g.preventDefault();
       return;
     }
-    if ((g.ctrlKey || g.metaKey) && g.code === "KeyV")
+    if (g.metaKey && !g.altKey && g.code === "KeyV")
       return;
-    if (g.metaKey && g.code === "KeyC") {
+    if (!g.altKey && (g.ctrlKey && g.shiftKey && g.code === "KeyV" || g.shiftKey && g.code === "Insert")) {
+      g.preventDefault(), this.pasteFromClipboard();
+      return;
+    }
+    if (g.metaKey && !g.altKey && g.code === "KeyC") {
       this.onCopyCallback && this.onCopyCallback() && g.preventDefault();
+      return;
+    }
+    if (g.ctrlKey && g.shiftKey && !g.altKey && g.code === "KeyC") {
+      this.onCopyCallback && this.onCopyCallback(), g.preventDefault();
       return;
     }
     if (this.isPrintableCharacter(g)) {
@@ -4738,6 +4746,18 @@ const hi = {
       return;
     }
     this.shouldIgnorePasteEvent(I, "paste") || (this.emitPasteData(I), this.recordPasteData(I, "paste"));
+  }
+  /**
+   * Read the clipboard and paste it (keyboard-initiated paste, e.g.
+   * Ctrl+Shift+V / Shift+Insert, which do not fire a native paste event).
+   */
+  pasteFromClipboard() {
+    if (typeof navigator > "u" || !navigator.clipboard || !navigator.clipboard.readText)
+      return;
+    navigator.clipboard.readText().then((g) => {
+      !g || this.isDisposed || this.shouldIgnorePasteEvent(g, "paste") || (this.emitPasteData(g), this.recordPasteData(g, "paste"));
+    }).catch(() => {
+    });
   }
   /**
    * Handle beforeinput event (mobile/IME input)
