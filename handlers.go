@@ -543,21 +543,32 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 		}
 
 		var msg []byte
+		var pooled *[]byte
 		if length <= 256 {
-			bufPtr := smallBufPool.Get().(*[]byte)
-			msg = (*bufPtr)[:length]
-			defer smallBufPool.Put(bufPtr)
+			pooled = smallBufPool.Get().(*[]byte)
+			msg = (*pooled)[:length]
 		} else {
 			msg = make([]byte, length)
 		}
 
 		if _, err := io.ReadFull(stream, msg); err != nil {
+			if pooled != nil {
+				smallBufPool.Put(pooled)
+			}
 			return
 		}
 
 		totalBytes += int64(length)
 		msgCount++
-		if !s.processInput(msg, session, info, apply) {
+		// processInput consumes msg synchronously (all branches Write or
+		// copy immediately), so the pooled buffer is free to reuse now —
+		// return it per iteration rather than deferring for the whole
+		// connection, which would pin one buffer per inbound message.
+		ok := s.processInput(msg, session, info, apply)
+		if pooled != nil {
+			smallBufPool.Put(pooled)
+		}
+		if !ok {
 			stream.CancelRead(0)
 			_ = stream.Close()
 			return
