@@ -6432,7 +6432,7 @@ const GB = class oB {
           else
             k = String.fromCodePoint(a.codepoint);
           e += k, k.trim() && (o = e.length);
-        } else
+        } else if (!a || a.width !== 0)
           e += " ";
       }
       o >= 0 ? e = e.substring(0, o) : e = "", E += e, i < Q && (E += `
