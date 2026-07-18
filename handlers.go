@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,15 +18,19 @@ import (
 
 // Message types for WebSocket/WebTransport communication.
 const (
-	MsgInput   = '0' // Terminal input (client -> server)
-	MsgOutput  = '1' // Terminal output (server -> client)
-	MsgResize  = '2' // Resize terminal
-	MsgPing    = '3' // Ping
-	MsgPong    = '4' // Pong
-	MsgTitle   = '5' // Set window title
-	MsgOptions = '6' // Configuration options
-	MsgClose   = '7' // Session closed (server -> client)
+	MsgInput    = '0' // Terminal input (client → server)
+	MsgOutput   = '1' // Terminal output (server → client)
+	MsgResize   = '2' // Resize terminal
+	MsgPing     = '3' // Ping
+	MsgPong     = '4' // Pong
+	MsgTitle    = '5' // Set window title
+	MsgOptions  = '6' // Configuration options
+	MsgClose    = '7' // Session closed (server → client)
+	MsgKittyKbd = '8' // Kitty keyboard protocol flags
 )
+
+// MaxMessageSize is the maximum allowed message size (1 MiB).
+const MaxMessageSize = 1 << 20
 
 const (
 	readBufSize  = 16 * 1024
@@ -54,9 +59,15 @@ var (
 )
 
 // ResizeMessage is sent when the terminal should be resized.
+//
+// WidthPx and HeightPx are optional canvas dimensions in pixels. When
+// non-zero the server populates the PTY's TIOCSWINSZ ws_xpixel/ws_ypixel
+// fields, which kitty graphics tools (e.g. kitten icat) read to size images.
 type ResizeMessage struct {
-	Cols int `json:"cols"`
-	Rows int `json:"rows"`
+	Cols     int `json:"cols"`
+	Rows     int `json:"rows"`
+	WidthPx  int `json:"widthPx,omitempty"`
+	HeightPx int `json:"heightPx,omitempty"`
 }
 
 // OptionsMessage is sent to configure the terminal.
@@ -64,13 +75,11 @@ type OptionsMessage struct {
 	ReadOnly bool `json:"readOnly"`
 }
 
-// internalSession is the interface that both webSession and cmdSession implement
-// for use by the HTTP handlers.
+// internalSession is the interface that both webSession and cmdSession
+// implement. It's a superset of SessionIO so the SessionMiddleware
+// chain wraps cleanly.
 type internalSession interface {
-	OutputReader() io.Reader
-	InputWriter() io.Writer
-	Resize(cols, rows int)
-	Done() <-chan struct{}
+	SessionIO
 }
 
 // sessionInfo holds common session metadata for logging.
@@ -81,22 +90,35 @@ type sessionInfo struct {
 }
 
 func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.checkConnectionLimit() {
-		http.Error(w, "Maximum connections reached", http.StatusServiceUnavailable)
-		return
-	}
-	defer s.releaseConnection()
-
 	logger.Info("WebSocket connection attempt",
 		"remote", r.RemoteAddr,
 		"user_agent", r.UserAgent(),
 	)
 
-	opts := &websocket.AcceptOptions{
-		OriginPatterns: s.config.AllowOrigins,
+	r = r.WithContext(WithRemoteAddr(withConfig(r.Context(), s.config), r.RemoteAddr))
+
+	// Run the layer-1 ConnectMiddleware chain. Acquires the connection
+	// slot via connLimitMiddleware on success.
+	var capturedR *http.Request
+	terminal := func(rr *http.Request) error {
+		capturedR = rr
+		return nil
 	}
-	if len(s.config.AllowOrigins) == 0 {
-		opts.OriginPatterns = []string{"*"}
+	if err := runLiftedChain(w, r, s.connectMW, terminal); err != nil {
+		if !errors.Is(err, errResponseWritten) {
+			writeConnectError(w, err)
+		}
+		return
+	}
+	if capturedR == nil {
+		writeConnectError(w, &ConnectError{Status: http.StatusInternalServerError})
+		return
+	}
+	r = capturedR
+	defer s.releaseConnection()
+
+	opts := &websocket.AcceptOptions{
+		OriginPatterns: s.originPatterns(),
 	}
 
 	conn, err := websocket.Accept(w, r, opts)
@@ -104,13 +126,15 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		logger.Error("WebSocket accept failed", "err", err, "remote", r.RemoteAddr)
 		return
 	}
+	conn.SetReadLimit(MaxMessageSize)
 	defer func() { _ = conn.CloseNow() }()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	cols, rows := 80, 24
-	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+	pxW, pxH := 0, 0
+	readCtx, readCancel := context.WithTimeout(ctx, initialResizeTimeoutOrDefault(s.config.InitialResizeTimeout))
 	_, data, err := conn.Read(readCtx)
 	readCancel()
 
@@ -119,41 +143,28 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data[1:], &resize); err == nil {
 			cols = resize.Cols
 			rows = resize.Rows
-			logger.Debug("got initial size from browser", "cols", cols, "rows", rows)
+			pxW = resize.WidthPx
+			pxH = resize.HeightPx
+			logger.Debug("got initial size from browser", "cols", cols, "rows", rows, "px", []int{pxW, pxH})
 		}
+	}
+	maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
+	if cols > maxDims.Width || rows > maxDims.Height {
+		logger.Warn("initial resize exceeds MaxWindowDims",
+			"cols", cols, "rows", rows, "max", []int{maxDims.Width, maxDims.Height})
+		_ = conn.Close(websocket.StatusPolicyViolation, "window too large")
+		return
 	}
 
 	startTime := time.Now()
 
-	// Determine session type based on mode (command or Bubble Tea)
-	var session internalSession
-	var info sessionInfo
-	var closeFunc func()
-
-	if s.cmdHandler != nil {
-		// Command mode: spawn external command
-		cmdSess, err := s.createCmdSession(ctx, cols, rows)
-		if err != nil {
-			logger.Error("command session creation failed", "err", err, "remote", r.RemoteAddr)
-			_ = conn.Close(websocket.StatusInternalError, err.Error())
-			return
-		}
-		session = cmdSess
-		info = sessionInfo{id: cmdSess.id, cols: cmdSess.cols, rows: cmdSess.rows}
-		closeFunc = func() { s.closeCmdSession(cmdSess) }
-	} else {
-		// Bubble Tea mode: run in-process
-		webSess, err := s.createSession(ctx, s.handler, cols, rows)
-		if err != nil {
-			logger.Error("session creation failed", "err", err, "remote", r.RemoteAddr)
-			_ = conn.Close(websocket.StatusInternalError, err.Error())
-			return
-		}
-		session = webSess
-		info = sessionInfo{id: webSess.id, cols: webSess.cols, rows: webSess.rows}
-		closeFunc = func() { s.closeSession(webSess) }
+	rawSess, info, closeFunc, err := s.makeSession(ctx, cols, rows, pxW, pxH)
+	if err != nil {
+		logger.Error("session creation failed", "err", err, "remote", r.RemoteAddr)
+		_ = conn.Close(websocket.StatusInternalError, err.Error())
+		return
 	}
-
+	wrapped := applySessionMiddleware(rawSess, s.config.SessionMiddleware)
 	defer func() {
 		closeFunc()
 		logger.Info("WebSocket session ended",
@@ -173,35 +184,52 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	optionsData, _ := json.Marshal(OptionsMessage{ReadOnly: s.config.ReadOnly})
 	_ = conn.Write(ctx, websocket.MessageBinary, append([]byte{MsgOptions}, optionsData...))
 
+	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
+	defer stopThrottle()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamOutputToWebSocket(ctx, conn, session, info)
+		s.streamOutputToWebSocket(ctx, conn, wrapped, info)
 	}()
 
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.handleWebSocketInput(ctx, conn, session, info)
+		s.handleWebSocketInput(ctx, conn, wrapped, info, apply)
 	}()
 
 	wg.Wait()
 }
 
 func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) {
-	if !s.checkConnectionLimit() {
-		http.Error(w, "Maximum connections reached", http.StatusServiceUnavailable)
-		return
-	}
-	defer s.releaseConnection()
-
 	logger.Info("WebTransport connection attempt",
 		"remote", r.RemoteAddr,
 		"protocol", r.Proto,
 	)
+
+	r = r.WithContext(WithRemoteAddr(withConfig(r.Context(), s.config), r.RemoteAddr))
+
+	var capturedR *http.Request
+	terminal := func(rr *http.Request) error {
+		capturedR = rr
+		return nil
+	}
+	if err := runLiftedChain(w, r, s.connectMW, terminal); err != nil {
+		if !errors.Is(err, errResponseWritten) {
+			writeConnectError(w, err)
+		}
+		return
+	}
+	if capturedR == nil {
+		writeConnectError(w, &ConnectError{Status: http.StatusInternalServerError})
+		return
+	}
+	r = capturedR
+	defer s.releaseConnection()
 
 	wtSession, err := s.wtServer.Upgrade(w, r)
 	if err != nil {
@@ -221,51 +249,42 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	defer func() { _ = stream.Close() }()
 
 	cols, rows := 80, 24
+	pxW, pxH := 0, 0
+	_ = stream.SetReadDeadline(time.Now().Add(initialResizeTimeoutOrDefault(s.config.InitialResizeTimeout)))
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(stream, lenBuf); err == nil {
 		length := binary.BigEndian.Uint32(lenBuf)
-		if length < 1024 {
+		if length > 0 && length < 1024 {
 			data := make([]byte, length)
 			if _, err := io.ReadFull(stream, data); err == nil && len(data) > 0 && data[0] == MsgResize {
 				var resize ResizeMessage
 				if err := json.Unmarshal(data[1:], &resize); err == nil {
 					cols = resize.Cols
 					rows = resize.Rows
-					logger.Debug("got initial size from browser (WT)", "cols", cols, "rows", rows)
+					pxW = resize.WidthPx
+					pxH = resize.HeightPx
+					logger.Debug("got initial size from browser (WT)", "cols", cols, "rows", rows, "px", []int{pxW, pxH})
 				}
 			}
 		}
 	}
+	_ = stream.SetReadDeadline(time.Time{})
+
+	maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
+	if cols > maxDims.Width || rows > maxDims.Height {
+		logger.Warn("initial resize exceeds MaxWindowDims (WT)",
+			"cols", cols, "rows", rows, "max", []int{maxDims.Width, maxDims.Height})
+		return
+	}
 
 	startTime := time.Now()
 
-	// Determine session type based on mode (command or Bubble Tea)
-	var session internalSession
-	var info sessionInfo
-	var closeFunc func()
-
-	if s.cmdHandler != nil {
-		// Command mode: spawn external command
-		cmdSess, err := s.createCmdSession(ctx, cols, rows)
-		if err != nil {
-			logger.Error("command session creation failed", "err", err, "remote", r.RemoteAddr)
-			return
-		}
-		session = cmdSess
-		info = sessionInfo{id: cmdSess.id, cols: cmdSess.cols, rows: cmdSess.rows}
-		closeFunc = func() { s.closeCmdSession(cmdSess) }
-	} else {
-		// Bubble Tea mode: run in-process
-		webSess, err := s.createSession(ctx, s.handler, cols, rows)
-		if err != nil {
-			logger.Error("session creation failed", "err", err, "remote", r.RemoteAddr)
-			return
-		}
-		session = webSess
-		info = sessionInfo{id: webSess.id, cols: webSess.cols, rows: webSess.rows}
-		closeFunc = func() { s.closeSession(webSess) }
+	rawSess, info, closeFunc, err := s.makeSession(ctx, cols, rows, pxW, pxH)
+	if err != nil {
+		logger.Error("session creation failed", "err", err, "remote", r.RemoteAddr)
+		return
 	}
-
+	wrapped := applySessionMiddleware(rawSess, s.config.SessionMiddleware)
 	defer func() {
 		closeFunc()
 		logger.Info("WebTransport session ended",
@@ -285,23 +304,54 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	optionsData, _ := json.Marshal(OptionsMessage{ReadOnly: s.config.ReadOnly})
 	_ = writeFramed(stream, append([]byte{MsgOptions}, optionsData...))
 
+	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
+	defer stopThrottle()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamOutputToWebTransport(ctx, stream, session, info)
+		s.streamOutputToWebTransport(ctx, stream, wrapped, info)
 	}()
 
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.handleWebTransportInput(ctx, stream, session, info)
+		s.handleWebTransportInput(ctx, stream, wrapped, info, apply)
 	}()
 
 	wg.Wait()
 	<-wtSession.Context().Done()
+}
+
+// makeSession dispatches to the cmd or bubbletea path depending on
+// what's configured. Returns the raw session (pre-SessionMiddleware), a
+// log-friendly info struct, and a teardown function.
+func (s *httpServer) makeSession(ctx context.Context, cols, rows, widthPx, heightPx int) (internalSession, sessionInfo, func(), error) {
+	if s.cmdHandler != nil {
+		cmdSess, err := s.createCmdSession(ctx, cols, rows, widthPx, heightPx)
+		if err != nil {
+			return nil, sessionInfo{}, nil, err
+		}
+		return cmdSess, sessionInfo{id: cmdSess.id, cols: cmdSess.cols, rows: cmdSess.rows},
+			func() { s.closeCmdSession(cmdSess) }, nil
+	}
+	webSess, err := s.createSession(ctx, s.handler, cols, rows, widthPx, heightPx)
+	if err != nil {
+		return nil, sessionInfo{}, nil, err
+	}
+	return webSess, sessionInfo{id: webSess.id, cols: webSess.cols, rows: webSess.rows},
+		func() { s.closeSession(webSess) }, nil
+}
+
+func (s *httpServer) outputFilter() func([]byte) []byte {
+	if s.config.DisableKittyTranscoder {
+		return func(b []byte) []byte { return b }
+	}
+	tr := &kittyGfxTranscoder{}
+	return tr.Filter
 }
 
 func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo) {
@@ -309,11 +359,7 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 	buf := *bufPtr
 	defer readBufPool.Put(bufPtr)
 
-	msgPtr := writeBufPool.Get().(*[]byte)
-	msg := *msgPtr
-	msg[0] = MsgOutput
-	defer writeBufPool.Put(msgPtr)
-
+	filter := s.outputFilter()
 	var totalBytes int64
 
 	for {
@@ -341,12 +387,24 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 		if totalBytes == 0 {
 			logger.Debug("first output received", "session", info.id, "bytes", n)
 		}
-
 		totalBytes += int64(n)
-		copy(msg[1:], buf[:n])
-		if err := conn.Write(ctx, websocket.MessageBinary, msg[:n+1]); err != nil {
-			logger.Debug("WebSocket write error", "session", info.id, "err", err)
-			return
+
+		filtered := filter(buf[:n])
+		// Filter may return an empty slice (transcoder mid-APC) — in that
+		// case there's nothing to send for this read.
+		for len(filtered) > 0 {
+			chunk := filtered
+			if len(chunk) > readBufSize {
+				chunk = chunk[:readBufSize]
+			}
+			msg := make([]byte, len(chunk)+1)
+			msg[0] = MsgOutput
+			copy(msg[1:], chunk)
+			if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+				logger.Debug("WebSocket write error", "session", info.id, "err", err)
+				return
+			}
+			filtered = filtered[len(chunk):]
 		}
 	}
 }
@@ -356,10 +414,7 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 	buf := *bufPtr
 	defer readBufPool.Put(bufPtr)
 
-	framePtr := writeBufPool.Get().(*[]byte)
-	frame := *framePtr
-	defer writeBufPool.Put(framePtr)
-
+	filter := s.outputFilter()
 	var totalBytes int64
 
 	for {
@@ -391,22 +446,29 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 			}
 			logger.Debug("first output received (WT)", "session", info.id, "bytes", n, "first_bytes", fmt.Sprintf("%q", string(buf[:debugBytes])))
 		}
-
 		totalBytes += int64(n)
 
-		msgLen := n + 1
-		binary.BigEndian.PutUint32(frame[0:4], uint32(msgLen))
-		frame[4] = MsgOutput
-		copy(frame[5:], buf[:n])
-
-		if _, err := stream.Write(frame[:5+n]); err != nil {
-			logger.Debug("WebTransport write error", "session", info.id, "err", err)
-			return
+		filtered := filter(buf[:n])
+		for len(filtered) > 0 {
+			chunk := filtered
+			if len(chunk) > readBufSize {
+				chunk = chunk[:readBufSize]
+			}
+			msgLen := len(chunk) + 1
+			frame := make([]byte, 4+msgLen)
+			binary.BigEndian.PutUint32(frame[0:4], uint32(msgLen))
+			frame[4] = MsgOutput
+			copy(frame[5:], chunk)
+			if _, err := stream.Write(frame); err != nil {
+				logger.Debug("WebTransport write error", "session", info.id, "err", err)
+				return
+			}
+			filtered = filtered[len(chunk):]
 		}
 	}
 }
 
-func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo) {
+func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo, apply func(WindowSize)) {
 	var totalBytes int64
 	var msgCount int64
 
@@ -427,11 +489,14 @@ func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.C
 
 		totalBytes += int64(len(data))
 		msgCount++
-		s.processInput(data, session, info)
+		if !s.processInput(data, session, info, apply) {
+			_ = conn.CloseNow()
+			return
+		}
 	}
 }
 
-func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo) {
+func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo, apply func(WindowSize)) {
 	lenBuf := make([]byte, 4)
 	var totalBytes int64
 	var msgCount int64
@@ -451,7 +516,7 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 		}
 
 		length := binary.BigEndian.Uint32(lenBuf)
-		if length > 1024*1024 {
+		if length > MaxMessageSize {
 			logger.Warn("message too large", "session", info.id, "size", length)
 			return
 		}
@@ -471,13 +536,19 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 
 		totalBytes += int64(length)
 		msgCount++
-		s.processInput(msg, session, info)
+		if !s.processInput(msg, session, info, apply) {
+			stream.CancelRead(0)
+			_ = stream.Close()
+			return
+		}
 	}
 }
 
-func (s *httpServer) processInput(data []byte, session internalSession, info sessionInfo) {
+// processInput dispatches one inbound message. Returns false if the
+// caller should drop the connection (e.g., paste cap exceeded).
+func (s *httpServer) processInput(data []byte, session internalSession, info sessionInfo, apply func(WindowSize)) bool {
 	if len(data) == 0 {
-		return
+		return true
 	}
 
 	msgType := data[0]
@@ -485,25 +556,61 @@ func (s *httpServer) processInput(data []byte, session internalSession, info ses
 
 	switch msgType {
 	case MsgInput:
-		if !s.config.ReadOnly {
-			_, _ = session.InputWriter().Write(payload)
+		if s.config.ReadOnly {
+			return true
+		}
+		if len(payload) > pasteMaxOrDefault(s.config.MaxPasteBytes) {
+			logger.Warn("input exceeds MaxPasteBytes; dropping connection",
+				"session", info.id, "size", len(payload), "max", pasteMaxOrDefault(s.config.MaxPasteBytes))
+			return false
+		}
+		if _, err := session.InputWriter().Write(payload); err != nil {
+			logger.Debug("session input write error", "session", info.id, "err", err)
 		}
 
 	case MsgResize:
 		var resize ResizeMessage
 		if err := json.Unmarshal(payload, &resize); err != nil {
 			logger.Warn("invalid resize message", "session", info.id, "err", err)
-			return
+			return true
 		}
-		session.Resize(resize.Cols, resize.Rows)
-		logger.Debug("terminal resized",
-			"session", info.id,
-			"to", []int{resize.Cols, resize.Rows},
+		if resize.Cols <= 0 || resize.Rows <= 0 {
+			return true
+		}
+		maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
+		if resize.Cols > maxDims.Width || resize.Rows > maxDims.Height {
+			logger.Debug("resize exceeds MaxWindowDims; ignoring",
+				"session", info.id, "got", []int{resize.Cols, resize.Rows},
+				"max", []int{maxDims.Width, maxDims.Height})
+			return true
+		}
+		apply(WindowSize{
+			Width: resize.Cols, Height: resize.Rows,
+			WidthPx: resize.WidthPx, HeightPx: resize.HeightPx,
+		})
+		logger.Debug("terminal resize queued",
+			"session", info.id, "to", []int{resize.Cols, resize.Rows},
+			"px", []int{resize.WidthPx, resize.HeightPx},
 		)
 
 	case MsgPing:
-		// Pong handled at transport layer
+		// Pong handled at transport layer.
+
+	case MsgKittyKbd:
+		if s.config.Debug {
+			logger.Debug("kitty keyboard flags", "session", info.id, "payload", string(payload))
+		}
+
+	default:
+		if s.config.Debug {
+			logger.Debug("unknown message type",
+				"session", info.id,
+				"type", fmt.Sprintf("0x%02x", msgType),
+				"size", len(payload),
+			)
+		}
 	}
+	return true
 }
 
 func writeFramed(w io.Writer, msg []byte) error {
@@ -514,10 +621,33 @@ func writeFramed(w io.Writer, msg []byte) error {
 	return err
 }
 
-func (s *httpServer) incrementConnCount() int32 {
-	return atomic.AddInt32(&s.connCount, 1)
+func (s *httpServer) tryAcquireConnection() bool {
+	if s.config.MaxConnections <= 0 {
+		atomic.AddInt32(&s.connCount, 1)
+		return true
+	}
+	for {
+		current := atomic.LoadInt32(&s.connCount)
+		if int(current) >= s.config.MaxConnections {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&s.connCount, current, current+1) {
+			return true
+		}
+	}
 }
 
-func (s *httpServer) decrementConnCount() int32 {
-	return atomic.AddInt32(&s.connCount, -1)
+func (s *httpServer) releaseConnection() {
+	atomic.AddInt32(&s.connCount, -1)
+}
+
+// originPatterns merges legacy AllowOrigins + new OriginPatterns. An
+// empty merged slice means "any origin" (current sip behaviour).
+func (s *httpServer) originPatterns() []string {
+	merged := append([]string{}, s.config.AllowOrigins...)
+	merged = append(merged, s.config.OriginPatterns...)
+	if len(merged) == 0 {
+		return []string{"*"}
+	}
+	return merged
 }

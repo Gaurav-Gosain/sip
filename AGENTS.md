@@ -1,6 +1,6 @@
 # AGENTS.md - Sip
 
-> Sip is a Go library for serving Bubble Tea TUI applications through web browsers with full terminal emulation.
+> Sip is a Go library for serving Bubble Tea TUI applications through web browsers, rendered with libghostty (ghostty-web wasm) for high-fidelity terminal emulation.
 
 ## Quick Reference
 
@@ -14,213 +14,294 @@ go run ./examples/simple
 # Run CLI (command mode)
 go run ./cmd/sip -- htop
 go run ./cmd/sip -p 8080 -- claude -c
-go run ./cmd/sip --host 0.0.0.0 -- bash
+go run ./cmd/sip --host 0.0.0.0 --cert s.crt --key s.key -- bash
+
+# WASM build (compile a Bubble Tea app to run in-browser)
+go run ./cmd/sip-wasm-build -o web/app.wasm ./cmd/myapp/
 
 # Then open http://localhost:7681 in browser
 ```
 
 ## CLI Usage
 
-Built with Cobra + Fang (same pattern as tuios). Supports shell completion generation.
+Built with Cobra + Fang. Supports shell completion generation.
 
-```bash
+```
 sip [flags] -- command [args...]
 
-Flags:
-  -H, --host string   Host to bind to (default "localhost")
-  -p, --port string   Port to listen on (default "7681")
-  -d, --dir string    Working directory for the command
-      --debug         Enable debug logging
-  -v, --version       Print version and exit
-  -h, --help          Show help
+Listener / TLS:
+  -H, --host string           Host to bind (default "localhost")
+  -p, --port string           Port to listen (default "7681")
+      --cert string           TLS cert (PEM)
+      --key string            TLS key  (PEM)
+      --allow-insecure-no-tls Allow non-loopback bind / basic auth without TLS
+      --origin strings        Browser origin allowlist (path.Match glob, repeatable)
+
+Auth:
+      --basic-user string     HTTP Basic Auth username
+      --basic-pass string     HTTP Basic Auth password (prefer file/env)
+      --basic-pass-file string Read password from file
+                              ($SIP_PASSWORD env also honoured;
+                               precedence: file > env > flag)
+
+Limits:
+      --max-conns int         Concurrent session limit (0 = unlimited)
+      --idle-timeout duration Close sessions idle for this long (0 = off)
+
+Renderer / fonts:
+      --font path             Custom font (.ttf/.otf/.woff/.woff2)
+      --font-family string    CSS font-family (overrides default JBM Nerd Font)
+      --disable-kitty-transcoder
+                              Disable server-side kitty PNG → RGBA filter
+
+Misc:
+  -d, --dir string            Working directory for the wrapped command
+      --debug                 Enable debug logging
+  -v, --version               Print version
+  -h, --help                  Show help
 
 Commands:
-  completion          Generate shell completion scripts
-  help                Help about any command
+  completion                  Generate shell completion scripts
 ```
 
 Examples:
-- `sip -- htop` - Run htop in browser
-- `sip -p 8080 -- claude -c` - Run Claude CLI on port 8080
-- `sip --host 0.0.0.0 -- bash` - Expose bash on all interfaces
-- `sip completion bash > ~/.bash_completion.d/sip` - Install bash completion
+- `sip -- htop` — htop in browser
+- `sip --host 0.0.0.0 --cert s.crt --key s.key -- bash` — public bind, TLS
+- `sip --host 0.0.0.0 --allow-insecure-no-tls -- bash` — public bind, no TLS (insecure; trusted-proxy use only)
+- `sip --basic-user admin --basic-pass-file /run/secrets/sip --cert s.crt --key s.key -- bash`
+- `sip --font /path/to/CommitMono.ttf --font-family "Commit Mono" -- nvim`
 
 ## Project Structure
 
 ```
 sip/
-├── sip.go              # Main API: Session interface, Handler types, Config, MakeOptions
-├── server.go           # HTTP server, static file serving, WebTransport setup
-├── session.go          # webSession implementation, session lifecycle
-├── session_unix.go     # Unix PTY setup (uses xpty.UnixPty with master/slave)
-├── session_windows.go  # Windows pipe-based I/O (ConPty not suitable for in-process)
-├── cmd_session.go      # cmdSession for CLI mode (spawning external commands)
-├── cmd_unix.go         # Unix command PTY spawning
-├── cmd_windows.go      # Windows command PTY spawning
-├── handlers.go         # WebSocket/WebTransport handlers, message processing
-├── cert.go             # Self-signed certificate generation for WebTransport
+├── sip.go                  # Public API: Session, Pty, WindowSize, Handler, Config, Server, MakeOptions
+├── server.go               # HTTP server bootstrap, TLS, mux, validateConfig, font templating
+├── handlers.go             # Wire protocol (msg types '0'..'8'), WS+WT loops, kitty transcoder hookup
+├── session.go              # webSession (Bubble Tea in-process)
+├── session_unix.go         # Unix PTY (UnixPty master+slave, pixel-aware resize via SetWinsize)
+├── session_windows.go      # Windows pipes (ConPty unsuitable for in-process)
+├── cmd_session.go          # cmdSession (CLI mode, spawned external command in PTY)
+├── cmd_unix.go / cmd_windows.go
+├── middleware.go           # ConnectMiddleware / SessionMiddleware / Middleware framework + LiftHTTPMiddleware
+├── connecterror.go         # ConnectError type for graceful handshake rejection
+├── identity.go             # Identity + RemoteAddr context plumbing
+├── config_context.go       # Defaults + ConfigFromContext helper
+├── resize_throttle.go      # Coalescing inbound resize messages
+├── kittygfx.go             # Server-side kitty graphics PNG/JPEG/GIF → RGBA transcoder
+├── cert.go                 # Self-signed cert + cert wrapping for WebTransport
+├── run_native.go / run_js.go  # Polymorphic NewBrowserProgram/RunBrowser (native or wasm)
+├── wasm/wasm.go            # //go:build js && wasm — JS bridge (bubbletea_read/write/resize)
+├── middleware/
+│   ├── osc52gate/          # SessionMiddleware: allow/deny/audit OSC 52 clipboard writes
+│   ├── recover/            # Middleware: recover from panics in Handler construction
+│   └── logging/            # Middleware: slog session start/end logging
 ├── cmd/
-│   └── sip/            # CLI binary
-│       └── main.go
-├── static/             # Embedded web assets (go:embed)
-│   ├── index.html
-│   ├── terminal.js     # Browser-side terminal client (xterm.js integration)
-│   ├── terminal.css
-│   └── fonts/          # JetBrains Mono Nerd Font
-└── examples/
-    └── simple/         # Basic counter example (Bubble Tea mode)
+│   ├── sip/                # CLI binary
+│   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
+├── static/
+│   ├── index.html          # Loads ES module terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
+│   ├── terminal.js         # ES module: wires SipTerminal + SipAutoAdapter, settings panel, mobile keyboard
+│   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
+│   ├── ghostty-web/        # Vendored MIT (NimbleMarkets fork of coder/ghostty-web, nm-kitty-meow)
+│   │   ├── ghostty-vt.wasm   (~611 KB)
+│   │   └── ghostty-web.js    (~1.1 MB)
+│   ├── sip-client/         # ES modules adapted from go-booba's TS bundle (MIT, NimbleMarkets):
+│   │   sip.js, adapter.js, websocket_adapter.js, webtransport_adapter.js,
+│   │   auto_adapter.js, protocol.js, clipboard.js, urls.js, types.js
+│   └── fonts/              # JetBrains Mono Nerd Font (embedded)
+└── examples/simple/        # Counter example (Bubble Tea mode)
 ```
 
 ## Architecture
 
-### Two Operating Modes
+### Two operating modes
 
-1. **Library mode** (Bubble Tea): Run in-process Bubble Tea programs
-   - Use `server.Serve()` or `server.ServeWithProgram()`
-   - Handler creates tea.Model for each connection
-   - PTY provides terminal semantics for Bubble Tea
+1. **Library mode (Bubble Tea, in-process)**
+   - `server.Serve()` / `server.ServeWithProgram()`
+   - Handler creates a `tea.Model` per browser session
+   - PTY provides terminal semantics for Bubble Tea (raw mode + window size events)
 
-2. **CLI mode** (Commands): Spawn external commands in PTY
-   - Use `sip -- command [args...]` CLI
-   - Calls `server.ServeCommand()`
-   - xpty spawns command attached to PTY
+2. **CLI mode (spawned commands)**
+   - `sip -- command [args...]`  →  `server.ServeCommand()`
+   - xpty spawns the command attached to a PTY
    - Pure I/O forwarding between PTY and browser
 
-### Communication Flow
-1. Browser connects via WebSocket (HTTP/1.1) or WebTransport (HTTP/3 over QUIC)
-2. Server creates a PTY (pseudo-terminal) for each session
-3. Bubble Tea program runs attached to the PTY
-4. Terminal I/O is bridged between PTY and browser via xterm.js
+3. **WASM mode (in-browser only, no server)**
+   - `wasm.Run(model)` (or `sip.RunBrowser(model)` polymorphic)
+   - Bubble Tea program compiled to wasm runs entirely in the browser
+   - Frontend connects via `SipWasmAdapter` polling `bubbletea_read/write/resize` globals
+   - Build with `go run ./cmd/sip-wasm-build -o web/app.wasm ./your/cmd/`
 
-### Dual Protocol Support
-- **WebTransport** (preferred): HTTP/3 over QUIC, lower latency, uses port+1 (default 7682)
-- **WebSocket** (fallback): Works everywhere, default port 7681
-- Browser automatically tries WebTransport first, falls back to WebSocket
+### Communication flow
 
-### Message Protocol
-Binary messages with type byte prefix (defined in `handlers.go`):
+1. Browser loads `static/index.html` → `static/terminal.js` (ES module)
+2. `SipTerminal` (wrapper around ghostty-web's `Terminal` + `FitAddon`) initializes the libghostty wasm
+3. `SipAutoAdapter` tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
+4. Server creates a PTY for the session, spawns either Bubble Tea or the wrapped command
+5. PTY output is filtered through the kitty graphics transcoder before being framed and sent to the browser
+6. The browser pipes inbound bytes into ghostty-vt; outbound input goes to the PTY
+
+### Renderer
+
+- **libghostty** parses VT sequences (correctness on par with ghostty proper)
+- Renders to a single 2D `<canvas>` (NOT WebGL/WebGPU — that's a future project)
+- Kitty graphics protocol supported natively via the NimbleMarkets ghostty-web fork
+- Kitty keyboard protocol forwardable through `MsgKittyKbd` ('8')
+- OSC 52 clipboard writes routed to `navigator.clipboard` (gated by `allowOSC52`)
+
+### Wire protocol
+
+Binary frames, type-prefixed:
+
 ```go
-MsgInput   = '0'  // Terminal input (client -> server)
-MsgOutput  = '1'  // Terminal output (server -> client)
-MsgResize  = '2'  // Resize terminal
-MsgPing    = '3'  // Ping
-MsgPong    = '4'  // Pong
-MsgTitle   = '5'  // Set window title
-MsgOptions = '6'  // Configuration options
-MsgClose   = '7'  // Session closed
+MsgInput    = '0' // Terminal input  (client → server)
+MsgOutput   = '1' // Terminal output (server → client)
+MsgResize   = '2' // {cols, rows, widthPx?, heightPx?} (client → server)
+MsgPing     = '3' // Ping
+MsgPong     = '4' // Pong
+MsgTitle    = '5' // Window title (server → client)
+MsgOptions  = '6' // {readOnly} (server → client, sent on connect)
+MsgClose    = '7' // Session ended (server → client)
+MsgKittyKbd = '8' // Kitty keyboard protocol flags (bidirectional)
 ```
 
-## Key Patterns
+WebSocket framing: raw `[type][payload]`.
+WebTransport framing: `[uint32 BE length][type][payload]`.
 
-### Handler API (Wish-like)
-Two handler patterns modeled after [Wish](https://github.com/charmbracelet/wish):
+`MaxMessageSize` = 1 MiB. `MaxPasteBytes` defaults to 1 MiB; oversized inbound messages drop the connection.
+
+### Middleware
+
+Three composable layers, modeled after Wish:
+
+| Layer       | Type                | Wraps                              | Install                            |
+|-------------|---------------------|------------------------------------|------------------------------------|
+| 1 Handshake | `ConnectMiddleware` | `*http.Request` for WS upgrade + WT CONNECT | `Config.ConnectMiddleware`         |
+| 2 Session   | `SessionMiddleware` | `SessionIO` (transport byte streams) | `Config.SessionMiddleware`         |
+| 3 Handler   | `Middleware`        | `Handler` (per-session `tea.Model`) | `Config.HandlerMiddleware`         |
+
+`sip.LiftHTTPMiddleware(mw)` adapts any `func(http.Handler) http.Handler` into a `ConnectMiddleware` — chi/gorilla/otelhttp/tollbooth all reusable at the handshake.
+
+Built-ins (auto-installed when configured):
+- Basic Auth (when `BasicUsername` or `BasicPassword` set)
+- Connection limit (when `MaxConnections > 0`)
+- Idle timeout (when `IdleTimeout > 0`)
+
+Subpackages:
+- `middleware/osc52gate` — allow / deny / audit OSC 52 clipboard writes outbound
+- `middleware/recover` — catch panics during Handler construction
+- `middleware/logging` — slog session start / end logging
+
+### Server-side kitty graphics transcoder
+
+`kittygfx.go` intercepts kitty graphics APC sequences in the PTY → client byte stream. PNG (`f=100`) payloads are decoded server-side and re-emitted as raw RGBA (`f=32`) chunks because the wasm build of ghostty-vt doesn't link wuffs (no PNG decoder).
+
+JPEG / GIF support is enabled via `image/jpeg` and `image/gif` import side-effects. Disable with `Config.DisableKittyTranscoder = true`.
+
+### Config knobs (all optional, sensible defaults)
 
 ```go
-// Simple handler - returns model and options
-type Handler func(sess Session) (tea.Model, []tea.ProgramOption)
-
-// Advanced handler - returns full tea.Program
-type ProgramHandler func(sess Session) *tea.Program
-```
-
-### Session Interface
-```go
-type Session interface {
-    Pty() Pty                           // Terminal dimensions
-    Context() context.Context           // Cancelled on disconnect
-    Read(p []byte) (n int, err error)   // Read from terminal
-    Write(p []byte) (n int, err error)  // Write to terminal
-    Fd() uintptr                        // File descriptor for TTY detection
-    PtySlave() *os.File                 // PTY slave for Bubble Tea raw mode
-    WindowChanges() <-chan WindowSize   // Resize events
+type Config struct {
+    Host, Port                                 string
+    ReadOnly                                   bool
+    MaxConnections                             int
+    IdleTimeout                                time.Duration
+    AllowOrigins, OriginPatterns               []string  // path.Match globs
+    TLSCert, TLSKey                            string
+    Debug                                      bool
+    BasicUsername, BasicPassword               string
+    AllowInsecureNoTLS                         bool      // bypass TLS-required check
+    MaxPasteBytes                              int       // default 1 MiB
+    ResizeThrottle                             time.Duration  // default 16ms
+    MaxWindowDims                              WindowSize     // default 4096×4096
+    InitialResizeTimeout                       time.Duration  // default 10s
+    FontPath, FontFamily                       string         // custom font upload
+    ConnectMiddleware                          []ConnectMiddleware
+    SessionMiddleware                          []SessionMiddleware
+    HandlerMiddleware                          []Middleware
+    DisableKittyTranscoder                     bool
 }
 ```
 
-### MakeOptions Helper
-Always use `MakeOptions(sess)` when creating tea.Program to properly configure:
-- PTY slave for input/output (required for raw mode)
-- TrueColor profile
-- Window size
-- Environment variables (TERM=xterm-256color, COLORTERM=truecolor)
-- Suspend message filter
+### Custom fonts
 
-## Code Conventions
+`--font /path/to/file.ttf` serves the file at `/static/fonts/custom<ext>` and injects an `@font-face` rule + `window.__sipConfig.fontFamily` into `index.html` at request time. Pair with `--font-family "My Font Name"` for the CSS family. Falls back to the bundled JetBrains Mono Nerd Font if either is unset.
 
-### Go Code
-- Standard Go formatting (gofmt)
-- Package-level logger with `charmbracelet/log`
-- Structured logging with key-value pairs
-- Error wrapping with `fmt.Errorf("context: %w", err)`
-- Context-based cancellation
-- sync.Pool for buffer reuse in hot paths
-- sync.Map for concurrent session storage
+## Pixel-aware resize
+
+`ResizeMessage` carries optional `widthPx` / `heightPx`. When non-zero and the underlying PTY is `xpty.UnixPty`, the values are forwarded to TIOCSWINSZ via `SetWinsize`, populating `ws_xpixel`/`ws_ypixel`. Kitty graphics tools (kitten icat, ntcharts) read these to size images.
+
+Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize throttler picks `ResizeWindow` over plain `Resize` when available.
+
+## Code conventions
+
+### Go
+- Standard `gofmt`
+- `charmbracelet/log` for the package logger (ANSI disabled to avoid leaking escapes)
+- Error wrapping with `fmt.Errorf("ctx: %w", err)`
+- `sync.Pool` for hot-path buffers
+- `sync.Map` for concurrent session tracking
+
+### Frontend
+- ES modules — `static/terminal.js` is the entry, imports from `static/sip-client/sip.js`
+- ghostty-web vendored as-is; no transpile step
+- Settings persisted via `localStorage["sip-web-settings"]`
 
 ### Naming
-- Exported types: `Session`, `Handler`, `ProgramHandler`, `Config`, `Server`
-- Internal types: `httpServer`, `webSession`
-- Constants: ALL_CAPS for message types (`MsgInput`, `MsgOutput`)
-
-### Error Handling
-- Return errors up to caller, don't log and return
-- Use `logger.Error/Warn/Debug` for operational logs
-- Graceful degradation (WebTransport -> WebSocket fallback)
-
-### Frontend (terminal.js)
-- IIFE pattern to avoid global pollution
-- Class-based structure (`TuiosTerminal`)
-- Pre-allocated buffers for performance
-- requestAnimationFrame for batched terminal writes
-- Mouse event deduplication (cell-based)
+- Exported types: `Session`, `SessionIO`, `Handler`, `ProgramHandler`, `Middleware`, `Config`, `Server`, `WindowSize`, `Pty`, `WindowResizer`, `Identity`, `ConnectError`
+- Internal: `httpServer`, `webSession`, `cmdSession`, `internalSession`
+- Constants: `MsgInput..MsgKittyKbd` ('0'..'8')
 
 ## Dependencies
 
 ### Core
-- `bubbletea/v2` - TUI framework (beta version)
-- `lipgloss/v2` - Styling (beta version)
-- `x/xpty` - Cross-platform PTY
-- `colorprofile` - Terminal color detection
-- `log` - Structured logging
+- `bubbletea/v2` (beta) — TUI framework
+- `lipgloss/v2` (beta) — Styling
+- `x/xpty` — cross-platform PTY (UnixPty has `SetWinsize`)
+- `colorprofile` — terminal color detection
+- `charmbracelet/log` — structured logging
+- `charmbracelet/fang` — CLI ergonomics
 
 ### Transport
-- `coder/websocket` - WebSocket implementation
-- `quic-go/quic-go` - QUIC protocol
-- `quic-go/webtransport-go` - WebTransport
+- `coder/websocket`
+- `quic-go/quic-go`, `quic-go/webtransport-go`
 
-### Frontend
-- xterm.js with addons (fit, webgl, canvas, web-links)
-- JetBrains Mono Nerd Font (embedded)
+### Frontend (vendored, MIT)
+- ghostty-web (NimbleMarkets `nm-kitty-meow` fork — adds kitty graphics + virtual placement)
+- sip-client TS bundle adapted from go-booba
 
-## Important Notes
+## Important notes
 
-### PTY Handling
-- **Unix**: Uses `xpty.UnixPty` with separate master/slave files
-  - Master used by handlers for reading output/writing input
-  - Slave passed to Bubble Tea for terminal I/O with raw mode support
-- **Windows**: Uses `io.Pipe()` for bidirectional communication
-  - ConPty is designed for spawning child processes, not in-process use
-  - Pipes provide equivalent I/O without terminal semantics
-  - Resize handled via `tea.WindowSizeMsg` (same as Unix)
-- Session owns PTY/pipe lifecycle - closing session closes resources
+### TLS / auth gating
+- Self-signed cert auto-generated for loopback hosts (10-day validity for Chrome's `serverCertificateHashes`)
+- Non-loopback bind requires `--cert`/`--key` OR explicit `--allow-insecure-no-tls`
+- Basic Auth requires TLS unless `--allow-insecure-no-tls` is set; static assets are auth-gated too
+- Logs a loud warning when running insecure (cleartext credentials, unencrypted PTY traffic)
 
-### Certificate Generation
-- Self-signed certificates generated on startup for WebTransport
-- Valid for 10 days (Chrome requires < 14 days for serverCertificateHashes)
-- Certificate hash exposed via `/cert-hash` endpoint for browser verification
+### PTY handling
+- **Unix**: `xpty.UnixPty` master + slave; pixel-aware via `SetWinsize`
+- **Windows**: `io.Pipe()` (ConPty unsuitable for in-process); pixel resize is a no-op
+- Session owns lifecycle — `Close()` is idempotent
 
-### Embedded Assets
-- Static files embedded via `//go:embed static/*`
-- Served from memory, no filesystem dependencies at runtime
-- Fonts cached for 1 year, other assets served fresh
+### Embedded assets
+- `//go:embed static/*` ships everything in the binary (~3 MB total: JBM fonts + ghostty-web wasm)
+- Fonts cached 1 year client-side; wasm cached 1 year
+- Custom font (`--font`) is served from disk, not embedded
 
 ### Concurrency
-- Each connection spawns two goroutines (input/output streaming)
-- Sessions stored in sync.Map
-- Connection limiting via atomic counter
+- 2 goroutines per connection (input + output streams) plus the resize throttler
+- Sessions in `sync.Map`, conn count in `atomic.Int32`
+
+### WASM mode build
+- BubbleTea v2 has no js/wasm tags for signal handling / TTY init (charmbracelet/bubbletea#1410)
+- `cmd/sip-wasm-build` works around this by copying bubbletea to a temp dir, dropping in stub files (`signals_js.go`, `tty_js.go`), and building through a `go.mod` `replace` directive
 
 ## Gotchas
 
-1. **Bubble Tea v2 beta**: Uses pre-release bubbletea/v2 and lipgloss/v2 - API may change
-2. **Port +1 for WebTransport**: If HTTP is on 7681, WebTransport is on 7682
-4. **Logger colors disabled**: Logger explicitly disables ANSI to prevent escape sequences leaking to terminal
-5. **Suspend filtered**: `tea.SuspendMsg` converted to `tea.ResumeMsg` (no suspend in browser)
-6. **colorprofile warning**: go.mod shows it should be direct dependency - run `go mod tidy` if you see warnings
+1. **Bubble Tea v2 beta** — pre-release, API may change
+2. **Port +1 for WebTransport** — HTTP on 7681 ⇒ WT on 7682
+3. **Logger colors disabled** — ANSI off so escape sequences don't leak when sip itself logs
+4. **Suspend filtered** — `tea.SuspendMsg` becomes `tea.ResumeMsg` (no process suspend in browser)
+5. **Bundle size jump** — moving from xterm.js (~1 MB) to libghostty (~1.7 MB raw) doubles cold-load weight; both are gzip-friendly. Keep an eye on `static/ghostty-web/` if you bump the upstream
+6. **Kitty transcoder is stateful per session** — one `kittyGfxTranscoder` per output stream goroutine; do not share

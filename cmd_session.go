@@ -17,6 +17,8 @@ type cmdSession struct {
 	platform      *cmdPlatformPty
 	cols          int
 	rows          int
+	widthPx       int
+	heightPx      int
 	cancelFunc    context.CancelFunc
 	ctx           context.Context
 	mu            sync.Mutex
@@ -28,7 +30,7 @@ type cmdSession struct {
 func (s *cmdSession) Pty() Pty {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Pty{Width: s.cols, Height: s.rows}
+	return Pty{Width: s.cols, Height: s.rows, WidthPx: s.widthPx, HeightPx: s.heightPx}
 }
 
 func (s *cmdSession) Context() context.Context {
@@ -48,11 +50,11 @@ func (s *cmdSession) WindowChanges() <-chan WindowSize {
 }
 
 func (s *cmdSession) Fd() uintptr {
-	return 0 // Not used for command sessions
+	return 0
 }
 
 func (s *cmdSession) PtySlave() *os.File {
-	return nil // Not used for command sessions
+	return nil
 }
 
 func (s *cmdSession) Done() <-chan struct{} {
@@ -60,17 +62,32 @@ func (s *cmdSession) Done() <-chan struct{} {
 }
 
 func (s *cmdSession) Resize(cols, rows int) {
+	s.applyResize(WindowSize{Width: cols, Height: rows})
+}
+
+// ResizeWindow implements WindowResizer with pixel-aware sizing.
+func (s *cmdSession) ResizeWindow(size WindowSize) {
+	s.applyResize(size)
+}
+
+func (s *cmdSession) applyResize(size WindowSize) {
 	s.mu.Lock()
-	s.cols = cols
-	s.rows = rows
+	s.cols = size.Width
+	s.rows = size.Height
+	if size.WidthPx > 0 {
+		s.widthPx = size.WidthPx
+	}
+	if size.HeightPx > 0 {
+		s.heightPx = size.HeightPx
+	}
 	s.mu.Unlock()
 
 	if s.platform != nil {
-		_ = s.platform.Resize(cols, rows)
+		_ = s.platform.ResizeWithPixels(size.Width, size.Height, size.WidthPx, size.HeightPx)
 	}
 
 	select {
-	case s.windowChanges <- WindowSize{Width: cols, Height: rows}:
+	case s.windowChanges <- size:
 	default:
 	}
 }
@@ -83,6 +100,23 @@ func (s *cmdSession) OutputReader() io.Reader {
 // InputWriter returns the writer for terminal input (for handlers).
 func (s *cmdSession) InputWriter() io.Writer {
 	return s.platform.InputWriter()
+}
+
+// Close implements SessionIO. Idempotent.
+func (s *cmdSession) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	s.mu.Unlock()
+
+	s.cancelFunc()
+	if s.platform != nil {
+		_ = s.platform.Close()
+	}
+	return nil
 }
 
 // CommandHandler creates command sessions for each browser connection.
@@ -113,7 +147,7 @@ func newCmdHTTPServer(config Config, handler *CommandHandler) *httpServer {
 	return srv
 }
 
-func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initialRows int) (*cmdSession, error) {
+func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initialRows, widthPx, heightPx int) (*cmdSession, error) {
 	if srv.cmdHandler == nil {
 		return nil, fmt.Errorf("no command handler configured")
 	}
@@ -126,11 +160,14 @@ func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initia
 		rows = 24
 	}
 
-	logger.Debug("creating command session", "cols", cols, "rows", rows, "cmd", srv.cmdHandler.name)
+	logger.Debug("creating command session", "cols", cols, "rows", rows, "px", []int{widthPx, heightPx}, "cmd", srv.cmdHandler.name)
 
 	platform, err := newCmdPlatformPty(srv.cmdHandler.name, srv.cmdHandler.args, srv.cmdHandler.dir, cols, rows)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create command PTY: %w", err)
+	}
+	if widthPx > 0 || heightPx > 0 {
+		_ = platform.ResizeWithPixels(cols, rows, widthPx, heightPx)
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
@@ -141,13 +178,14 @@ func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initia
 		platform:      platform,
 		cols:          cols,
 		rows:          rows,
+		widthPx:       widthPx,
+		heightPx:      heightPx,
 		cancelFunc:    cancel,
 		ctx:           sessionCtx,
 		startTime:     time.Now(),
 		windowChanges: windowChanges,
 	}
 
-	// Monitor process exit
 	go func() {
 		_ = platform.Wait()
 		cancel()
@@ -160,26 +198,18 @@ func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initia
 }
 
 func (srv *httpServer) closeCmdSession(session *cmdSession) {
+	startedClose := false
 	session.mu.Lock()
-	if session.closed {
-		session.mu.Unlock()
-		return
+	if !session.closed {
+		startedClose = true
 	}
-	session.closed = true
 	session.mu.Unlock()
-
-	duration := time.Since(session.startTime)
-
-	session.cancelFunc()
-
-	if session.platform != nil {
-		_ = session.platform.Close()
+	_ = session.Close()
+	if startedClose {
+		srv.sessions.Delete(session.id)
+		logger.Debug("command session closed",
+			"session", session.id,
+			"duration", time.Since(session.startTime).Round(time.Millisecond),
+		)
 	}
-
-	srv.sessions.Delete(session.id)
-
-	logger.Debug("command session closed",
-		"session", session.id,
-		"duration", duration.Round(time.Millisecond),
-	)
 }

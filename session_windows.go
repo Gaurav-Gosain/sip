@@ -67,6 +67,12 @@ func (p *platformPty) Resize(cols, rows int) error {
 	return nil
 }
 
+// ResizeWithPixels is a no-op on Windows (pipe-backed). Pixel dimensions
+// are not propagated since there is no PTY ioctl path.
+func (p *platformPty) ResizeWithPixels(_, _, _, _ int) error {
+	return nil
+}
+
 // OutputReader returns an io.Reader for reading terminal output.
 // On Windows, this reads from the output pipe.
 func (p *platformPty) OutputReader() io.Reader {

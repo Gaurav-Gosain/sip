@@ -1,13 +1,16 @@
 package sip
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,20 +32,21 @@ func init() {
 		ReportTimestamp: true,
 		Prefix:          "sip",
 	})
-	// Disable ANSI colors to prevent escape sequences from leaking
-	logger.SetColorProfile(0) // 0 = NoTTY = no colors
+	// Disable ANSI colors so escape sequences don't leak.
+	logger.SetColorProfile(0)
 }
 
 // httpServer is the internal HTTP server implementation.
 type httpServer struct {
 	config     Config
 	handler    ProgramHandler
-	cmdHandler *CommandHandler // For CLI mode (spawning commands)
+	cmdHandler *CommandHandler
 	httpServer *http.Server
 	wtServer   *webtransport.Server
 	sessions   sync.Map
 	connCount  int32
 	certInfo   *CertInfo
+	connectMW  []ConnectMiddleware
 }
 
 func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
@@ -53,6 +57,26 @@ func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
 }
 
 func (s *httpServer) start(ctx context.Context) error {
+	if err := s.validateConfig(); err != nil {
+		return err
+	}
+
+	// Compose the layer-1 ConnectMiddleware chain. Built-ins (basic auth,
+	// connection limit) appended last so they run innermost.
+	s.connectMW = append([]ConnectMiddleware{}, s.config.ConnectMiddleware...)
+	if s.config.BasicUsername != "" || s.config.BasicPassword != "" {
+		s.connectMW = append(s.connectMW, basicAuthMiddleware(s.config.BasicUsername, s.config.BasicPassword))
+	}
+	s.connectMW = append(s.connectMW, connLimitMiddleware(s))
+
+	// Layer-2 SessionMiddleware: prepend idle timeout (no-op when 0).
+	if s.config.IdleTimeout > 0 {
+		s.config.SessionMiddleware = append(
+			[]SessionMiddleware{idleTimeoutMiddleware(s.config.IdleTimeout)},
+			s.config.SessionMiddleware...,
+		)
+	}
+
 	httpPort := s.config.Port
 	wtPortNum := 7682
 	if p, err := strconv.Atoi(s.config.Port); err == nil {
@@ -63,54 +87,39 @@ func (s *httpServer) start(ctx context.Context) error {
 	httpAddr := net.JoinHostPort(s.config.Host, httpPort)
 	wtAddr := net.JoinHostPort("127.0.0.1", wtPort)
 
-	logger.Debug("generating self-signed certificate")
-	certInfo, err := GenerateSelfSignedCert(s.config.Host)
-	if err != nil {
-		return fmt.Errorf("failed to generate self-signed certificate: %w", err)
+	if err := s.configureCert(); err != nil {
+		return err
 	}
-	s.certInfo = certInfo
-
-	logger.Info("certificate generated",
-		"validity", "10 days",
-		"algorithm", "ECDSA P-256",
-	)
 
 	httpMux := http.NewServeMux()
-
 	httpMux.HandleFunc("/", s.handleIndex)
-	httpMux.HandleFunc("/static/", s.handleStatic)
+	httpMux.HandleFunc("/static/", s.authGate(s.handleStatic))
 	httpMux.HandleFunc("/ws", s.handleWebSocket)
 	httpMux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
-
-	httpMux.HandleFunc("/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		hashArray := make([]int, len(s.certInfo.Hash))
-		for i, b := range s.certInfo.Hash {
-			hashArray[i] = int(b)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"algorithm": "sha-256",
-			"hashBytes": hashArray,
-			"wtUrl":     fmt.Sprintf("https://127.0.0.1:%s/webtransport", wtPort),
-		})
+	httpMux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
 	})
+
+	if s.certInfo != nil {
+		httpMux.HandleFunc("/cert-hash", s.handleCertHash(wtPort))
+	}
 
 	wtMux := http.NewServeMux()
 	wtMux.HandleFunc("/webtransport", s.handleWebTransport)
 
-	s.wtServer = &webtransport.Server{
-		H3: http3.Server{
-			Addr:            wtAddr,
-			TLSConfig:       s.certInfo.TLSConfig,
-			Handler:         wtMux,
-			EnableDatagrams: true,
-		},
-		CheckOrigin: func(_ *http.Request) bool { return true },
+	if s.certInfo != nil {
+		s.wtServer = &webtransport.Server{
+			H3: http3.Server{
+				Addr:            wtAddr,
+				TLSConfig:       s.certInfo.TLSConfig,
+				Handler:         wtMux,
+				EnableDatagrams: true,
+			},
+			CheckOrigin: func(_ *http.Request) bool { return true },
+		}
 	}
 
 	s.httpServer = &http.Server{
@@ -119,39 +128,57 @@ func (s *httpServer) start(ctx context.Context) error {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
+	if s.mainTLSEnabled() {
+		s.httpServer.TLSConfig = s.certInfo.TLSConfig
+	}
 
 	errChan := make(chan error, 2)
 
 	go func() {
+		scheme := "http"
+		if s.mainTLSEnabled() {
+			scheme = "https"
+		}
 		logger.Info("HTTP server starting",
 			"addr", httpAddr,
-			"url", fmt.Sprintf("http://%s", httpAddr),
+			"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
 		)
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.mainTLSEnabled() {
+			err = s.httpServer.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey)
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errChan <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
 
-	go func() {
-		logger.Info("WebTransport server starting",
-			"addr", wtAddr,
-			"protocol", "QUIC/UDP",
-		)
-		if err := s.wtServer.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
-			logger.Warn("WebTransport server error", "err", err)
-		}
-	}()
+	if s.wtServer != nil {
+		go func() {
+			logger.Info("WebTransport server starting",
+				"addr", wtAddr,
+				"protocol", "QUIC/UDP",
+			)
+			if err := s.wtServer.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
+				logger.Warn("WebTransport server error", "err", err)
+			}
+		}()
+	}
 
+	scheme := "http"
+	if s.mainTLSEnabled() {
+		scheme = "https"
+	}
 	logger.Info("server ready",
-		"url", fmt.Sprintf("http://%s", httpAddr),
+		"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
 	)
 
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down web server")
 
-		// Close all active sessions first
-		s.sessions.Range(func(key, value any) bool {
+		s.sessions.Range(func(_, value any) bool {
 			if sess, ok := value.(*cmdSession); ok {
 				s.closeCmdSession(sess)
 			} else if sess, ok := value.(*webSession); ok {
@@ -160,19 +187,87 @@ func (s *httpServer) start(ctx context.Context) error {
 			return true
 		})
 
-		// Use fresh context with timeout for graceful shutdown
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		_ = s.httpServer.Shutdown(shutdownCtx)
-		_ = s.wtServer.Close()
+		if s.wtServer != nil {
+			_ = s.wtServer.Close()
+		}
 		return nil
 	case err := <-errChan:
 		return err
 	}
 }
 
+func (s *httpServer) validateConfig() error {
+	switch {
+	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
+		return fmt.Errorf("TLSCert and TLSKey must be provided together")
+	case s.hasBasicAuth() && !s.mainTLSEnabled() && !s.config.AllowInsecureNoTLS:
+		return fmt.Errorf("basic auth requires TLS; pass --cert/--key, or set AllowInsecureNoTLS to override (insecure)")
+	case !s.mainTLSEnabled() && !isLoopbackHost(s.config.Host) && !s.config.AllowInsecureNoTLS:
+		return fmt.Errorf("non-loopback listeners require TLS; pass --cert/--key, or set AllowInsecureNoTLS to override (insecure)")
+	}
+
+	if s.hasBasicAuth() && !s.mainTLSEnabled() && s.config.AllowInsecureNoTLS {
+		logger.Warn("basic auth enabled without TLS — credentials are sent in plaintext on every request")
+	}
+	if !s.mainTLSEnabled() && !isLoopbackHost(s.config.Host) && s.config.AllowInsecureNoTLS {
+		logger.Warn("non-loopback bind without TLS — terminal traffic is unencrypted")
+	}
+	return nil
+}
+
+// configureCert loads the configured TLS keypair, or generates a
+// self-signed cert for loopback hosts so WebTransport keeps working
+// out of the box.
+func (s *httpServer) configureCert() error {
+	if s.config.TLSCert != "" && s.config.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(s.config.TLSCert, s.config.TLSKey)
+		if err != nil {
+			return fmt.Errorf("load TLS keypair: %w", err)
+		}
+		certInfo, err := newCertInfoFromTLS(cert)
+		if err != nil {
+			return fmt.Errorf("certinfo from keypair: %w", err)
+		}
+		s.certInfo = certInfo
+		logger.Info("loaded TLS certificate", "cert", s.config.TLSCert)
+		return nil
+	}
+
+	// Auto-generate self-signed only for loopback. Non-loopback without
+	// TLS is already either rejected (validateConfig) or running without
+	// WT (no cert) — both fine.
+	if !isLoopbackHost(s.config.Host) {
+		s.certInfo = nil
+		return nil
+	}
+
+	logger.Debug("generating self-signed certificate")
+	host := s.config.Host
+	if host == "" || host == "0.0.0.0" {
+		host = "localhost"
+	}
+	certInfo, err := GenerateSelfSignedCert(host)
+	if err != nil {
+		logger.Warn("WebTransport disabled: cert generation failed", "err", err)
+		s.certInfo = nil
+		return nil
+	}
+	s.certInfo = certInfo
+	logger.Info("certificate generated",
+		"validity", "10 days",
+		"algorithm", "ECDSA P-256",
+	)
+	return nil
+}
+
 func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAuth(w, r) {
+		return
+	}
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -186,12 +281,61 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rendered := s.renderIndex(data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
+	_, _ = w.Write(rendered)
 }
 
+// renderIndex injects per-deployment font config into the index HTML.
+// The {{FONT_FACE_EXTRA}} placeholder is replaced with an additional
+// @font-face rule + a window.__sipConfig blob so the JS picks the
+// custom family up.
+func (s *httpServer) renderIndex(data []byte) []byte {
+	out := bytes.NewBuffer(make([]byte, 0, len(data)+512))
+	body := string(data)
+
+	var extra strings.Builder
+	cfg := map[string]string{}
+	if s.config.FontPath != "" {
+		family := s.config.FontFamily
+		if family == "" {
+			family = "Sip Custom Font"
+		}
+		// Serve the font under /static/fonts/custom<ext> via handleStatic's
+		// virtual route. Just need a stable URL the browser can hit.
+		extra.WriteString(`<style>@font-face { font-family: '`)
+		extra.WriteString(family)
+		extra.WriteString(`'; src: url('static/fonts/custom`)
+		extra.WriteString(filepath.Ext(s.config.FontPath))
+		extra.WriteString(`'); font-weight: 100 900; font-style: normal; font-display: block; }</style>`)
+		cfg["fontFamily"] = "'" + family + "', 'JetBrainsMono Nerd Font Mono', monospace"
+	} else if s.config.FontFamily != "" {
+		cfg["fontFamily"] = s.config.FontFamily
+	}
+	if len(cfg) > 0 {
+		blob, _ := json.Marshal(cfg)
+		extra.WriteString("<script>window.__sipConfig=")
+		extra.Write(blob)
+		extra.WriteString(";</script>")
+	}
+
+	body = strings.ReplaceAll(body, "{{FONT_FACE_EXTRA}}", extra.String())
+	out.WriteString(body)
+	return out.Bytes()
+}
+
+// handleStatic serves embedded static files plus a virtual
+// /static/fonts/custom<ext> route for the user-supplied font.
 func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
+
+	// Virtual custom font route — sniff the prefix instead of an exact
+	// match so we accept any extension the user supplied.
+	if s.config.FontPath != "" && strings.HasPrefix(path, "static/fonts/custom") {
+		s.serveCustomFont(w, r)
+		return
+	}
+
 	data, err := staticFiles.ReadFile(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -205,42 +349,106 @@ func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
 	case strings.HasSuffix(path, ".css"):
 		w.Header().Set("Content-Type", "text/css")
+	case strings.HasSuffix(path, ".wasm"):
+		w.Header().Set("Content-Type", "application/wasm")
 	case strings.HasSuffix(path, ".woff2"):
 		w.Header().Set("Content-Type", "font/woff2")
 	case strings.HasSuffix(path, ".woff"):
 		w.Header().Set("Content-Type", "font/woff")
 	case strings.HasSuffix(path, ".ttf"):
 		w.Header().Set("Content-Type", "font/ttf")
+	case strings.HasSuffix(path, ".otf"):
+		w.Header().Set("Content-Type", "font/otf")
 	}
 
 	if strings.Contains(path, "fonts/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	}
+	if strings.HasSuffix(path, ".wasm") {
+		// Serve wasm with the right content-type so the browser uses
+		// streaming compilation. Already set above; cross-origin headers
+		// not required for same-origin /static/ fetches.
 		w.Header().Set("Cache-Control", "public, max-age=31536000")
 	}
 
 	_, _ = w.Write(data)
 }
 
-func (s *httpServer) checkConnectionLimit() bool {
-	if s.config.MaxConnections <= 0 {
-		return true
-	}
-	newCount := s.incrementConnCount()
-	if int(newCount) > s.config.MaxConnections {
-		s.decrementConnCount()
-		logger.Warn("connection limit reached",
-			"current", newCount-1,
-			"max", s.config.MaxConnections,
-		)
-		return false
-	}
-	logger.Debug("connection accepted", "count", newCount)
-	return true
-}
-
-func (s *httpServer) releaseConnection() {
-	if s.config.MaxConnections <= 0 {
+func (s *httpServer) serveCustomFont(w http.ResponseWriter, _ *http.Request) {
+	data, err := os.ReadFile(s.config.FontPath)
+	if err != nil {
+		http.NotFound(w, nil)
 		return
 	}
-	newCount := s.decrementConnCount()
-	logger.Debug("connection released", "count", newCount)
+	switch strings.ToLower(filepath.Ext(s.config.FontPath)) {
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+	case ".otf":
+		w.Header().Set("Content-Type", "font/otf")
+	default:
+		w.Header().Set("Content-Type", "font/ttf")
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000")
+	_, _ = w.Write(data)
+}
+
+func (s *httpServer) handleCertHash(wtPort string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkAuth(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		hashArray := make([]int, len(s.certInfo.Hash))
+		for i, b := range s.certInfo.Hash {
+			hashArray[i] = int(b)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"algorithm": "sha-256",
+			"hashBytes": hashArray,
+			"wtUrl":     fmt.Sprintf("https://127.0.0.1:%s/webtransport", wtPort),
+		})
+	}
+}
+
+func (s *httpServer) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if validateBasicAuth(r, s.config.BasicUsername, s.config.BasicPassword) {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Basic realm="sip"`)
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	return false
+}
+
+// authGate wraps a non-session HTTP handler so it fails closed when
+// Basic Auth is configured. Static assets stay private.
+func (s *httpServer) authGate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkAuth(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *httpServer) hasBasicAuth() bool {
+	return s.config.BasicUsername != "" || s.config.BasicPassword != ""
+}
+
+func (s *httpServer) mainTLSEnabled() bool {
+	return s.config.TLSCert != "" && s.config.TLSKey != ""
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -1,8 +1,9 @@
 // Package sip serves Bubble Tea applications through a web browser.
 //
-// Sip provides a simple way to make any Bubble Tea TUI application accessible
+// Sip provides a way to make any Bubble Tea TUI application accessible
 // through a web browser with full terminal emulation, mouse support, and
-// hardware-accelerated rendering via xterm.js.
+// hardware-accelerated rendering via libghostty (ghostty-web wasm) — a
+// real terminal emulator running in the browser.
 //
 // Basic usage:
 //
@@ -47,7 +48,7 @@ type Session interface {
 	Write(p []byte) (n int, err error)
 
 	// Fd returns the file descriptor for TTY detection.
-	// This is required for Bubble Tea to properly detect terminal mode.
+	// Required for Bubble Tea to properly detect terminal mode.
 	Fd() uintptr
 
 	// PtySlave returns the underlying PTY slave file for direct I/O.
@@ -59,15 +60,34 @@ type Session interface {
 }
 
 // Pty represents pseudo-terminal information.
+//
+// WidthPx and HeightPx are the canvas dimensions in pixels reported by the
+// browser. They are populated when the client sends widthPx/heightPx in its
+// resize message. Zero means the client did not report pixel dimensions.
 type Pty struct {
-	Width  int
-	Height int
+	Width    int
+	Height   int
+	WidthPx  int
+	HeightPx int
 }
 
 // WindowSize represents a terminal window size change.
+//
+// WidthPx and HeightPx are optional canvas dimensions in pixels. When non-zero
+// they are forwarded to the PTY's TIOCSWINSZ ws_xpixel/ws_ypixel fields, which
+// kitty graphics tools (e.g. kitten icat) read to size images.
 type WindowSize struct {
-	Width  int
-	Height int
+	Width    int
+	Height   int
+	WidthPx  int
+	HeightPx int
+}
+
+// WindowResizer is an optional capability for sessions that can apply pixel
+// dimensions in addition to character dimensions. Sessions implementing this
+// interface receive ResizeWindow calls; others fall back to Resize(cols, rows).
+type WindowResizer interface {
+	ResizeWindow(size WindowSize)
 }
 
 // Handler is the function Bubble Tea apps implement to hook into sip.
@@ -94,11 +114,18 @@ type Config struct {
 	// MaxConnections limits concurrent connections (0 = unlimited)
 	MaxConnections int
 
-	// IdleTimeout for connections (0 = no timeout)
+	// IdleTimeout closes sessions with no inbound bytes for the given
+	// duration (0 = disabled). Inbound = client → PTY only.
 	IdleTimeout time.Duration
 
-	// AllowOrigins for CORS (empty = all origins allowed)
+	// AllowOrigins is the legacy alias for OriginPatterns. Both are
+	// merged. Empty means same-origin only.
 	AllowOrigins []string
+
+	// OriginPatterns is an allowlist of additional browser origins
+	// permitted to connect. Each entry is a path.Match shell glob, NOT
+	// a regex (e.g. "https://app.example.com", "*.example.com").
+	OriginPatterns []string
 
 	// TLSCert path to TLS certificate (enables HTTPS)
 	TLSCert string
@@ -108,6 +135,68 @@ type Config struct {
 
 	// Debug enables verbose logging
 	Debug bool
+
+	// BasicUsername / BasicPassword enable HTTP Basic Auth on every
+	// HTTP request (handshake + static assets). Empty disables auth.
+	BasicUsername string
+	BasicPassword string
+
+	// AllowInsecureNoTLS lets BasicAuth or non-loopback hosts run
+	// without TLS. Default false (refuses to start). Use only for
+	// development behind a trusted reverse proxy that terminates TLS.
+	AllowInsecureNoTLS bool
+
+	// MaxPasteBytes caps the size of a single inbound message
+	// (typically a bracketed-paste payload). 0 = default 1 MiB.
+	MaxPasteBytes int
+
+	// ResizeThrottle coalesces rapid inbound resize messages into the
+	// most recent value. 0 = default 16ms.
+	ResizeThrottle time.Duration
+
+	// MaxWindowDims rejects resize messages exceeding these
+	// dimensions. 0 in either dim = default 4096.
+	MaxWindowDims WindowSize
+
+	// InitialResizeTimeout is the maximum time to wait for the
+	// client's initial Resize message after WS upgrade or WT CONNECT.
+	// 0 = default 10s.
+	InitialResizeTimeout time.Duration
+
+	// FontPath is an optional filesystem path to a custom font (.ttf,
+	// .otf, .woff, .woff2). When set, the file is served at
+	// /static/fonts/custom and registered as a @font-face named
+	// FontFamily. Empty uses the embedded JetBrains Mono Nerd Font.
+	FontPath string
+
+	// FontFamily is the CSS font-family used by the terminal. Used in
+	// conjunction with FontPath when present, otherwise overrides the
+	// default for the embedded font stack. Empty defaults to
+	// "JetBrainsMono Nerd Font Mono".
+	FontFamily string
+
+	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
+	// + connection-limit middleware are appended after the user chain
+	// so they run innermost (last).
+	ConnectMiddleware []ConnectMiddleware
+
+	// SessionMiddleware extends the layer-2 chain. The first
+	// middleware is the outermost wrapper.
+	SessionMiddleware []SessionMiddleware
+
+	// HandlerMiddleware extends the layer-3 chain that wraps the
+	// user's Handler. The first middleware is outermost (sees calls
+	// first).
+	HandlerMiddleware []Middleware
+
+	// EnableKittyTranscoder runs every PTY → client byte stream
+	// through the kitty graphics PNG → RGBA transcoder so the wasm
+	// build of ghostty-vt (no wuffs) can render kitten-icat / ntcharts
+	// output. Default true.
+	//
+	// Use a *bool so callers can leave it nil to mean "default on" while
+	// still allowing explicit disable. nil = on, &false = off, &true = on.
+	DisableKittyTranscoder bool
 }
 
 // DefaultConfig returns sensible default configuration.
@@ -152,7 +241,8 @@ func NewServer(config Config) *Server {
 // The handler is called for each new browser session to create a model.
 // This method blocks until the context is cancelled.
 func (s *Server) Serve(ctx context.Context, handler Handler) error {
-	return s.ServeWithProgram(ctx, newDefaultProgramHandler(handler))
+	wrapped := applyHandlerMiddleware(handler, s.config.HandlerMiddleware)
+	return s.ServeWithProgram(ctx, newDefaultProgramHandler(wrapped))
 }
 
 // ServeWithProgram starts the server with a custom ProgramHandler.
@@ -170,10 +260,8 @@ func MakeOptions(sess Session) []tea.ProgramOption {
 	pty := sess.Pty()
 	ptySlave := sess.PtySlave()
 
-	// Start with real environment, filtering out terminal-related vars
 	var envs []string
 	for _, e := range os.Environ() {
-		// Skip terminal vars - we'll set our own
 		if len(e) >= 5 && e[:5] == "TERM=" {
 			continue
 		}
@@ -183,21 +271,17 @@ func MakeOptions(sess Session) []tea.ProgramOption {
 		envs = append(envs, e)
 	}
 
-	// Add terminal settings LAST so they take precedence
 	envs = append(envs,
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 	)
 
-	// Determine input/output based on platform
 	var input io.Reader
 	var output io.Writer
 	if ptySlave != nil {
-		// Unix: use the actual PTY slave file for raw mode support
 		input = ptySlave
 		output = ptySlave
 	} else {
-		// Windows: use the Session's Reader/Writer (pipe-based)
 		input = sess.(io.Reader)
 		output = sess.(io.Writer)
 	}

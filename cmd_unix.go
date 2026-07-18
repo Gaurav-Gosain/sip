@@ -73,6 +73,21 @@ func (p *cmdPlatformPty) Resize(cols, rows int) error {
 	return nil
 }
 
+// ResizeWithPixels forwards pixel dimensions to TIOCSWINSZ when the
+// underlying PTY supports it (UnixPty does). Otherwise plain Resize.
+func (p *cmdPlatformPty) ResizeWithPixels(cols, rows, widthPx, heightPx int) error {
+	if p.pty == nil {
+		return nil
+	}
+	type pixelResizer interface {
+		SetWinsize(width, height, x, y int) error
+	}
+	if pr, ok := p.pty.(pixelResizer); ok && (widthPx > 0 || heightPx > 0) {
+		return pr.SetWinsize(cols, rows, widthPx, heightPx)
+	}
+	return p.pty.Resize(cols, rows)
+}
+
 // OutputReader returns an io.Reader for reading command output.
 func (p *cmdPlatformPty) OutputReader() io.Reader {
 	return p.pty

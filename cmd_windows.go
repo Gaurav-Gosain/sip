@@ -67,6 +67,12 @@ func (p *cmdPlatformPty) Resize(cols, rows int) error {
 	return nil
 }
 
+// ResizeWithPixels ignores pixel dimensions on Windows ConPTY and
+// falls back to character-only Resize.
+func (p *cmdPlatformPty) ResizeWithPixels(cols, rows, _, _ int) error {
+	return p.Resize(cols, rows)
+}
+
 // OutputReader returns an io.Reader for reading command output.
 func (p *cmdPlatformPty) OutputReader() io.Reader {
 	return p.pty
