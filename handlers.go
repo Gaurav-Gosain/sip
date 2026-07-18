@@ -368,7 +368,7 @@ func (s *httpServer) makeSession(ctx context.Context, cols, rows, widthPx, heigh
 }
 
 func (s *httpServer) outputFilter() func([]byte) []byte {
-	if s.config.DisableKittyTranscoder {
+	if !s.config.EnableKittyTranscoder {
 		return func(b []byte) []byte { return b }
 	}
 	tr := &kittyGfxTranscoder{}

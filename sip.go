@@ -189,14 +189,14 @@ type Config struct {
 	// first).
 	HandlerMiddleware []Middleware
 
-	// EnableKittyTranscoder runs every PTY → client byte stream
-	// through the kitty graphics PNG → RGBA transcoder so the wasm
-	// build of ghostty-vt (no wuffs) can render kitten-icat / ntcharts
-	// output. Default true.
+	// EnableKittyTranscoder runs every PTY → client byte stream through the
+	// server-side kitty graphics PNG → RGBA transcoder.
 	//
-	// Use a *bool so callers can leave it nil to mean "default on" while
-	// still allowing explicit disable. nil = on, &false = off, &true = on.
-	DisableKittyTranscoder bool
+	// The ghostty-web client now decodes PNG kitty graphics itself via the
+	// wasm DECODE_PNG callback, so this is off by default and the raw APC
+	// stream is forwarded untouched (keeping PNG payloads compressed end to
+	// end). Enable it only to force server-side transcoding as a fallback.
+	EnableKittyTranscoder bool
 }
 
 // DefaultConfig returns sensible default configuration.

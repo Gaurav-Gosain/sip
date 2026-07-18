@@ -26,22 +26,22 @@ var (
 
 // Command-line flags
 var (
-	host                 string
-	port                 string
-	debug                bool
-	workDir              string
-	certFile             string
-	keyFile              string
-	basicUser            string
-	basicPass            string
-	basicPassFile        string
-	allowInsecureNoTLS   bool
-	originPatterns       []string
-	idleTimeout          time.Duration
-	maxConns             int
-	disableKitty         bool
-	fontPath             string
-	fontFamily           string
+	host               string
+	port               string
+	debug              bool
+	workDir            string
+	certFile           string
+	keyFile            string
+	basicUser          string
+	basicPass          string
+	basicPassFile      string
+	allowInsecureNoTLS bool
+	originPatterns     []string
+	idleTimeout        time.Duration
+	maxConns           int
+	enableKitty        bool
+	fontPath           string
+	fontFamily         string
 )
 
 func main() {
@@ -52,9 +52,9 @@ func main() {
 
 Wraps any CLI command and exposes it through a web browser with full
 terminal emulation. Renders with libghostty (ghostty-web wasm) for
-high-fidelity terminal output, supports kitty graphics natively
-through a server-side PNG transcoder, and speaks WebSocket or
-WebTransport (HTTP/3 over QUIC).
+high-fidelity terminal output, decodes kitty graphics (including PNG)
+client-side in the wasm VT, and speaks WebSocket or WebTransport
+(HTTP/3 over QUIC).
 
 The command to run must be specified after "--".`,
 		Example: `  # Run htop in browser
@@ -114,8 +114,8 @@ The command to run must be specified after "--".`,
 		"Custom font file (.ttf/.otf/.woff/.woff2) served at /static/fonts/custom*")
 	rootCmd.Flags().StringVar(&fontFamily, "font-family", "",
 		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
-	rootCmd.Flags().BoolVar(&disableKitty, "disable-kitty-transcoder", false,
-		"Disable the server-side kitty graphics PNG → RGBA transcoder")
+	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,
+		"Force the server-side kitty graphics PNG → RGBA transcoder (client decodes PNG by default)")
 
 	// Misc
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
@@ -161,20 +161,20 @@ func runServer(cmdArgs []string) error {
 	defer cancel()
 
 	config := sip.Config{
-		Host:                   host,
-		Port:                   port,
-		Debug:                  debug,
-		TLSCert:                certFile,
-		TLSKey:                 keyFile,
-		BasicUsername:          basicUser,
-		BasicPassword:          password,
-		AllowInsecureNoTLS:     allowInsecureNoTLS,
-		OriginPatterns:         originPatterns,
-		MaxConnections:         maxConns,
-		IdleTimeout:            idleTimeout,
-		FontPath:               fontPath,
-		FontFamily:             fontFamily,
-		DisableKittyTranscoder: disableKitty,
+		Host:                  host,
+		Port:                  port,
+		Debug:                 debug,
+		TLSCert:               certFile,
+		TLSKey:                keyFile,
+		BasicUsername:         basicUser,
+		BasicPassword:         password,
+		AllowInsecureNoTLS:    allowInsecureNoTLS,
+		OriginPatterns:        originPatterns,
+		MaxConnections:        maxConns,
+		IdleTimeout:           idleTimeout,
+		FontPath:              fontPath,
+		FontFamily:            fontFamily,
+		EnableKittyTranscoder: enableKitty,
 	}
 
 	server := sip.NewServer(config)
