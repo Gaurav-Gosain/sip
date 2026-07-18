@@ -50,6 +50,7 @@ type pngLoading struct {
 
 const kittyEmitChunkSize = 4096
 const maxAPCBody = 16 * 1024 * 1024
+const maxLoadingBytes = 96 * 1024 * 1024
 
 // Filter consumes a slice of PTY bytes and returns the (possibly rewritten)
 // stream. The output may be larger or smaller than the input.
@@ -138,12 +139,26 @@ func (t *kittyGfxTranscoder) flushAPC(out *bytes.Buffer) {
 	meta := parseKittyMeta(metaRaw)
 
 	if t.loading != nil {
-		t.appendChunk(payload)
-		if isFinalChunk(meta) {
-			t.emitDecoded(out)
+		if !isContinuationChunk(meta) {
+			// The in-flight transfer never sent its terminating chunk; a
+			// new command arrived instead. Flush what we have so the stalled
+			// continuation can't swallow every following image, then fall
+			// through to handle this command fresh.
+			t.passthroughLoading(out)
 			t.loading = nil
+		} else {
+			t.appendChunk(payload)
+			if t.loading.encoded.Len() > maxLoadingBytes {
+				t.passthroughLoading(out)
+				t.loading = nil
+				return
+			}
+			if isFinalChunk(meta) {
+				t.emitDecoded(out)
+				t.loading = nil
+			}
+			return
 		}
-		return
 	}
 
 	if meta["f"] != "100" {
@@ -210,6 +225,10 @@ func (t *kittyGfxTranscoder) emitDecoded(out *bytes.Buffer) {
 }
 
 func (t *kittyGfxTranscoder) passthroughLoading(out *bytes.Buffer) {
+	// Drop the stored m flag: writeChunkedAPC owns chunking of the emitted
+	// bytes, and a leftover m=1 from the original first chunk would tell the
+	// client's parser to keep waiting for a continuation that never comes.
+	delete(t.loading.meta, "m")
 	writeChunkedAPC(out, t.loading.meta, t.loading.encoded.String())
 }
 
@@ -316,4 +335,22 @@ func isFinalChunk(meta map[string]string) bool {
 		return true
 	}
 	return m == "0"
+}
+
+// isContinuationChunk reports whether meta belongs to a chunk that continues
+// the in-flight transmission rather than starting a new command. Kitty
+// continuation chunks carry only the m (and optionally q) key; anything else
+// (a=, f=, i=, …) marks a fresh command.
+func isContinuationChunk(meta map[string]string) bool {
+	if _, ok := meta["m"]; !ok {
+		return false
+	}
+	for k := range meta {
+		switch k {
+		case "m", "q":
+		default:
+			return false
+		}
+	}
+	return true
 }
