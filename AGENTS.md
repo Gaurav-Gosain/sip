@@ -199,8 +199,10 @@ invisible; at the ~200x55 of a maximised terminal it dominates the frame and
 was the cause of the "slow on both renderers" reports.
 
 `getViewport()` therefore memoizes into `__sipViewportValid`, invalidated at
-the four points where the grid can actually change: `write()`, `resize()`,
-`setCellPixelSize()` and `markClean()`. Because `markClean()` is the end of a
+every point where the grid can actually change: `write()`, `resize()`,
+`setCellPixelSize()`, `markClean()`, and the colour setters `setColorOption()`
+and `applyConfig()` (the pool caches resolved per-cell RGB, so a palette change
+restyles cells without touching them). Because `markClean()` is the end of a
 frame, the memo is per-frame by construction: one walk per frame regardless of
 how many rows are read. `clienttests/viewport_reads.spec.mjs` pins the ratio.
 

@@ -3238,7 +3238,7 @@ const AQ = class vB {
           const D = g.palette[i];
           D !== 0 && (C[i * 3 + 0] = D >> 16 & 255, C[i * 3 + 1] = D >> 8 & 255, C[i * 3 + 2] = D & 255);
         }
-        this.exports.ghostty_terminal_set(this.handle, AA.COLOR_PALETTE, I);
+        this.exports.ghostty_terminal_set(this.handle, AA.COLOR_PALETTE, I), this.__sipViewportValid = !1;
       } finally {
         this.exports.ghostty_wasm_free_u8_array(I, 768);
       }
@@ -3246,7 +3246,7 @@ const AQ = class vB {
   }
   setColorOption(g, B) {
     const I = this.exports.ghostty_wasm_alloc_u8_array(3), Q = new Uint8Array(this.memory.buffer, I, 3);
-    Q[0] = B >> 16 & 255, Q[1] = B >> 8 & 255, Q[2] = B & 255, this.exports.ghostty_terminal_set(this.handle, g, I), this.exports.ghostty_wasm_free_u8_array(I, 3);
+    Q[0] = B >> 16 & 255, Q[1] = B >> 8 & 255, Q[2] = B & 255, this.exports.ghostty_terminal_set(this.handle, g, I), this.exports.ghostty_wasm_free_u8_array(I, 3), this.__sipViewportValid = !1;
   }
   /**
    * Release any resources that have been allocated by the constructor up to
@@ -5847,7 +5847,7 @@ class ni {
         this.selectionManager.clearDirtySelectionRows();
       }
     }
-    const s = /* @__PURE__ */ new Set(), a = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId, k = JSON.stringify(this.hoveredLinkRange) !== JSON.stringify(this.previousHoveredLinkRange);
+    const s = /* @__PURE__ */ new Set(), a = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId, k = this.__sipLinkRangeChanged(this.hoveredLinkRange, this.previousHoveredLinkRange);
     if (a) {
       for (let c = 0; c < i.rows; c++) {
         let G = null;
@@ -5922,6 +5922,16 @@ class ni {
    * and text in a single pass (cell by cell), the background of cell N would
    * cover any left-extending portions of graphemes from cell N-1.
    */
+  /**
+   * __sip: compare two hovered-link ranges by field.
+   *
+   * This ran as two JSON.stringify calls per frame to compare two small
+   * objects. Constant cost rather than a hot one, but a serializer has no
+   * business in a per-frame path.
+   */
+  __sipLinkRangeChanged(g, B) {
+    return g === B ? !1 : !g || !B ? !0 : g.startX !== B.startX || g.startY !== B.startY || g.endX !== B.endX || g.endY !== B.endY;
+  }
   renderLine(g, B, I) {
     const Q = B * this.metrics.height, C = I * this.metrics.width;
     if (this.__sipRenderHook) { this.ctx.clearRect(0, Q, C, this.metrics.height); return; }
