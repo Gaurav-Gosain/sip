@@ -4563,7 +4563,7 @@ const hi = {
    * @param mouseConfig - Optional mouse tracking configuration
    */
   constructor(g, B, I, Q, C, E, i, D, o, w) {
-    this.keydownListener = null, this.keypressListener = null, this.pasteListener = null, this.beforeInputListener = null, this.compositionStartListener = null, this.compositionUpdateListener = null, this.compositionEndListener = null, this.mousedownListener = null, this.mouseupListener = null, this.mousemoveListener = null, this.wheelListener = null, this.isComposing = !1, this.isDisposed = !1, this.mouseButtonsPressed = 0, this.lastKeyDownData = null, this.lastKeyDownTime = 0, this.lastPasteData = null, this.lastPasteTime = 0, this.lastPasteSource = null, this.lastCompositionData = null, this.lastCompositionTime = 0, this.lastBeforeInputData = null, this.lastBeforeInputTime = 0, this.encoder = g.createKeyEncoder(), this.container = B, this.inputElement = o, this.onDataCallback = I, this.onBellCallback = Q, this.onKeyCallback = C, this.customKeyEventHandler = E, this.getModeCallback = i, this.onCopyCallback = D, this.mouseConfig = w, this.attach();
+    this.keydownListener = null, this.keyupListener = null, this.altIsMeta = !0, this.getKittyFlagsCallback = null, this.keypressListener = null, this.pasteListener = null, this.beforeInputListener = null, this.compositionStartListener = null, this.compositionUpdateListener = null, this.compositionEndListener = null, this.mousedownListener = null, this.mouseupListener = null, this.mousemoveListener = null, this.wheelListener = null, this.isComposing = !1, this.isDisposed = !1, this.mouseButtonsPressed = 0, this.lastKeyDownData = null, this.lastKeyDownTime = 0, this.lastPasteData = null, this.lastPasteTime = 0, this.lastPasteSource = null, this.lastCompositionData = null, this.lastCompositionTime = 0, this.lastBeforeInputData = null, this.lastBeforeInputTime = 0, this.encoder = g.createKeyEncoder(), this.container = B, this.inputElement = o, this.onDataCallback = I, this.onBellCallback = Q, this.onKeyCallback = C, this.customKeyEventHandler = E, this.getModeCallback = i, this.onCopyCallback = D, this.mouseConfig = w, this.attach();
   }
   /**
    * Set custom key event handler (for runtime updates)
@@ -4575,7 +4575,7 @@ const hi = {
    * Attach keyboard event listeners to container
    */
   attach() {
-    typeof this.container.hasAttribute == "function" && typeof this.container.setAttribute == "function" && (this.container.hasAttribute("tabindex") || this.container.setAttribute("tabindex", "0"), this.container.style && (this.container.style.outline = "none")), this.keydownListener = this.handleKeyDown.bind(this), this.container.addEventListener("keydown", this.keydownListener), this.pasteListener = this.handlePaste.bind(this), this.container.addEventListener("paste", this.pasteListener), this.inputElement && this.inputElement !== this.container && this.inputElement.addEventListener("paste", this.pasteListener), this.inputElement && (this.beforeInputListener = this.handleBeforeInput.bind(this), this.inputElement.addEventListener("beforeinput", this.beforeInputListener)), this.compositionStartListener = this.handleCompositionStart.bind(this), this.container.addEventListener("compositionstart", this.compositionStartListener), this.compositionUpdateListener = this.handleCompositionUpdate.bind(this), this.container.addEventListener("compositionupdate", this.compositionUpdateListener), this.compositionEndListener = this.handleCompositionEnd.bind(this), this.container.addEventListener("compositionend", this.compositionEndListener), this.mousedownListener = this.handleMouseDown.bind(this), this.container.addEventListener("mousedown", this.mousedownListener), this.mouseupListener = this.handleMouseUp.bind(this), this.container.addEventListener("mouseup", this.mouseupListener), this.mousemoveListener = this.handleMouseMove.bind(this), this.container.addEventListener("mousemove", this.mousemoveListener), this.wheelListener = this.handleWheel.bind(this), this.container.addEventListener("wheel", this.wheelListener, { passive: !1 });
+    typeof this.container.hasAttribute == "function" && typeof this.container.setAttribute == "function" && (this.container.hasAttribute("tabindex") || this.container.setAttribute("tabindex", "0"), this.container.style && (this.container.style.outline = "none")), this.keydownListener = this.handleKeyDown.bind(this), this.container.addEventListener("keydown", this.keydownListener), this.keyupListener = this.handleKeyUp.bind(this), this.container.addEventListener("keyup", this.keyupListener), this.pasteListener = this.handlePaste.bind(this), this.container.addEventListener("paste", this.pasteListener), this.inputElement && this.inputElement !== this.container && this.inputElement.addEventListener("paste", this.pasteListener), this.inputElement && (this.beforeInputListener = this.handleBeforeInput.bind(this), this.inputElement.addEventListener("beforeinput", this.beforeInputListener)), this.compositionStartListener = this.handleCompositionStart.bind(this), this.container.addEventListener("compositionstart", this.compositionStartListener), this.compositionUpdateListener = this.handleCompositionUpdate.bind(this), this.container.addEventListener("compositionupdate", this.compositionUpdateListener), this.compositionEndListener = this.handleCompositionEnd.bind(this), this.container.addEventListener("compositionend", this.compositionEndListener), this.mousedownListener = this.handleMouseDown.bind(this), this.container.addEventListener("mousedown", this.mousedownListener), this.mouseupListener = this.handleMouseUp.bind(this), this.container.addEventListener("mouseup", this.mouseupListener), this.mousemoveListener = this.handleMouseMove.bind(this), this.container.addEventListener("mousemove", this.mousemoveListener), this.wheelListener = this.handleWheel.bind(this), this.container.addEventListener("wheel", this.wheelListener, { passive: !1 });
   }
   /**
    * Map KeyboardEvent.code to USB HID Key enum value
@@ -4627,7 +4627,8 @@ const hi = {
       this.onCopyCallback && this.onCopyCallback(), g.preventDefault();
       return;
     }
-    if (this.isPrintableCharacter(g)) {
+    const K = this.getKittyFlagsCallback ? this.getKittyFlagsCallback() : 0;
+    if (K === 0 && this.isPrintableCharacter(g)) {
       g.preventDefault(), this.onDataCallback(g.key), this.recordKeyDownData(g.key);
       return;
     }
@@ -4635,7 +4636,7 @@ const hi = {
     if (B === null)
       return;
     const I = this.extractModifiers(g);
-    if (I === P.NONE || I === P.SHIFT) {
+    if (K === 0 && (I === P.NONE || I === P.SHIFT)) {
       let C = null;
       switch (B) {
         case h.ENTER:
@@ -4716,7 +4717,8 @@ const hi = {
         const o = this.getModeCallback(1);
         this.encoder.setOption(Cg.CURSOR_KEY_APPLICATION, o);
       }
-      const C = g.key.length === 1 && g.key.charCodeAt(0) < 128 ? g.key.toLowerCase() : void 0, E = this.encoder.encode({
+      this.getKittyFlagsCallback && this.encoder.setKittyFlags(K), this.encoder.setOption(Cg.ALT_ESC_PREFIX, this.altIsMeta);
+      const C = g.key.length === 1 ? g.key : void 0, E = this.encoder.encode({
         action: Q,
         key: B,
         mods: I,
@@ -4725,6 +4727,34 @@ const hi = {
       g.preventDefault(), g.stopPropagation(), D.length > 0 && (this.onDataCallback(D), this.recordKeyDownData(D));
     } catch (C) {
       console.warn("Failed to encode key:", g.code, C);
+    }
+  }
+  /**
+   * Handle keyup event. Only emits when the kitty keyboard protocol's
+   * report-event-types flag (bit 0x2) is negotiated; otherwise key releases
+   * are not reported.
+   */
+  handleKeyUp(g) {
+    if (this.isDisposed || this.isComposing || g.isComposing || g.keyCode === 229)
+      return;
+    const K = this.getKittyFlagsCallback ? this.getKittyFlagsCallback() : 0;
+    if (!(K & 2))
+      return;
+    const B = this.mapKeyCode(g.code);
+    if (B === null)
+      return;
+    const I = this.extractModifiers(g);
+    try {
+      this.encoder.setKittyFlags(K), this.encoder.setOption(Cg.ALT_ESC_PREFIX, this.altIsMeta);
+      const C = g.key.length === 1 ? g.key : void 0, E = this.encoder.encode({
+        action: WI.RELEASE,
+        key: B,
+        mods: I,
+        utf8: C
+      }), D = new TextDecoder().decode(E);
+      D.length > 0 && (g.preventDefault(), g.stopPropagation(), this.onDataCallback(D));
+    } catch (C) {
+      console.warn("Failed to encode key release:", g.code, C);
     }
   }
   /**
@@ -5048,7 +5078,7 @@ const hi = {
    * Dispose the InputHandler and remove event listeners
    */
   dispose() {
-    this.isDisposed || (this.keydownListener && (this.container.removeEventListener("keydown", this.keydownListener), this.keydownListener = null), this.keypressListener && (this.container.removeEventListener("keypress", this.keypressListener), this.keypressListener = null), this.pasteListener && (this.container.removeEventListener("paste", this.pasteListener), this.inputElement && this.inputElement !== this.container && this.inputElement.removeEventListener("paste", this.pasteListener), this.pasteListener = null), this.beforeInputListener && this.inputElement && (this.inputElement.removeEventListener("beforeinput", this.beforeInputListener), this.beforeInputListener = null), this.compositionStartListener && (this.container.removeEventListener("compositionstart", this.compositionStartListener), this.compositionStartListener = null), this.compositionUpdateListener && (this.container.removeEventListener("compositionupdate", this.compositionUpdateListener), this.compositionUpdateListener = null), this.compositionEndListener && (this.container.removeEventListener("compositionend", this.compositionEndListener), this.compositionEndListener = null), this.mousedownListener && (this.container.removeEventListener("mousedown", this.mousedownListener), this.mousedownListener = null), this.mouseupListener && (this.container.removeEventListener("mouseup", this.mouseupListener), this.mouseupListener = null), this.mousemoveListener && (this.container.removeEventListener("mousemove", this.mousemoveListener), this.mousemoveListener = null), this.wheelListener && (this.container.removeEventListener("wheel", this.wheelListener), this.wheelListener = null), this.isDisposed = !0);
+    this.isDisposed || (this.keydownListener && (this.container.removeEventListener("keydown", this.keydownListener), this.keydownListener = null), this.keyupListener && (this.container.removeEventListener("keyup", this.keyupListener), this.keyupListener = null), this.keypressListener && (this.container.removeEventListener("keypress", this.keypressListener), this.keypressListener = null), this.pasteListener && (this.container.removeEventListener("paste", this.pasteListener), this.inputElement && this.inputElement !== this.container && this.inputElement.removeEventListener("paste", this.pasteListener), this.pasteListener = null), this.beforeInputListener && this.inputElement && (this.inputElement.removeEventListener("beforeinput", this.beforeInputListener), this.beforeInputListener = null), this.compositionStartListener && (this.container.removeEventListener("compositionstart", this.compositionStartListener), this.compositionStartListener = null), this.compositionUpdateListener && (this.container.removeEventListener("compositionupdate", this.compositionUpdateListener), this.compositionUpdateListener = null), this.compositionEndListener && (this.container.removeEventListener("compositionend", this.compositionEndListener), this.compositionEndListener = null), this.mousedownListener && (this.container.removeEventListener("mousedown", this.mousedownListener), this.mousedownListener = null), this.mouseupListener && (this.container.removeEventListener("mouseup", this.mouseupListener), this.mouseupListener = null), this.mousemoveListener && (this.container.removeEventListener("mousemove", this.mousemoveListener), this.mousemoveListener = null), this.wheelListener && (this.container.removeEventListener("wheel", this.wheelListener), this.wheelListener = null), this.isDisposed = !0);
   }
   /**
    * Check if handler is disposed
@@ -6880,6 +6910,7 @@ class Li {
       allowTransparency: g.allowTransparency ?? !1,
       convertEol: g.convertEol ?? !1,
       disableStdin: g.disableStdin ?? !1,
+      altIsMeta: g.altIsMeta ?? !0,
       smoothScrollDuration: g.smoothScrollDuration ?? 100
       // Default: 100ms smooth scroll
     };
@@ -7054,7 +7085,10 @@ class Li {
         () => this.copySelection(),
         this.textarea,
         i
-      ), this.selectionManager = new yi(
+      ), this.inputHandler.getKittyFlagsCallback = () => {
+        var o;
+        return ((o = this.wasmTerm) == null ? void 0 : o.tGetU32(iA.KITTY_KEYBOARD_FLAGS)) ?? 0;
+      }, this.inputHandler.altIsMeta = this.options.altIsMeta !== !1, this.selectionManager = new yi(
         this,
         this.renderer,
         this.wasmTerm,

@@ -57,6 +57,12 @@ function isLoopback(host) {
     return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
+// macOS defaults Option to composing characters (native Terminal.app /
+// iTerm2 behavior), so Alt-as-meta is off there by default to keep
+// international/Option input working; on by default elsewhere.
+const isMac = /Mac|iPhone|iPad/i.test(
+    (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '');
+
 const settings = loadSettings();
 
 // Per-deployment config injected by the server (see handleIndex).
@@ -82,6 +88,9 @@ const sipTerm = new SipTerminal('terminal', {
     scrollback: 5000,
     allowOSC52: true,
     convertEol: false,
+    // Alt sends an ESC prefix (readline M- navigation, Alt-as-meta). Defaults
+    // off on macOS so Option composes characters; override via saved settings.
+    altIsMeta: settings.altIsMeta ?? !isMac,
     theme: CATPPUCCIN_MOCHA,
 });
 
