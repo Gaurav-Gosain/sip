@@ -118,7 +118,7 @@ func (s *httpServer) start(ctx context.Context) error {
 				Handler:         wtMux,
 				EnableDatagrams: true,
 			},
-			CheckOrigin: func(_ *http.Request) bool { return true },
+			CheckOrigin: s.checkOrigin,
 		}
 	}
 
@@ -401,7 +401,6 @@ func (s *httpServer) handleCertHash(wtPort string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		hashArray := make([]int, len(s.certInfo.Hash))
 		for i, b := range s.certInfo.Hash {
 			hashArray[i] = int(b)

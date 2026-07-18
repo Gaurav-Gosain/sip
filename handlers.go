@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -642,12 +645,36 @@ func (s *httpServer) releaseConnection() {
 }
 
 // originPatterns merges legacy AllowOrigins + new OriginPatterns. An
-// empty merged slice means "any origin" (current sip behaviour).
+// empty merged slice means "same-origin only": coder/websocket enforces
+// that the Origin host matches the request Host, and checkOrigin does the
+// same for WebTransport. Any-origin access requires an explicit "*" entry.
 func (s *httpServer) originPatterns() []string {
 	merged := append([]string{}, s.config.AllowOrigins...)
 	merged = append(merged, s.config.OriginPatterns...)
-	if len(merged) == 0 {
-		return []string{"*"}
-	}
 	return merged
+}
+
+// checkOrigin enforces same-origin by default for the WebTransport
+// handshake, mirroring the coder/websocket policy applied to WS upgrades.
+// Requests without an Origin header (non-browser clients) pass. Otherwise
+// the Origin host must equal the request Host or match an entry in the
+// merged allowlist (path.Match glob); an explicit "*" opts into any origin.
+func (s *httpServer) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	for _, pattern := range s.originPatterns() {
+		if matched, err := path.Match(strings.ToLower(pattern), strings.ToLower(u.Host)); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
