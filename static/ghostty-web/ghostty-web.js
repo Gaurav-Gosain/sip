@@ -3320,10 +3320,10 @@ const AQ = class vB {
   // ==========================================================================
   write(g) {
     const B = typeof g == "string" ? new TextEncoder().encode(g) : g, I = this.exports.ghostty_wasm_alloc_u8_array(B.length);
-    new Uint8Array(this.memory.buffer).set(B, I), this.exports.ghostty_terminal_vt_write(this.handle, I, B.length), this.exports.ghostty_wasm_free_u8_array(I, B.length);
+    new Uint8Array(this.memory.buffer).set(B, I), this.exports.ghostty_terminal_vt_write(this.handle, I, B.length), this.exports.ghostty_wasm_free_u8_array(I, B.length), this.__sipViewportValid = !1;
   }
   resize(g, B) {
-    g === this._cols && B === this._rows || (this._cols = g, this._rows = B, this.exports.ghostty_terminal_resize(
+    g === this._cols && B === this._rows || (this.__sipViewportValid = !1, this._cols = g, this._rows = B, this.exports.ghostty_terminal_resize(
       this.handle,
       g,
       B,
@@ -3496,7 +3496,7 @@ const AQ = class vB {
    */
   setCellPixelSize(g, B) {
     const I = Math.max(1, Math.round(g)), Q = Math.max(1, Math.round(B));
-    I === this.cellWidthPx && Q === this.cellHeightPx || (this.cellWidthPx = I, this.cellHeightPx = Q, this.exports.ghostty_terminal_resize(this.handle, this._cols, this._rows, I, Q));
+    I === this.cellWidthPx && Q === this.cellHeightPx || (this.__sipViewportValid = !1, this.cellWidthPx = I, this.cellHeightPx = Q, this.exports.ghostty_terminal_resize(this.handle, this._cols, this._rows, I, Q));
   }
   free() {
     this.callbackRegistry && this.callbackRegistry.instancesByHandle.delete(this.handle), this.rowCells && (this.exports.ghostty_render_state_row_cells_free(this.rowCells), this.rowCells = 0), this.rowIter && (this.exports.ghostty_render_state_row_iterator_free(this.rowIter), this.rowIter = 0), this.renderHandle && (this.exports.ghostty_render_state_free(this.renderHandle), this.renderHandle = 0), this.exports.ghostty_terminal_free(this.handle);
@@ -3621,7 +3621,7 @@ const AQ = class vB {
     const B = this.exports.ghostty_wasm_alloc_u8();
     for (new DataView(this.memory.buffer).setUint8(B, 0); this.exports.ghostty_render_state_row_iterator_next(this.rowIter); )
       this.exports.ghostty_render_state_row_set(this.rowIter, $I.DIRTY, B);
-    this.exports.ghostty_wasm_free_u8(B), this.rowDirtyCache = null;
+    this.exports.ghostty_wasm_free_u8(B), this.rowDirtyCache = null, this.__sipViewportValid = !1;
   }
   /**
    * Populate the cellPool from the current render state and return it.
@@ -3652,6 +3652,14 @@ const AQ = class vB {
    * cached layout map for direct memory access.
    */
   getViewport() {
+    // __sip: per-frame memo. getLine() slices a single row out of a full
+    // getViewport() walk, and the render loop calls getLine() once per
+    // damaged row, so an unmemoized getViewport made the frame
+    // O(rows^2 * cols) wasm crossings. The pool can only go stale on an
+    // actual grid mutation, so the memo is invalidated in write(), resize(),
+    // setCellPixelSize() and markClean() rather than on a timer.
+    if (this.__sipViewportValid)
+      return this.rowDirtyCache = this.__sipRowDirtySnap, this.rowWrapCache = this.__sipRowWrapSnap, this.cellPool;
     this.update(), this.zeroCellPool(), this.populateHandle(
       (e) => this.exports.ghostty_render_state_get(this.renderHandle, d.ROW_ITERATOR, e),
       this.rowIter
@@ -3722,7 +3730,7 @@ const AQ = class vB {
     } finally {
       this.exports.ghostty_wasm_free_u8_array(B, 4), this.exports.ghostty_wasm_free_u8_array(I, 3), this.exports.ghostty_wasm_free_u8(Q), this.exports.ghostty_wasm_free_u8_array(C, 8), this.exports.ghostty_wasm_free_u8(E), this.exports.ghostty_wasm_free_u8_array(i, g), this.exports.ghostty_wasm_free_u8_array(D, 8), this.exports.ghostty_wasm_free_u8_array(o, 4);
     }
-    return this.rowDirtyCache = w, this.rowWrapCache = t, this.cellPool;
+    return this.rowDirtyCache = w, this.rowWrapCache = t, this.__sipRowDirtySnap = w, this.__sipRowWrapSnap = t, this.__sipViewportValid = !0, this.cellPool;
   }
   /**
    * Helper for the in/out pointer pattern used by ROW_ITERATOR / ROW_DATA_CELLS:
@@ -5853,6 +5861,13 @@ class ni {
         continue;
       M = !0;
       let G = null;
+      // __sip: under the vtgl hook renderLine only clears the 2D overlay row
+      // and never reads the cells, so skip the getLine that would otherwise
+      // pull the row out of a full viewport walk for nothing.
+      if (this.__sipRenderHook) {
+        this.renderLine(null, c, i.cols);
+        continue;
+      }
       if (I > 0)
         if (c < I && Q) {
           const J = D - Math.floor(I) + c;

@@ -186,6 +186,27 @@ the existing `__sip*` patch points. Three lines in `ghostty-web.js`:
 - The hook is called once per frame after the row pass, before the kitty and
   cursor passes, so z-order comes out right.
 - `resize()` clears rather than filling the background when the hook is set.
+- The row pass skips its `getLine()` when the hook is set. `renderLine()` only
+  clears the overlay row in that mode, so reading the cells was pure waste.
+
+### The viewport memo
+
+`wasmTerm.getViewport()` walks the whole grid at roughly eight wasm crossings
+per cell, and `getLine(row)` is implemented as "walk the viewport, slice one
+row". The render loop calls `getLine()` once per damaged row, so an unmemoized
+`getViewport()` made a frame O(rows^2 \* cols) crossings. At 80x24 that is
+invisible; at the ~200x55 of a maximised terminal it dominates the frame and
+was the cause of the "slow on both renderers" reports.
+
+`getViewport()` therefore memoizes into `__sipViewportValid`, invalidated at
+the four points where the grid can actually change: `write()`, `resize()`,
+`setCellPixelSize()` and `markClean()`. Because `markClean()` is the end of a
+frame, the memo is per-frame by construction: one walk per frame regardless of
+how many rows are read. `clienttests/viewport_reads.spec.mjs` pins the ratio.
+
+Anything added to this file that reads cells must go through `getLine()` or
+`getViewport()` so it shares the memo, and any new mutation path must
+invalidate it.
 
 `vtgl_source.js` adapts the wasm buffer to vtgl's `VtSource` (absolute row
 coordinates, theme-resolved colors). `vtgl_bridge.js` owns the canvas, the
