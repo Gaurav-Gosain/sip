@@ -27,13 +27,15 @@
 
 import { SipVtSource, parseHexColor } from './vtgl_source.js';
 
-/** Measure the advance vtgl will measure, using vtgl's own measurement recipe. */
-function measureDeviceAdvance(fontFamily, fontSize, dpr) {
+/**
+ * Measure the font exactly as vtgl will, by calling vtgl's own measurement.
+ * Sharing the function rather than reimplementing it is what keeps the two
+ * sides from drifting when the measurement recipe changes.
+ */
+function measureDeviceFont(vtgl, fontFamily, fontSize, dpr) {
+    const deviceFontPx = fontSize * dpr;
     const ctx = document.createElement('canvas').getContext('2d');
-    if (!ctx) return fontSize * dpr * 0.6;
-    ctx.font = `${fontSize * dpr}px ${fontFamily}`;
-    const w = ctx.measureText('M').width;
-    return w > 0 ? w : fontSize * dpr * 0.6;
+    return vtgl.measureFont(ctx, fontFamily, deviceFontPx);
 }
 
 export class VtglBridge {
@@ -74,22 +76,25 @@ export class VtglBridge {
      * Construct a vtgl renderer whose derived cell size matches the bundle's
      * measured one at the given DPR.
      *
-     * vtgl computes its cell box from fontSize, lineHeight and letterSpacing
-     * rather than taking one, so those two are solved for here: lineHeight
-     * from the bundle's cell height, letterSpacing from the difference between
-     * the bundle's cell width and the advance vtgl will measure. Both depend
-     * on DPR, which is why a DPR change rebuilds rather than just resizing.
+     * vtgl computes its cell box from the font's measured line box scaled by
+     * lineHeight, rather than taking a cell size, so lineHeight and
+     * letterSpacing are solved for here: lineHeight as the ratio between the
+     * bundle's cell height in device pixels and the face's natural line box,
+     * letterSpacing from the difference between the bundle's cell width and
+     * the advance vtgl will measure. Both depend on DPR, which is why a DPR
+     * change rebuilds rather than just resizing.
      */
     _makeRenderer(dpr) {
         const br = this.bundleRenderer;
-        const m = br.metrics;
-        const advance = measureDeviceAdvance(br.fontFamily, br.fontSize, dpr);
+        const m = this._bundleMetrics || br.metrics;
+        const fm = measureDeviceFont(this.vtgl, br.fontFamily, br.fontSize, dpr);
+        const charH = fm.ascent + fm.descent;
         try {
             return new this.vtgl.WebGL2Renderer({
                 fontFamily: br.fontFamily,
                 fontSize: br.fontSize,
-                lineHeight: m.height / br.fontSize,
-                letterSpacing: (m.width * dpr - advance) / dpr,
+                lineHeight: charH > 0 ? (m.height * dpr) / charH : 1,
+                letterSpacing: (m.width * dpr - fm.advance) / dpr,
                 dpr,
                 resolveInverse: true,
                 theme: this._theme,

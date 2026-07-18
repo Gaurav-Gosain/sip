@@ -5740,7 +5740,14 @@ class ni {
   measureFont() {
     const B = document.createElement("canvas").getContext("2d");
     B.font = `${this.fontSize}px ${this.fontFamily}`;
-    const I = B.measureText("M"), Q = Math.ceil(I.width), C = I.actualBoundingBoxAscent || this.fontSize * 0.8, E = I.actualBoundingBoxDescent || this.fontSize * 0.2, i = Math.ceil(C + E) + 2, D = Math.ceil(C) + 1;
+    const I = B.measureText("M"), Q = Math.ceil(I.width);
+    let C = I.fontBoundingBoxAscent, E = I.fontBoundingBoxDescent;
+    if (!(C > 0) || !(E > 0)) {
+      const G = B.measureText("Mg|_j");
+      C = G.actualBoundingBoxAscent, E = G.actualBoundingBoxDescent;
+    }
+    C > 0 || (C = this.fontSize * 0.8), E > 0 || (E = this.fontSize * 0.2);
+    const i = Math.ceil(C + E), D = Math.round(C);
     return { width: Q, height: i, baseline: D };
   }
   /**
