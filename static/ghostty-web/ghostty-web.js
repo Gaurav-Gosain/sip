@@ -5763,7 +5763,7 @@ class ni {
    */
   resize(g, B) {
     const I = g * this.metrics.width, Q = B * this.metrics.height;
-    this.canvas.style.width = `${I}px`, this.canvas.style.height = `${Q}px`, this.canvas.width = I * this.devicePixelRatio, this.canvas.height = Q * this.devicePixelRatio, this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio), this.ctx.textBaseline = "alphabetic", this.ctx.textAlign = "left", this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, I, Q);
+    this.canvas.style.width = `${I}px`, this.canvas.style.height = `${Q}px`, this.canvas.width = I * this.devicePixelRatio, this.canvas.height = Q * this.devicePixelRatio, this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio), this.ctx.textBaseline = "alphabetic", this.ctx.textAlign = "left", this.__sipRenderHook ? this.ctx.clearRect(0, 0, I, Q) : (this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, I, Q));
   }
   // ==========================================================================
   // Main Rendering
@@ -5858,6 +5858,7 @@ class ni {
         G = g.getLine(c);
       G && this.renderLine(G, c, i.cols);
     }
+    this.__sipRenderHook && this.__sipRenderHook(g, B, I, Q);
     this.currentDirectPlacements.length > 0 && M && this.renderKittyImages(I), I === 0 && E.visible && this.cursorVisible && this.renderCursor(E.x, E.y), Q && C > 0 && this.renderScrollbar(I, D, i.rows, C), this.lastCursorPosition = { x: E.x, y: E.y }, g.clearDirty();
   }
   /**
@@ -5873,6 +5874,7 @@ class ni {
    */
   renderLine(g, B, I) {
     const Q = B * this.metrics.height, C = I * this.metrics.width;
+    if (this.__sipRenderHook) { this.ctx.clearRect(0, Q, C, this.metrics.height); return; }
     this.ctx.clearRect(0, Q, C, this.metrics.height), this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, Q, C, this.metrics.height);
     for (let E = 0; E < g.length; E++) {
       const i = g[E];
