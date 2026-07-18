@@ -1,8 +1,11 @@
 package osc52gate
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/Gaurav-Gosain/sip"
@@ -97,4 +100,61 @@ func TestModeAllowPassesSplitSequence(t *testing.T) {
 	if want := "\x1b]52;c;SGVsbG8=\x07"; string(got2) != want {
 		t.Fatalf("ModeAllow OSC52 output = %q, want %q", got2, want)
 	}
+}
+
+// TestModeAllowPassesLargePayloadAcrossManyReads asserts that a big OSC 52
+// write (large clipboard copy) split into many small reads is forwarded to
+// the client byte-for-byte. A tmux/vim yank of a big buffer produces exactly
+// this: an escape far larger than any single PTY read, chunked arbitrarily.
+func TestModeAllowPassesLargePayloadAcrossManyReads(t *testing.T) {
+	// ~256 KiB of data -> base64 payload well past a single read boundary.
+	raw := bytes.Repeat([]byte("arch-btw "), 32*1024)
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	seq := "PRE\x1b]52;c;" + b64 + "\x07POST"
+
+	// Slice the whole stream into small fixed-size chunks so the escape
+	// boundaries fall mid-sequence in many places.
+	const chunkSize = 37 // deliberately not a power of two
+	var chunks [][]byte
+	for i := 0; i < len(seq); i += chunkSize {
+		end := i + chunkSize
+		if end > len(seq) {
+			end = len(seq)
+		}
+		chunks = append(chunks, []byte(seq[i:end]))
+	}
+
+	g := newGated(ModeAllow, chunks...)
+	got, err := io.ReadAll(g.OutputReader())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != seq {
+		t.Fatalf("large OSC52 not passed intact: got %d bytes, want %d", len(got), len(seq))
+	}
+
+	// ModeDeny must strip the whole large sequence, leaving only PRE/POST.
+	var denyChunks [][]byte
+	for i := 0; i < len(seq); i += chunkSize {
+		end := i + chunkSize
+		if end > len(seq) {
+			end = len(seq)
+		}
+		denyChunks = append(denyChunks, []byte(seq[i:end]))
+	}
+	gd := newGated(ModeDeny, denyChunks...)
+	gotDeny, err := io.ReadAll(gd.OutputReader())
+	if err != nil {
+		t.Fatalf("read deny: %v", err)
+	}
+	if string(gotDeny) != "PREPOST" {
+		t.Fatalf("ModeDeny large output = %q, want %q", trunc(string(gotDeny)), "PREPOST")
+	}
+}
+
+func trunc(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "..."
+	}
+	return strings.Clone(s)
 }
