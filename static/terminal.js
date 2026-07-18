@@ -235,8 +235,8 @@ if (window.visualViewport) {
     });
 }
 
-// Right-click selects word in libghostty; suppress browser context menu.
-document.getElementById('terminal').addEventListener('contextmenu', (e) => e.preventDefault());
+// The ghostty-web SelectionManager wires up the native right-click
+// copy/paste flow, so leave the browser context menu alone.
 
 // Surface for debugging / extension consumers.
 window.sip = { term: sipTerm, settings };
