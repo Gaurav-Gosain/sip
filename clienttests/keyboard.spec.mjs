@@ -14,39 +14,54 @@
 
 import { test, expect } from '@playwright/test';
 
-/** Record the payload of every MsgInput frame the client sends. */
+/**
+ * Record the input payload the client sends, whichever transport carries it.
+ *
+ * This deliberately hooks the adapter rather than WebSocket.prototype.send.
+ * Firefox negotiates WebTransport against a loopback server, so nothing passes
+ * through WebSocket at all there and a WebSocket-level hook records zero frames
+ * forever -- a test that fails by timeout rather than by assertion, or worse,
+ * one that passes vacuously. The adapter is handed the raw payload (the client
+ * adds the MsgInput 0x30 framing below it), which is exactly what these tests
+ * assert on.
+ */
 async function captureInput(page) {
-  await page.addInitScript(() => {
+  await page.evaluate(() => {
     window.__sentInput = [];
-    // A test that boots twice on one page installs this twice; wrapping the
-    // wrapper would record every frame once per layer.
-    if (window.__sentInputHooked) return;
-    window.__sentInputHooked = true;
-    const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function (data) {
+    const adapter = window.sipTerm.adapter;
+    // Booting twice on one page must not wrap the wrapper.
+    if (adapter.__sipInputHooked) return;
+    adapter.__sipInputHooked = true;
+    const original = adapter.sipWrite.bind(adapter);
+    adapter.sipWrite = function (data) {
       try {
-        let bytes = null;
-        if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
-        else if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-        if (bytes && bytes.length > 0 && bytes[0] === 0x30) {
-          window.__sentInput.push(Array.from(bytes.subarray(1)));
-        }
+        window.__sentInput.push(
+          typeof data === 'string'
+            ? Array.from(new TextEncoder().encode(data))
+            : Array.from(new Uint8Array(data.buffer ?? data)),
+        );
       } catch {
         // Never let instrumentation break the client.
       }
-      return send.call(this, data);
+      return original(data);
     };
   });
 }
 
 async function boot(page, url = '/') {
-  await captureInput(page);
   await page.goto(url);
   await page.waitForFunction(
-    () => document.querySelector('#connection-status')?.classList.contains('connected'),
+    () => {
+      const el = document.querySelector('#connection-status');
+      // Firefox reaches WebTransport here where Chromium falls back to
+      // WebSocket, and the status class differs between them.
+      return el && (el.classList.contains('connected') || el.classList.contains('webtransport'));
+    },
     null,
     { timeout: 30_000 },
   );
+  await page.waitForFunction(() => window.sipTerm?.adapter, null, { timeout: 30_000 });
+  await captureInput(page);
   await page.locator('#terminal').click();
   await page.waitForTimeout(200);
 }

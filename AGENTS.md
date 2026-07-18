@@ -208,6 +208,49 @@ Anything added to this file that reads cells must go through `getLine()` or
 `getViewport()` so it shares the memo, and any new mutation path must
 invalidate it.
 
+### Input: chords must never leak as text
+
+`handleKeyDown` had three paths that returned **without** calling
+`preventDefault()`: the IME guard (`isComposing`, or `keyCode === 229`), and an
+unmapped `event.code`. The browser then proceeded to its default action, fired
+`beforeinput` with `inputType: "insertText"`, and `handleBeforeInput` sent the
+bare character. Ctrl+L put `0x6c` ("l") on the wire instead of `0x0c`, and every
+chord degraded the same way.
+
+The trigger is environmental, which is why it survived a green suite: Firefox on
+Linux running an IME daemon (ibus/fcitx) reports keyCode 229, the "IME is
+processing" sentinel, for ordinary keys. Chromium does not, and **synthesized
+Playwright key events never carry it**, so `page.keyboard.press('Control+l')`
+passes on the broken build.
+
+The fix computes `sipChord` (`ctrl XOR alt`, or meta -- Ctrl+Alt is excluded
+because that is AltGr and genuinely composes) and: skips the composition guard
+for chords, calls `preventDefault()` before returning on an unmapped code while
+a chord is held, and drops `insertText` arriving within 50ms of a chord keydown.
+Unmodified keys still fall through to `beforeinput` on purpose, since that is
+the mobile and IME input route.
+
+`clienttests/chord_leak.spec.mjs` drives the bail-out conditions directly rather
+than hoping the harness reproduces the environment.
+
+### Browser coverage
+
+`playwright.config.mjs` defines two projects. `chromium` runs everything.
+`firefox` runs only the input specs, because the renderer specs read pixels back
+out of a SwiftShader WebGL context, which is a Chromium-specific setup.
+
+Firefox is not optional decoration: it is the only engine here that reaches
+**WebTransport** against a loopback server (Chromium falls back to WebSocket), so
+it is the only coverage of that transport, and it is where the input divergences
+show up. Two consequences for anyone writing a browser test:
+
+- Do not wait on `classList.contains('connected')`. Under WebTransport the
+  status class is `webtransport`. Accept either.
+- Do not hook `WebSocket.prototype.send` to capture what the client sends.
+  Under WebTransport nothing passes through it, so the hook records zero frames
+  and the test fails by timeout or passes vacuously. Hook the adapter's
+  `sipWrite` instead, which is transport-independent.
+
 `vtgl_source.js` adapts the wasm buffer to vtgl's `VtSource` (absolute row
 coordinates, theme-resolved colors). `vtgl_bridge.js` owns the canvas, the
 geometry sync and the selection tint.

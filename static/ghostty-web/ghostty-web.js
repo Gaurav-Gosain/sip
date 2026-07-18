@@ -4615,8 +4615,23 @@ const hi = {
    * @param event - KeyboardEvent
    */
   handleKeyDown(g) {
-    if (this.isDisposed || this.isComposing || g.isComposing || g.keyCode === 229)
+    if (this.isDisposed)
       return;
+    // __sip: a modifier chord is never an IME composition, so it must not be
+    // swallowed by the composition guard. Firefox on Linux with ibus/fcitx
+    // reports keyCode 229 (the "IME is processing" sentinel) for ordinary
+    // keys, and this guard used to return WITHOUT preventDefault. The browser
+    // then went on to fire beforeinput, whose insertText path emitted the bare
+    // printable character: Ctrl+L sent "l" (0x6c) instead of 0x0c, and every
+    // chord degraded the same way.
+    //
+    // Ctrl+Alt is deliberately NOT treated as a chord here: that combination is
+    // AltGr on many layouts and genuinely does compose characters. This is the
+    // same test isPrintableCharacter() uses, inverted.
+    const sipChord = g.ctrlKey && !g.altKey || g.altKey && !g.ctrlKey || g.metaKey;
+    if (!sipChord && (this.isComposing || g.isComposing || g.keyCode === 229))
+      return;
+    sipChord && (this.__sipChordAt = Date.now());
     if (this.onKeyCallback && this.onKeyCallback({ key: g.key, domEvent: g }), this.customKeyEventHandler && this.customKeyEventHandler(g)) {
       g.preventDefault();
       return;
@@ -4641,8 +4656,13 @@ const hi = {
       return;
     }
     const B = this.mapKeyCode(g.code);
-    if (B === null)
+    if (B === null) {
+      // __sip: an unmapped code must not fall through to the text path while a
+      // chord is held, or beforeinput emits the bare character. Unmodified keys
+      // still fall through on purpose: that is the mobile/IME input route.
+      sipChord && g.preventDefault();
       return;
+    }
     const I = this.extractModifiers(g);
     if (K === 0 && (I === P.NONE || I === P.SHIFT)) {
       let C = null;
@@ -4804,6 +4824,14 @@ const hi = {
   handleBeforeInput(g) {
     if (this.isDisposed || this.isComposing || g.isComposing)
       return;
+    // __sip: belt and braces for the chord leak fixed in handleKeyDown. Any
+    // text insertion arriving immediately after a chord keydown is that chord
+    // escaping as its bare character, never something the user typed. Swallow
+    // it rather than sending "l" for Ctrl+L.
+    if (this.__sipChordAt && Date.now() - this.__sipChordAt < 50 && (g.inputType === "insertText" || g.inputType === "insertReplacementText")) {
+      g.preventDefault(), g.stopPropagation();
+      return;
+    }
     const B = g.inputType, I = g.data ?? "";
     let Q = null;
     switch (B) {
