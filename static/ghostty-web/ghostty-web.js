@@ -4961,7 +4961,16 @@ const hi = {
    */
   emitPasteData(g) {
     var I;
-    ((I = this.getModeCallback) == null ? void 0 : I.call(this, 2004)) ?? !1 ? this.onDataCallback("\x1B[200~" + g + "\x1B[201~") : this.onDataCallback(g);
+    const Q = this.sanitizePasteData(g);
+    ((I = this.getModeCallback) == null ? void 0 : I.call(this, 2004)) ?? !1 ? this.onDataCallback("\x1B[200~" + Q + "\x1B[201~") : this.onDataCallback(Q);
+  }
+  /**
+   * Sanitize pasted text: normalize line endings to CR and strip C0 control
+   * characters (including ESC) so the payload cannot break out of bracketed
+   * paste (e.g. an embedded \x1b[201~) or inject escape sequences.
+   */
+  sanitizePasteData(g) {
+    return g.replace(/\r\n/g, "\r").replace(/\n/g, "\r").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
   }
   /**
    * Record keydown data for beforeinput de-duplication
