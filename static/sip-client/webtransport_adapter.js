@@ -1,4 +1,7 @@
 import { MsgInput, MsgOutput, MsgResize, MsgPing, MsgPong, MsgTitle, MsgOptions, MsgClose, encodeWTMessage, jsonPayload, parseJsonPayload, tryDecodeWTFrame, } from './protocol.js';
+// Cap a single input frame well under the server read limit; larger writes
+// (pastes) are split across frames.
+const INPUT_CHUNK_SIZE = 64 * 1024;
 export class SipWebTransportAdapter {
     constructor(url, certHash, callbacks = {}) {
         this.url = url;
@@ -16,7 +19,28 @@ export class SipWebTransportAdapter {
     }
     sipWrite(data) {
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        this._write(MsgInput, bytes);
+        // A large paste as one frame would exceed the server read limit and
+        // kill the session; split it into bounded MsgInput frames. The stream
+        // writer applies backpressure via its ready promise.
+        if (bytes.length <= INPUT_CHUNK_SIZE) {
+            this._write(MsgInput, bytes);
+            return;
+        }
+        this._writeChunked(bytes);
+    }
+    async _writeChunked(bytes) {
+        for (let off = 0; off < bytes.length; off += INPUT_CHUNK_SIZE) {
+            if (!this.writer)
+                return;
+            const chunk = bytes.subarray(off, off + INPUT_CHUNK_SIZE);
+            try {
+                await this.writer.ready;
+                await this.writer.write(encodeWTMessage(MsgInput, chunk));
+            }
+            catch {
+                return; // writer closed
+            }
+        }
     }
     sipResize(cols, rows, widthPx, heightPx) {
         const msg = { cols, rows };

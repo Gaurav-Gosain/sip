@@ -1,4 +1,9 @@
 import { MsgInput, MsgOutput, MsgResize, MsgPing, MsgPong, MsgTitle, MsgOptions, MsgClose, encodeWSMessage, decodeWSMessage, jsonPayload, parseJsonPayload, } from './protocol.js';
+// Cap a single input frame well under the server read limit; larger writes
+// (pastes) are split across frames.
+const INPUT_CHUNK_SIZE = 64 * 1024;
+// Pause chunked sends while the socket's send buffer is above this mark.
+const INPUT_HIGH_WATER = 1024 * 1024;
 export class SipProtocolAdapter {
     constructor(url, callbacks = {}) {
         this.url = url;
@@ -20,7 +25,28 @@ export class SipProtocolAdapter {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
             return;
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        this.ws.send(encodeWSMessage(MsgInput, bytes));
+        // A single oversized frame (a large paste) would blow past the
+        // server's read limit and kill the session, so split it into bounded
+        // MsgInput frames. The PTY reassembles the byte stream regardless of
+        // where the boundaries fall.
+        if (bytes.length <= INPUT_CHUNK_SIZE) {
+            this.ws.send(encodeWSMessage(MsgInput, bytes));
+            return;
+        }
+        this._writeChunked(bytes);
+    }
+    async _writeChunked(bytes) {
+        for (let off = 0; off < bytes.length; off += INPUT_CHUNK_SIZE) {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
+                return;
+            this.ws.send(encodeWSMessage(MsgInput, bytes.subarray(off, off + INPUT_CHUNK_SIZE)));
+            // Backpressure: let the socket drain before queueing more so a
+            // huge paste can't balloon the send buffer.
+            while (this.ws && this.ws.readyState === WebSocket.OPEN &&
+                this.ws.bufferedAmount > INPUT_HIGH_WATER) {
+                await new Promise((r) => setTimeout(r, 4));
+            }
+        }
     }
     sipResize(cols, rows, widthPx, heightPx) {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN)

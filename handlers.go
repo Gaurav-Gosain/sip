@@ -566,7 +566,8 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 }
 
 // processInput dispatches one inbound message. Returns false if the
-// caller should drop the connection (e.g., paste cap exceeded).
+// caller should drop the connection. An oversized paste is dropped as a
+// single message rather than tearing down the session.
 func (s *httpServer) processInput(data []byte, session internalSession, info sessionInfo, apply func(WindowSize)) bool {
 	if len(data) == 0 {
 		return true
@@ -581,9 +582,9 @@ func (s *httpServer) processInput(data []byte, session internalSession, info ses
 			return true
 		}
 		if len(payload) > pasteMaxOrDefault(s.config.MaxPasteBytes) {
-			logger.Warn("input exceeds MaxPasteBytes; dropping connection",
+			logger.Warn("input exceeds MaxPasteBytes; dropping message",
 				"session", info.id, "size", len(payload), "max", pasteMaxOrDefault(s.config.MaxPasteBytes))
-			return false
+			return true
 		}
 		if _, err := session.InputWriter().Write(payload); err != nil {
 			logger.Debug("session input write error", "session", info.id, "err", err)
