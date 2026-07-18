@@ -250,8 +250,27 @@ show up. Two consequences for anyone writing a browser test:
   status class is `webtransport`. Accept either.
 - Do not hook `WebSocket.prototype.send` to capture what the client sends.
   Under WebTransport nothing passes through it, so the hook records zero frames
-  and the test fails by timeout or passes vacuously. Hook the adapter's
-  `sipWrite` instead, which is transport-independent.
+  and the test fails by timeout or passes vacuously.
+- Do not hook the shared adapter's `sipWrite` either, even though it is
+  transport-independent. That is the problem, not the fix: it sits *above* both
+  transports and records identical bytes whichever one is live, so it cannot
+  tell them apart and a green run says nothing about either. Hook the transport
+  boundary instead, `ws.send` or the WebTransport stream writer's `write`, as
+  `keyboard.spec.mjs` does. That also checks the framing, which differs between
+  the two.
+
+**Transport is a test dimension, not an implementation detail.** This suite has
+been caught blind twice: once Chromium-only, then WebSocket-only. The second
+time a 27/27 green chord matrix was cited as proof a WebTransport bug could not
+exist, when every one of those cases had silently run over WebSocket, because
+WebTransport had never once connected before the origin fix landed.
+
+So `keyboard.spec.mjs` runs its whole matrix per transport, and every test
+declares the transport it wants and **fails** if it got a different one. Never
+let a test accept a fallback silently. `TRANSPORT_SUPPORT` records what each
+engine can actually reach and is itself asserted: a combination recorded as
+unsupported must prove the fallback is real before it skips, so the table
+cannot quietly drift out of date.
 
 `vtgl_source.js` adapts the wasm buffer to vtgl's `VtSource` (absolute row
 coordinates, theme-resolved colors). `vtgl_bridge.js` owns the canvas, the
