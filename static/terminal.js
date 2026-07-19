@@ -335,7 +335,13 @@
 
             try {
                 if (typeof KittyOverlay !== 'undefined') {
-                    this.kittyOverlay = new KittyOverlay(this.term, container);
+                    // The overlay answers kitty a=q capability probes, and a
+                    // reply only counts if it reaches the PTY, so give it the
+                    // same path keystrokes take. Read-only viewers stay silent
+                    // rather than writing into someone else's session.
+                    this.kittyOverlay = new KittyOverlay(this.term, container, data => {
+                        if (!this.readOnly && this.connected) this.sendInput(data);
+                    });
                 }
             } catch (e) {
                 console.warn('KittyOverlay failed to initialize:', e);

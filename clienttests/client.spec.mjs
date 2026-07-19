@@ -169,3 +169,76 @@ test('OSC 52 never answers a read query', async ({ page, context, browserName })
   });
   expect(sent.join('')).not.toContain('SECRET_CLIPBOARD');
 });
+
+// --- kitty graphics capability probe -----------------------------------
+//
+// Kitty graphics is request/response: a client sends a=q and refuses to send
+// the image at all unless the terminal answers. The overlay used to render
+// placements but never reply, which left every probe unanswered and made
+// kitten icat report that the terminal has no graphics support.
+
+/** Collect everything the overlay writes back while running `body`. */
+async function captureResponses(page, body) {
+  return page.evaluate(async (seq) => {
+    const seen = [];
+    const original = window.sipTerm.sendInput.bind(window.sipTerm);
+    window.sipTerm.sendInput = (d) => { seen.push(d); return original(d); };
+    window.sipTerm.term.write(seq);
+    await new Promise((r) => setTimeout(r, 300));
+    window.sipTerm.sendInput = original;
+    return seen.join('');
+  }, body);
+}
+
+test('a kitty query for direct transmission is answered OK', async ({ page }) => {
+  await boot(page);
+  // The first of the three probes kitten icat opens with.
+  const sent = await captureResponses(page, '\x1b_Ga=q,f=24,s=1,v=1,S=3,i=1;MTIz\x1b\\');
+  expect(sent).toBe('\x1b_Gi=1;OK\x1b\\');
+});
+
+test('a kitty query for an unreachable medium is answered with an error', async ({ page }) => {
+  await boot(page);
+  // t=t and t=s name paths in the server's filesystem, which a browser cannot
+  // read. Reporting the error rather than staying silent is what lets icat
+  // settle on stream mode instead of waiting out its timeout.
+  const sent = await captureResponses(page, '\x1b_Ga=q,f=24,t=t,s=1,v=1,i=2;L3RtcC94\x1b\\');
+  expect(sent).toContain('\x1b_Gi=2;ENOTSUPPORTED:');
+  expect(sent).not.toContain('OK');
+});
+
+test('kitty quiet mode suppresses the responses it should', async ({ page }) => {
+  await boot(page);
+
+  // q=1 drops successes but keeps errors.
+  expect(await captureResponses(page, '\x1b_Ga=q,f=24,q=1,s=1,v=1,i=7;MTIz\x1b\\')).toBe('');
+  expect(await captureResponses(page, '\x1b_Ga=q,f=24,t=s,q=1,s=1,v=1,i=8;MTIz\x1b\\'))
+    .toContain('\x1b_Gi=8;ENOTSUPPORTED:');
+
+  // q=2 drops everything.
+  expect(await captureResponses(page, '\x1b_Ga=q,f=24,q=2,s=1,v=1,i=9;MTIz\x1b\\')).toBe('');
+  expect(await captureResponses(page, '\x1b_Ga=q,f=24,t=s,q=2,s=1,v=1,i=10;MTIz\x1b\\')).toBe('');
+
+  // A command carrying no id is unaddressable, so there is nothing to answer.
+  expect(await captureResponses(page, '\x1b_Ga=q,f=24,s=1,v=1;MTIz\x1b\\')).toBe('');
+});
+
+test('kitten icat detects graphics support', async ({ page }) => {
+  const { execSync } = await import('node:child_process');
+  try {
+    execSync('command -v kitten', { stdio: 'ignore', shell: '/bin/sh' });
+  } catch {
+    test.skip(true, 'kitten is not installed');
+  }
+
+  await boot(page);
+  // icat prints the transfer mode it settled on, and exits non-zero with a
+  // "does not support the graphics protocol" error when no probe is answered.
+  // The marker is split so the echoed command line cannot satisfy the wait.
+  await roundTrip(page, 'kitten icat --detect-support; echo "DETECT""ED-$?"\n', 'DETECTED-0');
+
+  const screen = await screenText(page);
+  // Only direct transmission is answered OK, so stream is the expected pick.
+  expect(screen).toContain('stream');
+  expect(screen).not.toContain('does not support the graphics protocol');
+});

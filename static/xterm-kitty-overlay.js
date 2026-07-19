@@ -37,9 +37,15 @@
     const KITTY_APC_IDENT = 71;
 
     class KittyOverlay {
-        constructor(term, container) {
+        constructor(term, container, respond) {
             this.term = term;
             this.container = container;
+            // Writes a response back into the PTY input stream, the same
+            // channel keystrokes take. Kitty graphics is a request/response
+            // protocol: clients probe with a=q and refuse to send any image
+            // until the terminal answers, so without this the overlay can
+            // only ever render what nobody will send it.
+            this.respond = typeof respond === "function" ? respond : null;
 
             // Decoded images, keyed by the guest image id.
             // value: { bitmap: ImageBitmap, width: number, height: number }
@@ -172,8 +178,7 @@
                         this._handleDelete(cmd);
                         break;
                     case "q":
-                        // Response to queries is handled server-side by
-                        // tuios. We're silent here.
+                        this._handleQuery(cmd);
                         break;
                     default:
                         // Unknown action: swallow to avoid leaking bytes.
@@ -183,6 +188,72 @@
                 console.warn("[kitty-overlay] handler error:", err, cmd);
             }
             return true;
+        }
+
+        // --- Query / response ---------------------------------------------
+
+        /**
+         * Answer an a=q capability probe.
+         *
+         * kitten icat opens with three probes in one burst, then a primary
+         * device attributes request as a sentinel:
+         *
+         *   ESC _ G a=q,f=24,s=1,v=1,S=3,i=1;MTIz          ESC \   direct
+         *   ESC _ G a=q,f=24,t=t,s=1,v=1,S=47,i=2;<path>   ESC \   temp file
+         *   ESC _ G a=q,f=24,t=s,s=1,v=1,S=18,i=3;<name>   ESC \   shared memory
+         *   ESC [ c
+         *
+         * It picks a transfer mode from whichever probes come back OK, and
+         * if the DA1 reply arrives with no graphics reply at all it decides
+         * the terminal has no support and refuses to send the image.
+         *
+         * We answer OK only for direct transmission. The temp-file and
+         * shared-memory media name paths in the server's filesystem, which a
+         * browser cannot read, so we report those unsupported and icat
+         * settles on stream mode, which is the direct base64 form this
+         * overlay decodes.
+         */
+        _handleQuery(cmd) {
+            const medium = cmd.t || "d";
+            if (medium === "d") {
+                this._sendResponse(cmd, "OK");
+            } else {
+                this._sendResponse(
+                    cmd,
+                    "ENOTSUPPORTED:transmission medium not supported by a browser client",
+                );
+            }
+        }
+
+        /**
+         * Emit ESC _ G <id keys> ; <message> ESC \ back to the PTY.
+         *
+         * The id keys are echoed from the request so the client can match the
+         * reply to its probe. A command carrying neither i nor I is
+         * unaddressable and per the protocol gets no reply at all. Quiet mode
+         * suppresses replies: q=1 drops successes, q=2 drops everything.
+         * Errors are reported rather than dropped, since a client that gets
+         * no answer waits out its timeout instead of moving on.
+         */
+        _sendResponse(cmd, message) {
+            if (!this.respond) return;
+
+            const quiet = cmd.q || 0;
+            const ok = message === "OK";
+            if (quiet >= 2) return;
+            if (quiet >= 1 && ok) return;
+
+            const keys = [];
+            if (cmd.i !== undefined && cmd.i !== 0) keys.push("i=" + cmd.i);
+            if (cmd.I !== undefined && cmd.I !== 0) keys.push("I=" + cmd.I);
+            if (keys.length === 0) return;
+            if (cmd.p !== undefined && cmd.p !== 0) keys.push("p=" + cmd.p);
+
+            try {
+                this.respond("\x1b_G" + keys.join(",") + ";" + message + "\x1b\\");
+            } catch (err) {
+                console.warn("[kitty-overlay] response failed:", err);
+            }
         }
 
         _parseControl(str) {
