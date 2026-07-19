@@ -1,0 +1,12 @@
+{
+  "name": "turbograph",
+  "split": 5,
+  "tagline": "fast, local, hackable graph RAG in Go",
+  "accent": "teal",
+  "motif": "graph",
+  "motifOpts": { "seed": 7, "nodes": 13 },
+  "meta": [
+    ["hybrid retrieval", "PageRank graph", "community summaries"],
+    ["multimodal", "single Go binary", "local Ollama, no deps"]
+  ]
+}

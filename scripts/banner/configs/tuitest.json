@@ -1,0 +1,11 @@
+{
+  "name": "tuitest",
+  "split": 3,
+  "tagline": "headless testing for terminal programs, in Go",
+  "accent": "green",
+  "motif": "cells",
+  "meta": [
+    ["real PTY", "full VT emulator", "waits, not sleeps"],
+    ["tape scripts", "Go test API", "any language under test"]
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "webterm",
+  "split": 3,
+  "tagline": "a small, embeddable browser terminal",
+  "accent": "violet",
+  "motif": "chrome",
+  "meta": [
+    ["kitty graphics", "OSC 52 clipboard", "unicode widths"],
+    ["window chrome", "WebSocket transports", "built on xterm.js"]
+  ]
+}

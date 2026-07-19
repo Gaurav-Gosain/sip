@@ -1,0 +1,11 @@
+{
+  "name": "sip",
+  "cursor": true,
+  "tagline": "a real terminal, served in the browser",
+  "accent": "amber",
+  "motif": "browser",
+  "meta": [
+    ["kitty graphics", "OSC 52 clipboard", "WebTransport or WebSocket"],
+    ["Go library and CLI", "TLS and basic auth", "assets embedded"]
+  ]
+}
