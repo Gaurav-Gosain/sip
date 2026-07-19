@@ -109,6 +109,7 @@ sip/
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
 │   ├── xterm.js            # Vendored MIT xterm.js (~384 KB) + xterm.css
 │   ├── xterm-addon-*.js    # fit, webgl, canvas, web-links, image, unicode-graphemes
+│   ├── sip-unicode.js      # Local: wrapper Unicode provider, per-codepoint width overrides
 │   ├── xterm-kitty-overlay.js  # Local: APC 71 handler + repositionable canvas layer
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 └── examples/simple/        # Counter example (Bubble Tea mode)
@@ -186,17 +187,42 @@ UMD, no external imports) supplies a UAX 29 provider against the same bit
 layout. It is loaded before `term.open()` and `activeVersion` is set to
 `15-graphemes`.
 
-Against the 24-cluster corpus measured from the real ghostty-vt, it agrees on
-23. The one divergence is `devanagari-matra` (U+0928 U+093F): ghostty gives the
-spacing mark its own advance for 2 columns, xterm bills 1. That is a spacing
-mark advance policy call, not a segmentation bug, and it is pinned as a known
-divergence in `clienttests/grapheme_corpus.spec.mjs` rather than papered over.
+Against the 45-cluster corpus measured from the real ghostty-vt it agrees on
+39. The six remaining divergences are all a lone zero-width or defective
+character written at column 0, where InputHandler has no preceding cell to join
+onto and gives the codepoint a cell of its own; they are pinned in
+`clienttests/grapheme_corpus.spec.mjs` rather than papered over.
 
-Do not reach for a ghostty-vt-backed provider to close that one case. The wasm
+`sip-unicode.js` is ours, loaded before `terminal.js`. It wraps the addon's
+provider and overrides the width of a short list of codepoints, currently only
+U+200B ZERO WIDTH SPACE, which the addon bills one column and everything else
+bills zero. That one was worth fixing because ZWSP appears in ordinary text as
+a line-break opportunity; the rest of the list is argued case by case in the
+file's header, including which characters are deliberately left alone. Register
+overrides there, never by patching the addon.
+
+Do not reach for a ghostty-vt-backed provider to close the rest. The wasm
 exports no standalone width or grapheme-break function — only grid-scoped
 `ghostty_cell_get` and `ghostty_grid_ref_graphemes` — so it would need a shadow
-VT with a wasm round trip per character on xterm's hottest path. A wrapper
-provider overriding the spacing-mark range is the cheap fix if it ever matters.
+VT with a wasm round trip per character on xterm's hottest path.
+
+#### Patches to the vendored bundles
+
+Vendored files are shipped as published, with one exception each marked inline
+by a `/*__sipPatch:<name>*/` comment so `grep -r __sipPatch static/` lists every
+one. Re-apply them deliberately after any bundle bump.
+
+- `round-device-cell-width` in `xterm-addon-webgl.js` and
+  `xterm-addon-canvas.js`. Both atlas renderers computed
+  `device.char.width = Math.floor(advance * dpr)`. The atlas rasterises each
+  glyph into a box of exactly that width, so at dpr 2, where the 14px advance
+  is 16.8 device px, every cell was 16 and any glyph drawn to the full advance
+  lost 0.8 device px off its right edge: powerline separators, box and block
+  glyphs, Nerd Font icons. An eight-cell powerline pill measured 128 device px
+  of ink against the DOM renderer's 135. Now `Math.round`. Rounding rather than
+  ceiling is the point: at dpr 1 the cell stays 8 for an 8.4px advance, so text
+  is not loosened to fix icons. Guarded by the HiDPI test in
+  `clienttests/metrics.spec.mjs`, which fails with the unpatched bundle.
 
 #### Kitty graphics overlay
 
@@ -405,7 +431,7 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 ### Frontend (vendored, MIT)
 - xterm.js + fit / webgl / canvas / web-links / image addons
 - @xterm/addon-unicode-graphemes 0.4.0 (UAX 29 grapheme provider)
-- `xterm-kitty-overlay.js` is local, not vendored
+- `xterm-kitty-overlay.js` and `sip-unicode.js` are local, not vendored
 
 ## Important notes
 

@@ -288,9 +288,13 @@
             // thin wrapper over wcwidth, which splits emoji ZWJ sequences and
             // mismeasures combining marks. The graphemes addon supplies a
             // UAX 29 provider against the same charProperties bit layout.
+            // sip-unicode.js layers our width overrides (U+200B) on top of the
+            // addon's provider without patching the vendored bundle.
             try {
-                this.term.loadAddon(new UnicodeGraphemesAddon.UnicodeGraphemesAddon());
-                this.term.unicode.activeVersion = '15-graphemes';
+                const addon = new UnicodeGraphemesAddon.UnicodeGraphemesAddon();
+                if (!SipUnicode.install(this.term, addon)) {
+                    this.term.unicode.activeVersion = '15-graphemes';
+                }
             } catch (e) {
                 console.warn('Unicode graphemes addon failed to load:', e);
             }

@@ -183,9 +183,10 @@ test('stacked block glyphs leave no seam between rows', async ({ page, browserNa
 test('adjacent block glyphs leave no seam between columns', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'reads canvas pixels back; the chromium project pins the GL setup');
 
-  // The vertical seam was the visible one, but xterm floors the cell width to
-  // an integer (8px against the font's 8.4px advance), so a glyph fitted to
-  // the wrong box would tile badly across a row as well as down a column.
+  // The vertical seam was the visible one, but xterm rounds the cell width to
+  // a whole device pixel (8px against the font's 8.4px advance at dpr 1), so a
+  // glyph fitted to the wrong box would tile badly across a row as well as
+  // down a column.
   await boot(page, '/?renderer=canvas');
   await page.waitForFunction(() => window.sipTerm.currentRenderer === 'Canvas', null, { timeout: 30_000 });
 
@@ -271,4 +272,47 @@ test('a block-heavy fixture is captured for eyeballing', async ({ page, browserN
   await page.locator('#terminal').screenshot({ path: file });
   await testInfo.attach('block-and-box-fixture.png', { path: file, contentType: 'image/png' });
   console.log(`block/box fixture written to ${file}`);
+});
+
+test.describe('on a HiDPI display', () => {
+  test.use({ deviceScaleFactor: 2 });
+
+  test('the device cell is the nearest device pixel to the advance, not the floor', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'reads renderer dimensions under a pinned GL setup');
+
+    // The atlas renderers rasterise every glyph into a box of exactly
+    // device.cell.width, and xterm shipped that as Math.floor(advance * dpr).
+    // At the client's 14px the advance is 8.4 CSS px, so at dpr 2 the floor
+    // gave 16 device px against a true advance of 16.8: every column came out
+    // 0.8 device px narrow, and a glyph drawn to the full advance -- a
+    // powerline separator, a box or block glyph, a Nerd Font icon -- lost that
+    // much off its right edge. An eight-cell powerline pill measured 128
+    // device px of ink where the DOM renderer, which does no rounding at all,
+    // drew 135.
+    //
+    // static/xterm-addon-webgl.js and static/xterm-addon-canvas.js are patched
+    // to round instead, marked __sipPatch:round-device-cell-width. Rounding
+    // rather than ceiling is deliberate: at dpr 1 it keeps the cell at 8, so
+    // ordinary text is not loosened to fix icons.
+    await boot(page);
+    const m = await page.evaluate(() => {
+      const core = window.sipTerm.term._core;
+      const d = core._renderService.dimensions;
+      return {
+        dpr: window.devicePixelRatio,
+        renderer: window.sipTerm.currentRenderer,
+        advanceCss: core._charSizeService.width,
+        deviceCellWidth: d.device.cell.width,
+      };
+    });
+
+    test.skip(m.dpr !== 2, 'the browser did not honour the HiDPI context');
+    test.skip(m.renderer === 'DOM', 'the DOM renderer does not round at all');
+
+    const exact = m.advanceCss * m.dpr;
+    expect(m.deviceCellWidth).toBe(Math.round(exact));
+    expect(Math.abs(m.deviceCellWidth - exact)).toBeLessThanOrEqual(0.5);
+    // Guards the patch specifically: at this dpr floor and round differ.
+    expect(Math.floor(exact)).not.toBe(Math.round(exact));
+  });
 });

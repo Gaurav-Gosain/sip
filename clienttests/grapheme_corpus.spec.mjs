@@ -104,8 +104,13 @@ const CORPUS = [
   // Zero-width characters
   { name: 'zero-width-non-joiner', text: '\u{628}\u{200c}\u{629}', category: 'zero-width', ghostty: 2, cell0: 1 },
   { name: 'zero-width-no-break-space', text: 'a\u{feff}b', category: 'zero-width', ghostty: 2, cell0: 1 },
-  { name: 'zero-width-space', text: 'a\u{200b}b', category: 'zero-width', ghostty: 2, xterm: 3, cell0: 1 },
-  { name: 'zero-width-space-alone', text: '\u{200b}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 1 },
+  // ZWSP is the one width the addon gets wrong that occurs in ordinary text,
+  // so static/sip-unicode.js forces it to zero; see the reasoning there. It
+  // now agrees with ghostty between two characters. Written alone at column 0
+  // it still advances, because there is no preceding cell for InputHandler to
+  // join it onto, and it lands in a zero-width cell of its own.
+  { name: 'zero-width-space', text: 'a\u{200b}b', category: 'zero-width', ghostty: 2, cell0: 1 },
+  { name: 'zero-width-space-alone', text: '\u{200b}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 0 },
   { name: 'zero-width-joiner-alone', text: '\u{200d}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 1 },
   { name: 'soft-hyphen', text: 'a\u{00ad}b', category: 'zero-width', ghostty: 3, xterm: 2, cell0: 1 },
 
@@ -118,21 +123,27 @@ const CORPUS = [
  * The cases where xterm and ghostty-vt disagree, documented rather than
  * papered over. Derived from the corpus so the two cannot drift apart.
  *
- * All seven are policy calls on degenerate or standalone input, not
- * segmentation defects. Six of them are the same argument twice over: whether
- * a character that carries no ink of its own earns an advance. ghostty says a
- * lone ZWSP, ZWJ or combining mark advances nothing while a spacing mark or a
- * lone regional indicator does; xterm says the reverse. Where these characters
- * appear in real text rather than alone -- ZWNJ inside an Arabic word, ZWJ
- * inside an emoji sequence, U+FEFF between letters, a combining mark after its
- * base -- the two agree exactly, which is the case that actually matters.
+ * All six are policy calls on degenerate or standalone input, not
+ * segmentation defects, and every one of them is a character written with
+ * nothing before it on the line. Where these characters appear in real text
+ * rather than alone -- ZWNJ inside an Arabic word, ZWJ inside an emoji
+ * sequence, U+FEFF or ZWSP between letters, a combining mark after its base --
+ * the two agree exactly, which is the case that actually matters.
  *
- * If any of these ever needs to match ghostty, the cheap fix is a wrapper
- * provider that delegates to the addon and overrides the offending range. It
- * is not worth a ghostty-vt-backed provider: the wasm exports no standalone
- * width or grapheme-break function, only grid-scoped cell reads, so backing
- * this would mean a shadow VT and a wasm round trip per character on xterm's
- * hottest path.
+ * The standalone cases are not fixable from a width table. InputHandler only
+ * suppresses the cursor advance on its joining branch, and that branch needs a
+ * preceding cell to join onto; at column 0 there is none, so it writes the
+ * codepoint into a cell of its own and moves on. Matching ghostty there would
+ * mean patching the vendored bundle for input no real program emits.
+ *
+ * The seventh entry, ZWSP between two letters, was fixed rather than
+ * documented: it was the only one that occurred in ordinary text. The fix is
+ * static/sip-unicode.js, a wrapper provider that delegates to the addon and
+ * overrides the single codepoint. That approach is what the rest of this list
+ * would use if it ever needed to. It is still not worth a ghostty-vt-backed
+ * provider: the wasm exports no standalone width or grapheme-break function,
+ * only grid-scoped cell reads, so backing this would mean a shadow VT and a
+ * wasm round trip per character on xterm's hottest path.
  */
 const DIVERGENCES = Object.fromEntries(
   CORPUS.filter((c) => c.xterm !== undefined).map((c) => [c.name, { ghostty: c.ghostty, xterm: c.xterm }]),
@@ -315,7 +326,7 @@ test('the ghostty divergences are exactly where we think they are', async ({ pag
 
   expect(Object.keys(DIVERGENCES).sort()).toEqual([
     'combining-mark-alone', 'devanagari-matra', 'emoji-ri-odd', 'soft-hyphen',
-    'zero-width-joiner-alone', 'zero-width-space', 'zero-width-space-alone',
+    'zero-width-joiner-alone', 'zero-width-space-alone',
   ]);
 
   for (const [name, { ghostty, xterm }] of Object.entries(DIVERGENCES)) {
