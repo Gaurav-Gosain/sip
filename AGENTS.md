@@ -233,9 +233,17 @@ It registers an APC handler for identifier 71 via
 `term.parser.registerApcHandler`, parses the kitty protocol itself, and draws
 each placement as an absolutely positioned canvas in a DOM layer above xterm's.
 
-sip runs it with `anchor: 'viewport'`, because the compositor re-emits every
-placement each frame and the newlines it emits would otherwise park images in
-scrollback. A shell running an image viewer wants the `scrollback` default.
+sip runs it on the `scrollback` anchor, so a placement is tied to the buffer row
+that introduced it and scrolls away with that row. A full-screen compositor is
+unaffected: the alternate screen has no scrollback, so the anchoring row and the
+screen row are the same row there. sip previously forced `anchor: 'viewport'`,
+which pinned every image to the visible grid and left it hanging in place while
+the text scrolled underneath it.
+
+After a placement the overlay moves the cursor past the image, right by its
+columns and down by its rows, unless the sender asks for `C=1`. `kitten icat`
+emits only a trailing CR LF of its own and relies on the terminal for the rest,
+so without this the next shell prompt is drawn straight through the image.
 
 It exists instead of the image addon's kitty support because the addon bakes
 placements into the cell buffer and cannot reposition them, which is fatal for a

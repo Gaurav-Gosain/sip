@@ -450,11 +450,12 @@
                 links: true,
                 renderer: { prefer: this.settings.renderer },
                 clipboard: { copyOnSelect: this.settings.copyOnSelect },
-                // sip's compositor moves windows between frames and re-emits
-                // every placement, so a placement anchored to the buffer row
-                // that introduced it would be parked in scrollback by the
-                // newlines the compositor itself emitted.
-                graphics: { kitty: { anchor: 'viewport' }, sixel: true },
+                // The scrollback anchor, so an image scrolls away with the text
+                // that introduced it, which is what a shell running an image
+                // viewer expects. A full-screen compositor is unaffected: the
+                // alternate screen has no scrollback, so there the anchoring
+                // row and the screen row are the same row.
+                graphics: { kitty: { anchor: 'scrollback' }, sixel: true },
                 keyboard: {
                     captureReservedKeys: this.settings.captureReservedKeys,
                     reservedKeys: RESERVED_KEYS,
