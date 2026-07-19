@@ -84,9 +84,12 @@ async function captureWire(page) {
     window.__sentInput = [];
     const MSG_INPUT = 0x30;
 
-    const term = window.sipTerm;
-    if (term.__sipWireHooked) return;
-    term.__sipWireHooked = true;
+    // The socket and the stream writer live on the connection, which is the
+    // object that implements sip's wire protocol as a webterm Transport.
+    const conn = window.sipTerm.connection;
+    if (!conn) throw new Error('no connection to hook');
+    if (conn.__sipWireHooked) return;
+    conn.__sipWireHooked = true;
 
     const record = (payload) => {
       try {
@@ -96,8 +99,8 @@ async function captureWire(page) {
       }
     };
 
-    if (term.useWebTransport && term.wtWriter) {
-      const w = term.wtWriter;
+    if (conn.useWebTransport && conn.wtWriter) {
+      const w = conn.wtWriter;
       const write = w.write.bind(w);
       w.write = (frame) => {
         const b = new Uint8Array(frame);
@@ -109,8 +112,8 @@ async function captureWire(page) {
       return;
     }
 
-    if (term.wsConnection) {
-      const ws = term.wsConnection;
+    if (conn.ws) {
+      const ws = conn.ws;
       const send = ws.send.bind(ws);
       ws.send = (frame) => {
         const b = new Uint8Array(frame);
@@ -128,9 +131,10 @@ async function captureWire(page) {
 /** The transport that is actually carrying bytes right now. */
 function liveTransport(page) {
   return page.evaluate(() => {
-    const t = window.sipTerm;
-    if (t.useWebTransport && t.wtWriter) return 'webtransport';
-    if (t.wsConnection) return 'websocket';
+    const conn = window.sipTerm.connection;
+    if (!conn) return 'unknown';
+    if (conn.useWebTransport && conn.wtWriter) return 'webtransport';
+    if (conn.ws) return 'websocket';
     return 'unknown';
   });
 }

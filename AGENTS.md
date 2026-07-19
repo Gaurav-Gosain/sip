@@ -104,13 +104,13 @@ sip/
 │   ├── sip/                # CLI binary
 │   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
 ├── static/
-│   ├── index.html          # Loads the xterm bundle + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
-│   ├── terminal.js         # Classic script: SipTerminal (transports, protocol, settings, clipboard)
+│   ├── index.html          # Loads webterm.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
+│   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal (settings, status)
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
-│   ├── xterm.js            # Vendored MIT xterm.js (~384 KB) + xterm.css
-│   ├── xterm-addon-*.js    # fit, webgl, canvas, web-links, image, unicode-graphemes
-│   ├── sip-unicode.js      # Local: wrapper Unicode provider, per-codepoint width overrides
-│   ├── xterm-kitty-overlay.js  # Local: APC 71 handler + repositionable canvas layer
+│   ├── webterm.js          # Vendored webterm standalone (~835 KB): xterm.js, its addons,
+│   │                       # the kitty overlay, the clipboard layer and the width overrides
+│   ├── webterm.css         # webterm container + kitty overlay styles
+│   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 └── examples/simple/        # Counter example (Bubble Tea mode)
 ```
@@ -137,9 +137,9 @@ sip/
 
 ### Communication flow
 
-1. Browser loads `static/index.html` → the xterm bundle → `static/terminal.js`
-2. `SipTerminal` loads the fonts, constructs `Terminal`, then picks a renderer
-3. It tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
+1. Browser loads `static/index.html` → `static/webterm.js` → `static/terminal.js`
+2. `WebTerm.open()` loads the fonts, constructs `Terminal`, then picks a renderer
+3. `SipConnection` tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
 4. Server creates a PTY for the session, spawns either Bubble Tea or the wrapped command
 5. PTY output is framed and sent to the browser (through the kitty transcoder only when enabled)
 6. The browser writes inbound bytes into xterm; outbound input goes to the PTY
@@ -212,8 +212,7 @@ Vendored files are shipped as published, with one exception each marked inline
 by a `/*__sipPatch:<name>*/` comment so `grep -r __sipPatch static/` lists every
 one. Re-apply them deliberately after any bundle bump.
 
-- `round-device-cell-width` in `xterm-addon-webgl.js` and
-  `xterm-addon-canvas.js`. Both atlas renderers computed
+- `round-device-cell-width` in `webterm.js`. Both atlas renderers computed
   `device.char.width = Math.floor(advance * dpr)`. The atlas rasterises each
   glyph into a box of exactly that width, so at dpr 2, where the 14px advance
   is 16.8 device px, every cell was 16 and any glyph drawn to the full advance
@@ -223,12 +222,20 @@ one. Re-apply them deliberately after any bundle bump.
   ceiling is the point: at dpr 1 the cell stays 8 for an 8.4px advance, so text
   is not loosened to fix icons. Guarded by the HiDPI test in
   `clienttests/metrics.spec.mjs`, which fails with the unpatched bundle.
+  Upstream still ships `Math.floor`, and webterm cannot carry the fix because
+  it takes the addons as peer dependencies rather than vendoring them, so this
+  patch has to be re-applied to every rebuilt `webterm.js`.
 
 #### Kitty graphics overlay
 
-`xterm-kitty-overlay.js` registers an APC handler for identifier 71 via
+The overlay now lives in webterm (`src/kitty/`) and ships inside `webterm.js`.
+It registers an APC handler for identifier 71 via
 `term.parser.registerApcHandler`, parses the kitty protocol itself, and draws
 each placement as an absolutely positioned canvas in a DOM layer above xterm's.
+
+sip runs it with `anchor: 'viewport'`, because the compositor re-emits every
+placement each frame and the newlines it emits would otherwise park images in
+scrollback. A shell running an image viewer wants the `scrollback` default.
 
 It exists instead of the image addon's kitty support because the addon bakes
 placements into the cell buffer and cannot reposition them, which is fatal for a
@@ -429,9 +436,30 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 - `quic-go/quic-go`, `quic-go/webtransport-go`
 
 ### Frontend (vendored, MIT)
-- xterm.js + fit / webgl / canvas / web-links / image addons
-- @xterm/addon-unicode-graphemes 0.4.0 (UAX 29 grapheme provider)
-- `xterm-kitty-overlay.js` and `sip-unicode.js` are local, not vendored
+- `webterm.js`, the standalone build of the webterm package, which inlines
+  xterm.js and the fit / webgl / canvas / web-links / image /
+  unicode-graphemes addons
+- webterm also owns what used to be `xterm-kitty-overlay.js` and
+  `sip-unicode.js`: the kitty graphics overlay, the layered clipboard, the
+  unicode width overrides, input chunking, motion dedup and Keyboard Lock
+
+#### The webterm split
+
+Everything reusable moved out to the webterm package and comes back as one
+vendored bundle. What stayed in `terminal.js` is what is sip's alone: the
+message types 0x30-0x37, the 4-byte WebTransport length prefix, the
+`/cert-hash` exchange and the port+1 convention, the settings panel, the status
+indicator and the reconnect policy.
+
+`SipConnection` implements webterm's three-method `Transport` (`start`, `send`,
+`close`), so the package never learns a message type byte. `send` carries
+terminal input only; resize and ping go through `sendMessage`, which the client
+calls directly, because those are not terminal traffic.
+
+Test instrumentation hooks `window.sipTerm.connection`, not `window.sipTerm`:
+the socket and the stream writer live on the connection now. A kitty protocol
+reply arrives at `connection.send` rather than at `sendInput`, because it takes
+the same outbound path a keystroke does.
 
 ## Important notes
 

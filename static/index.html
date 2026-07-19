@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Sip</title>
     <link rel="stylesheet" href="static/xterm.css">
+    <link rel="stylesheet" href="static/webterm.css">
     <link rel="stylesheet" href="static/terminal.css">
     <link rel="preload" href="static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf" as="font" type="font/ttf" crossorigin>
     <link rel="preload" href="static/fonts/JetBrainsMonoNerdFontMono-Bold.ttf" as="font" type="font/ttf" crossorigin>
@@ -12,7 +13,7 @@
 </head>
 <body>
     <div id="terminal-container">
-        <div id="terminal"></div>
+        <div id="terminal" class="webterm"></div>
     </div>
     <div id="connection-status">
         <span id="status-icon">●</span>
@@ -56,15 +57,7 @@
         <button id="settings-apply" class="primary">Apply &amp; Reconnect</button>
         <button id="settings-close">Close</button>
     </div>
-    <script src="static/xterm.js"></script>
-    <script src="static/xterm-addon-unicode-graphemes.js"></script>
-    <script src="static/xterm-addon-fit.js"></script>
-    <script src="static/xterm-addon-webgl.js"></script>
-    <script src="static/xterm-addon-canvas.js"></script>
-    <script src="static/xterm-addon-web-links.js"></script>
-    <script src="static/xterm-addon-image.js"></script>
-    <script src="static/xterm-kitty-overlay.js"></script>
-    <script src="static/sip-unicode.js"></script>
+    <script src="static/webterm.js"></script>
     <script src="static/terminal.js"></script>
 </body>
 </html>

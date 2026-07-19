@@ -73,7 +73,9 @@ test('resize reaches the PTY and carries pixel dimensions', async ({ page }) => 
     cols: window.sipTerm.term.cols,
     rows: window.sipTerm.term.rows,
   }));
-  await roundTrip(page, 'echo GEO=$(tput cols)x$(tput lines)\n', 'GEO=');
+  // The marker is split so the echoed command line cannot satisfy the wait
+  // before the shell has actually run it.
+  await roundTrip(page, 'echo "G""EO=$(tput cols)x$(tput lines)"\n', `GEO=${grid.cols}x`);
 
   // The shell's own idea of the window must match the client's grid, which is
   // only true if the resize message actually arrived.
@@ -161,10 +163,12 @@ test('OSC 52 never answers a read query', async ({ page, context, browserName })
   // far end, so the handler must swallow it and send nothing.
   const sent = await page.evaluate(async () => {
     const seen = [];
-    const original = window.sipTerm.sendInput.bind(window.sipTerm);
-    window.sipTerm.sendInput = (d) => { seen.push(d); return original(d); };
+    const conn = window.sipTerm.connection;
+    const original = conn.send.bind(conn);
+    conn.send = (bytes) => { seen.push(new TextDecoder().decode(bytes)); return original(bytes); };
     window.sipTerm.term.write('\x1b]52;c;?\x07');
     await new Promise((r) => setTimeout(r, 500));
+    conn.send = original;
     return seen;
   });
   expect(sent.join('')).not.toContain('SECRET_CLIPBOARD');
@@ -177,15 +181,22 @@ test('OSC 52 never answers a read query', async ({ page, context, browserName })
 // placements but never reply, which left every probe unanswered and made
 // kitten icat report that the terminal has no graphics support.
 
-/** Collect everything the overlay writes back while running `body`. */
+/**
+ * Collect everything the overlay writes back while running `body`.
+ *
+ * A protocol reply takes the same route a keystroke does, so it arrives at the
+ * connection's Transport `send` rather than at sendInput, which is only the
+ * direct route the tests and the console use.
+ */
 async function captureResponses(page, body) {
   return page.evaluate(async (seq) => {
     const seen = [];
-    const original = window.sipTerm.sendInput.bind(window.sipTerm);
-    window.sipTerm.sendInput = (d) => { seen.push(d); return original(d); };
+    const conn = window.sipTerm.connection;
+    const original = conn.send.bind(conn);
+    conn.send = (bytes) => { seen.push(new TextDecoder().decode(bytes)); return original(bytes); };
     window.sipTerm.term.write(seq);
     await new Promise((r) => setTimeout(r, 300));
-    window.sipTerm.sendInput = original;
+    conn.send = original;
     return seen.join('');
   }, body);
 }
