@@ -3,8 +3,10 @@ package sip
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -377,6 +379,21 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	return out.Bytes()
 }
 
+// writeRevalidatingHeaders tags a response with a content ETag and asks the
+// browser to revalidate before reusing it. It reports whether the request was
+// answered with 304, in which case the caller must not write a body.
+func writeRevalidatingHeaders(w http.ResponseWriter, r *http.Request, data []byte) bool {
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	return false
+}
+
 // handleStatic serves embedded static files plus a virtual
 // /static/fonts/custom<ext> route for the user-supplied font.
 func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
@@ -414,20 +431,20 @@ func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "font/otf")
 	}
 
-	if strings.Contains(path, "fonts/") {
-		w.Header().Set("Cache-Control", "public, max-age=31536000")
-	}
-	if strings.HasSuffix(path, ".wasm") {
-		// Serve wasm with the right content-type so the browser uses
-		// streaming compilation. Already set above; cross-origin headers
-		// not required for same-origin /static/ fetches.
-		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	// Assets are served from the binary, so they change whenever sip is
+	// rebuilt while their URLs stay the same. A long max-age therefore pins a
+	// browser to a stale client for as long as the header says, and an ES
+	// module graph is not reliably revalidated by a reload, so the stale copy
+	// survives even a hard refresh. Revalidate every asset instead: the
+	// payloads come from memory and an unchanged one answers 304.
+	if writeRevalidatingHeaders(w, r, data) {
+		return
 	}
 
 	_, _ = w.Write(data)
 }
 
-func (s *httpServer) serveCustomFont(w http.ResponseWriter, _ *http.Request) {
+func (s *httpServer) serveCustomFont(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.config.FontPath)
 	if err != nil {
 		http.NotFound(w, nil)
@@ -443,7 +460,9 @@ func (s *httpServer) serveCustomFont(w http.ResponseWriter, _ *http.Request) {
 	default:
 		w.Header().Set("Content-Type", "font/ttf")
 	}
-	w.Header().Set("Cache-Control", "public, max-age=31536000")
+	if writeRevalidatingHeaders(w, r, data) {
+		return
+	}
 	_, _ = w.Write(data)
 }
 
