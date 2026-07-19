@@ -38,16 +38,16 @@ export default defineConfig({
       },
     },
     {
-      // Input handling diverges between engines in ways a Chromium-only suite
-      // cannot see: the chord-leak bug (Ctrl+L arriving as "l") only fires when
-      // the browser reports the IME sentinel keyCode, which Firefox on Linux
-      // does and Chromium does not. Firefox also negotiates WebTransport here
-      // where Chromium falls back to WebSocket, so it covers that path too.
+      // Firefox is the only engine here that negotiates WebTransport against a
+      // loopback server with a self-signed cert hash; Chromium refuses and
+      // falls back to WebSocket. That makes this project the sole coverage of
+      // the WebTransport input path, which is why the keyboard suite asserts
+      // the transport it got instead of accepting a fallback.
       //
-      // Only the input specs run here. The renderer specs read pixels back out
-      // of a SwiftShader WebGL context, which is a Chromium-specific setup.
+      // Only the keyboard suite runs here. The renderer checks read pixels
+      // back out of a canvas under a pinned GL setup, which is Chromium-only.
       name: 'firefox',
-      testMatch: /(chord_leak|keyboard)\.spec\.mjs/,
+      testMatch: /keyboard\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',

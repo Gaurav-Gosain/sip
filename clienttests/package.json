@@ -3,8 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:node": "node --test \"*.test.mjs\"",
-    "test:browser": "playwright test"
+    "test": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1"

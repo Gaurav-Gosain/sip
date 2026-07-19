@@ -1,225 +1,193 @@
-// Cell-grid agreement between the real ghostty-vt wasm and vtgl's torture
-// corpus.
+// Grapheme cluster widths in the xterm.js client, against a corpus measured
+// from the real ghostty-vt.
 //
-// vtgl deliberately does not depend on the VT, so its own tests drive a fake
-// source and can only assert that the renderer honours the widths it is given.
-// The open question that leaves is whether those widths are the ones a real
-// grapheme-aware VT actually reports. This suite answers it: each cluster is
-// written straight into the ghostty-vt parser (Terminal.write bypasses the PTY,
-// so no shell can mangle the bytes), then read back through SipVtSource, which
-// is the exact VtSource interface vtgl consumes.
+// Text correctness was the sole reason the browser client was ever migrated to
+// a ghostty-vt bundle, so it is the one thing the revert to xterm.js has to
+// answer for. The expectations below are not assumptions and not xterm's own
+// output: they are the column counts the real ghostty-vt wasm produced when
+// this corpus was first measured, recorded here as the reference the revert is
+// held against.
 //
-// The corpus below mirrors src/testing/torture.ts in the vtgl repo. It is
-// duplicated rather than imported because the two repositories are independent
-// and vtgl's test sources are not part of its published bundle. Escapes are
-// written explicitly so no editor can normalize a combining sequence into its
-// precomposed form, which would silently test nothing.
+// What makes xterm able to meet them is the vendored
+// @xterm/addon-unicode-graphemes provider. The bundle's default UnicodeV6
+// provider is a thin wrapper over wcwidth: it has no notion of a cluster, so
+// it bills every scalar in an emoji ZWJ sequence separately and a family emoji
+// eats eight columns instead of two. The graphemes addon supplies UAX 29
+// segmentation against the same charProperties bit layout the bundle's
+// InputHandler already consumes.
+//
+// Escapes are written explicitly so no editor can normalize a combining
+// sequence into its precomposed form, which would silently test nothing.
+//
+// Columns are measured as cursor advance rather than by walking cells. The two
+// emulators represent a cluster differently -- ghostty splits a combining
+// sequence across cells where xterm keeps it in one -- but that is an internal
+// representation detail. What a user sees, and what a TUI's layout arithmetic
+// depends on, is how far the cursor moved.
 
 import { test, expect } from '@playwright/test';
 
-const WEBGL = '/?renderer=webgl';
-
 /**
- * name, text, expected columns, expected scalar count, expected cell layout.
+ * name, text, expected columns.
  *
- * 'wide' is a width-N head plus N-1 width-0 spacer tails; 'split' is one
- * width-1 cell per scalar. These values are not assumptions: they are what the
- * real ghostty-vt produced when this suite was first run, and vtgl's own corpus
- * records the same measurements.
+ * Measured from the real ghostty-vt. See KNOWN_DIVERGENCE below for the one
+ * entry where xterm deliberately disagrees.
  */
 const CORPUS = [
-  ['cjk-han', '\u{4e16}', 2, 1, 'wide'],
-  ['cjk-kana', '\u{3042}', 2, 1, 'wide'],
-  ['hangul-syllable', '\u{d55c}', 2, 1, 'wide'],
-  ['fullwidth-latin', '\u{ff21}', 2, 1, 'wide'],
-  ['halfwidth-kana', '\u{ff71}', 1, 1, 'split'],
-  ['emoji-simple', '\u{1f600}', 2, 1, 'wide'],
-  ['emoji-zwj-family', '\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}', 2, 7, 'wide'],
-  ['emoji-zwj-profession', '\u{1f469}\u{200d}\u{1f4bb}', 2, 3, 'wide'],
-  ['emoji-skin-tone', '\u{1f44d}\u{1f3fd}', 2, 2, 'wide'],
-  ['emoji-flag', '\u{1f1ef}\u{1f1f5}', 2, 2, 'wide'],
-  ['emoji-tag-flag', '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', 2, 7, 'wide'],
-  ['emoji-keycap', '1\u{fe0f}\u{20e3}', 2, 3, 'wide'],
-  ['emoji-zwj-rainbow', '\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}', 2, 4, 'wide'],
-  ['vs16-emoji-presentation', '\u{2764}\u{fe0f}', 2, 2, 'wide'],
-  ['vs15-text-presentation', '\u{2764}\u{fe0e}', 1, 2, 'split'],
-  ['combining-acute', 'e\u{301}', 1, 2, 'split'],
-  ['combining-stack', 'e\u{323}\u{300}\u{301}', 1, 4, 'split'],
-  ['combining-zalgo', 'a\u{300}\u{301}\u{302}\u{303}\u{308}\u{30a}\u{323}\u{324}\u{325}\u{330}\u{331}', 1, 12, 'split'],
-  ['devanagari-ksha', '\u{915}\u{94d}\u{937}', 2, 3, 'wide'],
-  ['devanagari-consonant', '\u{928}', 1, 1, 'split'],
-  ['devanagari-matra', '\u{928}\u{93f}', 2, 2, 'wide'],
-  ['arabic-isolated', '\u{627}', 1, 1, 'split'],
-  ['arabic-word', '\u{633}\u{644}\u{627}\u{645}', 4, 4, 'split'],
-  ['arabic-lam-alef', '\u{644}\u{627}', 2, 2, 'split'],
+  ['cjk-han', '\u{4e16}', 2],
+  ['cjk-kana', '\u{3042}', 2],
+  ['hangul-syllable', '\u{d55c}', 2],
+  ['fullwidth-latin', '\u{ff21}', 2],
+  ['halfwidth-kana', '\u{ff71}', 1],
+  ['emoji-simple', '\u{1f600}', 2],
+  ['emoji-zwj-family', '\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}', 2],
+  ['emoji-zwj-profession', '\u{1f469}\u{200d}\u{1f4bb}', 2],
+  ['emoji-skin-tone', '\u{1f44d}\u{1f3fd}', 2],
+  ['emoji-flag', '\u{1f1ef}\u{1f1f5}', 2],
+  ['emoji-tag-flag', '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', 2],
+  ['emoji-keycap', '1\u{fe0f}\u{20e3}', 2],
+  ['emoji-zwj-rainbow', '\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}', 2],
+  ['vs16-emoji-presentation', '\u{2764}\u{fe0f}', 2],
+  ['vs15-text-presentation', '\u{2764}\u{fe0e}', 1],
+  ['combining-acute', 'e\u{301}', 1],
+  ['combining-stack', 'e\u{323}\u{300}\u{301}', 1],
+  ['combining-zalgo', 'a\u{300}\u{301}\u{302}\u{303}\u{308}\u{30a}\u{323}\u{324}\u{325}\u{330}\u{331}', 1],
+  ['devanagari-ksha', '\u{915}\u{94d}\u{937}', 2],
+  ['devanagari-consonant', '\u{928}', 1],
+  ['devanagari-matra', '\u{928}\u{93f}', 2],
+  ['arabic-isolated', '\u{627}', 1],
+  ['arabic-word', '\u{633}\u{644}\u{627}\u{645}', 4],
+  ['arabic-lam-alef', '\u{644}\u{627}', 2],
 ];
 
+/**
+ * The one case where xterm and ghostty-vt disagree, documented rather than
+ * papered over.
+ *
+ * U+093F DEVANAGARI VOWEL SIGN I is a spacing combining mark. ghostty gives it
+ * its own advance, so the cluster is two columns; xterm treats it as part of
+ * the preceding cluster and bills one. Both are defensible: the disagreement is
+ * about whether a spacing mark earns an advance, not about where the cluster
+ * boundary falls, and every other Indic case in this corpus (including the
+ * ksha conjunct) agrees exactly.
+ *
+ * If this ever needs to match ghostty, the cheap fix is a wrapper provider that
+ * delegates to the addon and overrides the spacing-mark range. It is not worth
+ * a ghostty-vt-backed provider: the wasm exports no standalone width or
+ * grapheme-break function, only grid-scoped cell reads, so backing this would
+ * mean a shadow VT and a wasm round trip per character on xterm's hottest path.
+ */
+const KNOWN_DIVERGENCE = {
+  'devanagari-matra': { ghostty: 2, xterm: 1 },
+};
+
 async function boot(page) {
-  await page.goto(WEBGL);
+  await page.goto('/');
+  // Wait for the session to settle before measuring. The provider is live as
+  // soon as the Terminal is constructed, which is well before init() finishes
+  // connecting, and measuring in that window races the transport handshake.
+  await page.waitForFunction(() => window.sipTerm?.connected, null, { timeout: 30_000 });
+  // The provider is what this suite exists to exercise, so refuse to measure
+  // anything until it is the active one. Without it every emoji case below
+  // would fail in a way that looks like a segmentation bug rather than a
+  // missing addon.
   await page.waitForFunction(
-    () => document.querySelector('#renderer-info')?.dataset.renderer !== undefined,
-    null,
-    { timeout: 30_000 },
-  );
-  await page.waitForFunction(
-    () => document.querySelector('#connection-status')?.classList.contains('connected'),
-    null,
-    { timeout: 30_000 },
-  );
-  await page.waitForFunction(
-    () => (window.sipTerm || window.__sipTerm)?.vtglBridge?.source !== undefined,
+    () => window.sipTerm.term.unicode.activeVersion === '15-graphemes',
     null,
     { timeout: 30_000 },
   );
 }
 
 /**
- * Write every cluster into the VT, one per row, and read the grid back through
- * the adapter vtgl consumes. Done in a single evaluate so the whole corpus
- * shares one screen state and one readback.
+ * Write each cluster at the start of its own row and record how far the cursor
+ * moved. Done in one evaluate so the corpus shares a single screen state.
  */
 async function measureCorpus(page, corpus) {
-  return page.evaluate((entries) => {
-    const sip = window.sipTerm || window.__sipTerm;
-    const term = sip.term;
-    const source = sip.vtglBridge.source;
+  return page.evaluate(async (entries) => {
+    const term = window.sipTerm.term;
+    const drain = () => new Promise((r) => term.write('', r));
 
-    // Home the cursor and clear, then place each cluster at the start of its
-    // own row so a wide cluster cannot be confused with its neighbour.
     term.write('\x1b[H\x1b[2J');
-    entries.forEach(([, text], i) => {
+    await drain();
+
+    const out = [];
+    for (let i = 0; i < entries.length; i++) {
+      const [name, text] = entries[i];
       term.write('\x1b[' + (i + 1) + ';1H');
       term.write(text);
-    });
-
-    // Let the parser drain before reading the grid back.
-    if (typeof term.flushWriteQueue === 'function') term.flushWriteQueue();
-
-    const top = source.scrollbackRows;
-    return entries.map(([name, text], i) => {
-      const row = top + i;
-      const line = source.getLine(row);
-      const widths = [];
-      const codepoints = [];
-      for (let c = 0; c < 8; c++) {
-        widths.push(line.width(c));
-        codepoints.push(line.codepoint(c));
-      }
-      return {
+      await drain();
+      const buf = term.buffer.active;
+      const line = buf.getLine(buf.baseY + i);
+      out.push({
         name,
-        headWidth: line.width(0),
-        widths,
-        codepoints,
-        grapheme: source.getGraphemeString(row, 0),
-        headCodepoint: line.codepoint(0),
-        expectedFirstScalar: text.codePointAt(0),
-      };
-    });
+        columns: buf.cursorX,
+        headCell: line ? line.getCell(0).getChars() : '',
+        headWidth: line ? line.getCell(0).getWidth() : -1,
+      });
+    }
+    return out;
   }, corpus);
 }
 
-/**
- * Columns a cluster occupies, measured from what the VT actually wrote.
- *
- * There are two layouts and they cannot be told apart from the head width
- * alone. A wide cluster is a width-N head plus N-1 width-0 spacer tails. A
- * cluster the VT splits per scalar (Arabic letters, Devanagari conjuncts) is a
- * run of width-1 cells, so its extent has to be read off the occupied cells:
- * everything up to the first blank. Getting this wrong is what made lam-alef
- * look like a disagreement when the VT and vtgl in fact agree it takes two
- * columns.
- */
-function occupiedColumns(widths, codepoints) {
-  if (widths[0] > 1) return widths[0];
-  let n = 0;
-  while (n < codepoints.length && codepoints[n] !== 0 && codepoints[n] !== 32) n++;
-  return Math.max(n, 1);
-}
-
-test('ghostty-vt reports the cell widths vtgl assumes for the torture corpus', async ({
-  page,
-}) => {
-  test.setTimeout(120_000);
+test('grapheme clusters advance the cursor the way ghostty-vt does', async ({ page }) => {
   await boot(page);
   const measured = await measureCorpus(page, CORPUS);
-  expect(measured.length).toBe(CORPUS.length);
+  const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
 
   const mismatches = [];
-  measured.forEach((m, i) => {
-    const [name, , expectedColumns] = CORPUS[i];
-    const actual = occupiedColumns(m.widths, m.codepoints);
-    if (actual !== expectedColumns) {
-      mismatches.push(
-        `${name}: vtgl assumes ${expectedColumns} columns, ghostty-vt reports ${actual} ` +
-          `(widths ${m.widths.join(',')})`,
-      );
+  for (const [name, text, ghosttyColumns] of CORPUS) {
+    const m = byName[name];
+    const expected = KNOWN_DIVERGENCE[name]?.xterm ?? ghosttyColumns;
+    if (m.columns !== expected) {
+      mismatches.push(`${name} (${JSON.stringify(text)}): expected ${expected} columns, measured ${m.columns}`);
     }
-  });
-  expect(mismatches, mismatches.join('\n')).toEqual([]);
-});
-
-test('ghostty-vt keeps multi-scalar clusters on one cell', async ({ page }) => {
-  test.setTimeout(120_000);
-  await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
-
-  const split = [];
-  measured.forEach((m, i) => {
-    const [name, text, , scalars] = CORPUS[i];
-    if (scalars < 2) return;
-    // Arabic and Devanagari legitimately occupy one cell per scalar; the ZWJ,
-    // flag, keycap and combining cases must not be split.
-    // Arabic is the one family ghostty-vt splits per scalar. Devanagari is
-    // not: the VT keeps even the ksha conjunct as a single width-2 cluster.
-    if (CORPUS[i][4] === 'split' && CORPUS[i][2] > 1) return;
-    if (m.grapheme !== text) {
-      split.push(
-        `${name}: expected the whole cluster on the head cell, got ${JSON.stringify(m.grapheme)}`,
-      );
-    }
-  });
-  expect(split, split.join('\n')).toEqual([]);
-});
-
-test('report the layout ghostty-vt chose for each cluster', async ({ page }) => {
-  // Diagnostic, not a bar: prints the cell layout the real VT produces so the
-  // corpus in vtgl can record it rather than guess at it.
-  test.setTimeout(120_000);
-  await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
-  const lines = measured.map((m, i) => {
-    const [name, , columns] = CORPUS[i];
-    const wide = m.widths[0] > 1;
-    return (
-      name.padEnd(26) +
-      ' declared=' + String(columns) +
-      ' widths=' + m.widths.slice(0, 5).join(',') +
-      ' layout=' + (wide ? 'wide-head+spacers' : 'one-cell-per-scalar')
-    );
-  });
-  console.log('\n' + lines.join('\n') + '\n');
-});
-
-test('ghostty-vt uses the cell layout vtgl records for each cluster', async ({ page }) => {
-  test.setTimeout(120_000);
-  await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
-  const wrong = [];
-  measured.forEach((m, i) => {
-    const [name, , , , expectedLayout] = CORPUS[i];
-    const actual = m.widths[0] > 1 ? 'wide' : 'split';
-    if (actual !== expectedLayout) {
-      wrong.push(`${name}: recorded ${expectedLayout}, ghostty-vt produced ${actual}`);
-    }
-  });
-  expect(wrong, wrong.join('\n')).toEqual([]);
-});
-
-test('the head cell carries the cluster first scalar', async ({ page }) => {
-  test.setTimeout(120_000);
-  await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
-  for (const m of measured) {
-    expect(m.headCodepoint, `${m.name} head codepoint`).toBe(m.expectedFirstScalar);
   }
+
+  expect(mismatches, mismatches.join('\n')).toEqual([]);
+
+  // Agreement with ghostty on everything outside the documented divergence.
+  const diverging = Object.keys(KNOWN_DIVERGENCE);
+  const agreeing = CORPUS.filter(([name]) => !diverging.includes(name));
+  for (const [name, , ghosttyColumns] of agreeing) {
+    expect(byName[name].columns, `${name} must match ghostty-vt exactly`).toBe(ghosttyColumns);
+  }
+});
+
+test('the devanagari matra divergence is exactly where we think it is', async ({ page }) => {
+  // Pinned so the divergence cannot silently spread. If the addon ever changes
+  // its spacing-mark policy this fails and the note above gets revisited,
+  // rather than the corpus quietly being retuned to whatever xterm now does.
+  await boot(page);
+  const measured = await measureCorpus(page, CORPUS);
+  const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
+
+  for (const [name, { ghostty, xterm }] of Object.entries(KNOWN_DIVERGENCE)) {
+    expect(byName[name].columns, `${name} is the documented divergence`).toBe(xterm);
+    expect(xterm, `${name} would not be a divergence if the two agreed`).not.toBe(ghostty);
+  }
+});
+
+test('a ZWJ sequence occupies one cluster, not one cell per scalar', async ({ page }) => {
+  // The specific failure the graphemes provider exists to prevent: without it
+  // the wcwidth-only default bills each scalar of a family emoji separately.
+  await boot(page);
+  const family = await page.evaluate(async () => {
+    const term = window.sipTerm.term;
+    const drain = () => new Promise((r) => term.write('', r));
+    term.write('\x1b[H\x1b[2J');
+    await drain();
+    // Home the cursor immediately before writing. A shell prompt arriving from
+    // the PTY between the clear and the write would otherwise be counted into
+    // the cursor advance.
+    term.write('\x1b[1;1H\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}');
+    await drain();
+    const buf = term.buffer.active;
+    const cell = buf.getLine(buf.baseY).getCell(0);
+    return { columns: buf.cursorX, chars: cell.getChars(), width: cell.getWidth() };
+  });
+
+  expect(family.columns).toBe(2);
+  expect(family.width).toBe(2);
+  // The whole cluster lives in the one cell.
+  expect([...family.chars].length).toBeGreaterThan(1);
 });

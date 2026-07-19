@@ -1,9 +1,16 @@
 // Byte-level checks on the control chords, against a running sip server.
 //
-// The report that prompted these was "ctrl+C ctrl+D nothing working". Reading
-// the key path could not settle it, because the encoder's output depends on
-// runtime state (the kitty keyboard flags the VT negotiates) that only exists
-// in a real page. So these assert the actual bytes on the wire.
+// WHAT THIS SUITE IS AND IS NOT. It is a guard on the encoding table: given a
+// key event, the right bytes must reach the transport in the right framing. It
+// is NOT evidence of keyboard correctness. The chord-leak bug that motivated
+// reverting the browser client to xterm.js was never reproducible from a
+// synthesized key event in either direction: the handler was observed doing
+// the right thing while the wrong byte reached the server, and a headless run
+// of the identical code path produced the correct byte. Playwright cannot
+// carry the environmental signal (the IME sentinel keyCode an ibus/fcitx
+// desktop reports) that triggers it. A green run here means the table is
+// intact; it does not mean chords work on a real desktop, and it must never
+// again be cited as if it did.
 //
 // TRANSPORT IS AN EXPLICIT DIMENSION HERE, and it is not optional. This suite
 // has twice been caught blind to a configuration it silently was not testing:
@@ -14,10 +21,10 @@
 // Two rules follow, and both matter more than the assertions themselves:
 //
 //  1. Capture happens at the TRANSPORT BOUNDARY -- the WebSocket's send() or
-//     the WebTransport stream writer's write() -- never at the shared adapter
-//     above them. A hook above the transport records identical bytes whichever
-//     transport is live, so it cannot tell the two apart and a green run says
-//     nothing about either. Capturing at the boundary also proves the framing.
+//     the WebTransport stream writer's write() -- never above them. A hook
+//     above the transport records identical bytes whichever transport is live,
+//     so it cannot tell the two apart and a green run says nothing about
+//     either. Capturing at the boundary also proves the framing.
 //
 //  2. Every test declares the transport it wants and FAILS if it did not get
 //     it. Silently accepting a fallback is what made the last green run
@@ -53,7 +60,7 @@ function supports(projectName, transport) {
 function pinTransport(page, transport) {
   return page.addInitScript((t) => {
     localStorage.setItem('sip-web-settings', JSON.stringify({
-      transport: t, fontSize: 14, copyOnSelect: false, renderer: 'canvas',
+      transport: t, fontSize: 14, copyOnSelect: false, cursorBlink: false, renderer: 'canvas',
     }));
   }, transport);
 }
@@ -61,11 +68,11 @@ function pinTransport(page, transport) {
 /**
  * Record the input payload at the transport boundary.
  *
- * Deliberately NOT hooked on the shared adapter: that sits above the transport
- * and reports the same bytes either way, which is exactly the blind spot this
- * suite is meant to close. Hooking the socket and the stream writer means a
- * transport that drops, mangles or never flushes a frame shows up as missing
- * bytes here, and it verifies the on-the-wire framing too:
+ * Deliberately NOT hooked on a shared send path: that reports the same bytes
+ * either way, which is exactly the blind spot this suite is meant to close.
+ * Hooking the socket and the stream writer means a transport that drops,
+ * mangles or never flushes a frame shows up as missing bytes here, and it
+ * verifies the on-the-wire framing too:
  *
  *   WebSocket    [type][payload]
  *   WebTransport [4-byte big-endian length][type][payload]
@@ -77,11 +84,9 @@ async function captureWire(page) {
     window.__sentInput = [];
     const MSG_INPUT = 0x30;
 
-    // Unwrap the auto adapter to reach the live transport adapter.
-    const outer = window.sipTerm.adapter;
-    const live = outer.adapter ?? outer;
-    if (live.__sipWireHooked) return;
-    live.__sipWireHooked = true;
+    const term = window.sipTerm;
+    if (term.__sipWireHooked) return;
+    term.__sipWireHooked = true;
 
     const record = (payload) => {
       try {
@@ -91,19 +96,8 @@ async function captureWire(page) {
       }
     };
 
-    if (live.ws) {
-      const send = live.ws.send.bind(live.ws);
-      live.ws.send = (frame) => {
-        const b = new Uint8Array(frame);
-        if (b[0] === MSG_INPUT) record(b.subarray(1));
-        return send(frame);
-      };
-      window.__sipWireKind = 'websocket';
-      return;
-    }
-
-    if (live.writer) {
-      const w = live.writer;
+    if (term.useWebTransport && term.wtWriter) {
+      const w = term.wtWriter;
       const write = w.write.bind(w);
       w.write = (frame) => {
         const b = new Uint8Array(frame);
@@ -115,6 +109,18 @@ async function captureWire(page) {
       return;
     }
 
+    if (term.wsConnection) {
+      const ws = term.wsConnection;
+      const send = ws.send.bind(ws);
+      ws.send = (frame) => {
+        const b = new Uint8Array(frame);
+        if (b[0] === MSG_INPUT) record(b.subarray(1));
+        return send(frame);
+      };
+      window.__sipWireKind = 'websocket';
+      return;
+    }
+
     throw new Error('no transport to hook: neither a socket nor a stream writer');
   });
 }
@@ -122,11 +128,9 @@ async function captureWire(page) {
 /** The transport that is actually carrying bytes right now. */
 function liveTransport(page) {
   return page.evaluate(() => {
-    const outer = window.sipTerm.adapter;
-    if (outer.activeTransport) return outer.activeTransport;
-    // A directly-constructed adapter reports itself by shape.
-    if (outer.ws) return 'websocket';
-    if (outer.writer) return 'webtransport';
+    const t = window.sipTerm;
+    if (t.useWebTransport && t.wtWriter) return 'webtransport';
+    if (t.wsConnection) return 'websocket';
     return 'unknown';
   });
 }
@@ -136,17 +140,7 @@ async function boot(page, transport, url = '/') {
   await pinTransport(page, transport);
 
   await page.goto(url);
-  await page.waitForFunction(
-    () => {
-      const el = document.querySelector('#connection-status');
-      // Firefox reaches WebTransport where Chromium falls back to WebSocket,
-      // and the status class differs between them.
-      return el && (el.classList.contains('connected') || el.classList.contains('webtransport'));
-    },
-    null,
-    { timeout: 30_000 },
-  );
-  await page.waitForFunction(() => window.sipTerm?.adapter, null, { timeout: 30_000 });
+  await page.waitForFunction(() => window.sipTerm?.connected, null, { timeout: 30_000 });
 
   // Fail loudly on a transport we did not ask for. A fallback here silently
   // converts a WebTransport test into a second WebSocket test.
@@ -171,15 +165,13 @@ async function bytesFor(page, transport, chord, url = '/') {
   return frames.flat();
 }
 
-// Ctrl+A..Ctrl+Z map to 0x01..0x1a. Ctrl+I and Ctrl+M are excluded: the
-// ghostty encoder disambiguates them from Tab and Enter by emitting CSI u, and
-// it did so before this branch too, so they are upstream behaviour rather than
-// a sip regression. Tab and Enter themselves are asserted separately below.
+// Ctrl+A..Ctrl+Z map to 0x01..0x1a. Unlike the ghostty encoder this replaced,
+// xterm.js does not speak the kitty keyboard protocol, so it never
+// disambiguates Ctrl+I from Tab or Ctrl+M from Enter with a CSI u sequence.
+// All 26 letters are therefore plain control bytes and none is excluded.
 const CTRL_LETTERS = [];
 for (let i = 0; i < 26; i++) {
-  const letter = String.fromCharCode(97 + i);
-  if (letter === 'i' || letter === 'm') continue;
-  CTRL_LETTERS.push([letter, i + 1]);
+  CTRL_LETTERS.push([String.fromCharCode(97 + i), i + 1]);
 }
 
 for (const transport of TRANSPORTS) {
@@ -192,7 +184,7 @@ for (const transport of TRANSPORTS) {
       if (supports(testInfo.project.name, transport)) return;
       await pinTransport(page, transport);
       await page.goto('/');
-      await page.waitForFunction(() => window.sipTerm?.adapter, null, { timeout: 30_000 });
+      await page.waitForFunction(() => window.sipTerm?.connected, null, { timeout: 30_000 });
       const live = await liveTransport(page);
       expect(
         live,
@@ -227,13 +219,9 @@ for (const transport of TRANSPORTS) {
     // were actually delivered rather than merely handed to a transport that
     // could still drop them on the floor.
     const countPrompts = (page) => page.evaluate(() => {
-      const t = window.sipTerm.term ?? window.sipTerm.terminal;
-      const d = t.wasmTerm.getDimensions();
+      const b = window.sipTerm.term.buffer.active;
       let text = '';
-      for (let r = 0; r < d.rows; r++) {
-        for (const c of t.wasmTerm.getLine(r) ?? []) text += String.fromCodePoint(c.codepoint || 32);
-        text += '\n';
-      }
+      for (let i = 0; i < b.length; i++) text += b.getLine(i).translateToString(true) + '\n';
       return (text.match(/READY\$/g) ?? []).length;
     });
 
