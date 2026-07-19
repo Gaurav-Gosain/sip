@@ -159,6 +159,7 @@
             this.wtTransport = null;
             this.wtWriter = null;
             this.wtReader = null;
+            this.webTransportUnavailable = false;
             this.resizeTimeout = null;
 
             // Pre-allocated buffers (read path only; write frames are always
@@ -652,23 +653,30 @@
             this.updateStatus('connecting', 'Connecting...');
 
             const preference = this.settings.transport;
+            const wantsWebTransport = preference === 'auto' || preference === 'webtransport';
+            this.webTransportUnavailable = false;
 
-            if ((preference === 'auto' || preference === 'webtransport') && typeof WebTransport !== 'undefined') {
+            if (wantsWebTransport && typeof WebTransport !== 'undefined') {
                 try {
                     await this.connectWebTransport();
                     return;
                 } catch (e) {
                     console.log('WebTransport unavailable:', e.message);
-                    if (preference === 'webtransport') {
-                        this.updateStatus('disconnected', 'WebTransport failed');
-                        return;
-                    }
+                    this.webTransportUnavailable = true;
                 }
+            } else if (preference === 'webtransport') {
+                console.log('WebTransport requested but this browser does not support it');
+                this.webTransportUnavailable = true;
             }
 
-            if (preference !== 'webtransport') {
-                await this.connectWebSocket();
-            }
+            // Fall back even when WebTransport was explicitly chosen. Chromium
+            // refuses a QUIC connection to a loopback origin with a self-signed
+            // cert hash where Firefox accepts it, so an honoured preference on
+            // one machine is an unreachable one on the next; leaving a dead
+            // page there helps nobody. The status line names the transport that
+            // actually carried the session, so the fallback is visible rather
+            // than silent.
+            await this.connectWebSocket();
         }
 
         async reconnect() {
@@ -733,8 +741,10 @@
                     this.useWebTransport = false;
                     this.connected = true;
                     this.reconnectAttempts = 0;
-                    this.currentTransport = 'WebSocket';
-                    this.updateStatus('connected', 'Connected (WebSocket)');
+                    this.currentTransport = this.webTransportUnavailable
+                        ? 'WebSocket (WebTransport unavailable)'
+                        : 'WebSocket';
+                    this.updateStatus('connected', `Connected (${this.currentTransport})`);
                     this.sendResize();
                     this.startPing();
                     resolve();
