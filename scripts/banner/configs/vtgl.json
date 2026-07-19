@@ -1,0 +1,12 @@
+{
+  "name": "vtgl",
+  "split": 2,
+  "tagline": "a WebGL2 glyph-atlas terminal renderer",
+  "accent": "blue",
+  "motif": "atlas",
+  "motifOpts": { "seed": 11 },
+  "meta": [
+    ["instanced draws", "damage-driven uploads", "shelf-packed atlas"],
+    ["grapheme clusters", "Canvas2D fallback", "zero dependencies"]
+  ]
+}
