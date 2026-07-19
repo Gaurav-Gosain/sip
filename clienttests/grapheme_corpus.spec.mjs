@@ -3,12 +3,15 @@
 //
 // Text correctness was the sole reason the browser client was ever migrated to
 // a ghostty-vt bundle, so it is the one thing the revert to xterm.js has to
-// answer for. The expectations below are not assumptions and not xterm's own
-// output: they are the column counts the real ghostty-vt wasm produced when
-// this corpus was first measured, recorded here as the reference the revert is
-// held against.
+// answer for. The `ghostty` column below is not an assumption and not xterm's
+// own output: every value was produced by the real ghostty-vt wasm, driven
+// directly (its only import is env.log, so it runs headless with no bundle)
+// with mode 2027 grapheme clustering enabled, exactly as the deleted
+// ghostty-web bundle configured it. The 24 cases the corpus started with were
+// re-measured by that harness and reproduced their recorded values 24/24,
+// which is what licenses the remaining 21 cases it measured for the first time.
 //
-// What makes xterm able to meet them is the vendored
+// What makes xterm able to meet these is the vendored
 // @xterm/addon-unicode-graphemes provider. The bundle's default UnicodeV6
 // provider is a thin wrapper over wcwidth: it has no notion of a cluster, so
 // it bills every scalar in an emoji ZWJ sequence separately and a family emoji
@@ -19,67 +22,124 @@
 // Escapes are written explicitly so no editor can normalize a combining
 // sequence into its precomposed form, which would silently test nothing.
 //
-// Columns are measured as cursor advance rather than by walking cells. The two
-// emulators represent a cluster differently -- ghostty splits a combining
-// sequence across cells where xterm keeps it in one -- but that is an internal
-// representation detail. What a user sees, and what a TUI's layout arithmetic
-// depends on, is how far the cursor moved.
+// Two things are measured per case. `cols` is cursor advance, which is what a
+// user sees and what a TUI's layout arithmetic depends on; it is the only
+// figure comparable across the two emulators, because they represent a cluster
+// differently inside the buffer. `cell0` is the width xterm records on the
+// first cell, which pins the buffer representation itself and is xterm-only.
 
 import { test, expect } from '@playwright/test';
 
 /**
- * name, text, expected columns.
+ * name, text, category, ghostty columns, xterm cell-0 width.
  *
- * Measured from the real ghostty-vt. See KNOWN_DIVERGENCE below for the one
- * entry where xterm deliberately disagrees.
+ * An `xterm` field appears only where the two emulators disagree; see
+ * DIVERGENCES below, which is derived from it. Absent means they agree and the
+ * ghostty figure is asserted directly.
  */
 const CORPUS = [
-  ['cjk-han', '\u{4e16}', 2],
-  ['cjk-kana', '\u{3042}', 2],
-  ['hangul-syllable', '\u{d55c}', 2],
-  ['fullwidth-latin', '\u{ff21}', 2],
-  ['halfwidth-kana', '\u{ff71}', 1],
-  ['emoji-simple', '\u{1f600}', 2],
-  ['emoji-zwj-family', '\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}', 2],
-  ['emoji-zwj-profession', '\u{1f469}\u{200d}\u{1f4bb}', 2],
-  ['emoji-skin-tone', '\u{1f44d}\u{1f3fd}', 2],
-  ['emoji-flag', '\u{1f1ef}\u{1f1f5}', 2],
-  ['emoji-tag-flag', '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', 2],
-  ['emoji-keycap', '1\u{fe0f}\u{20e3}', 2],
-  ['emoji-zwj-rainbow', '\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}', 2],
-  ['vs16-emoji-presentation', '\u{2764}\u{fe0f}', 2],
-  ['vs15-text-presentation', '\u{2764}\u{fe0e}', 1],
-  ['combining-acute', 'e\u{301}', 1],
-  ['combining-stack', 'e\u{323}\u{300}\u{301}', 1],
-  ['combining-zalgo', 'a\u{300}\u{301}\u{302}\u{303}\u{308}\u{30a}\u{323}\u{324}\u{325}\u{330}\u{331}', 1],
-  ['devanagari-ksha', '\u{915}\u{94d}\u{937}', 2],
-  ['devanagari-consonant', '\u{928}', 1],
-  ['devanagari-matra', '\u{928}\u{93f}', 2],
-  ['arabic-isolated', '\u{627}', 1],
-  ['arabic-word', '\u{633}\u{644}\u{627}\u{645}', 4],
-  ['arabic-lam-alef', '\u{644}\u{627}', 2],
+  // CJK and fullwidth
+  { name: 'cjk-han', text: '\u{4e16}', category: 'cjk-fullwidth', ghostty: 2, cell0: 2 },
+  { name: 'cjk-kana', text: '\u{3042}', category: 'cjk-fullwidth', ghostty: 2, cell0: 2 },
+  { name: 'fullwidth-latin', text: '\u{ff21}', category: 'cjk-fullwidth', ghostty: 2, cell0: 2 },
+  { name: 'halfwidth-kana', text: '\u{ff71}', category: 'cjk-fullwidth', ghostty: 1, cell0: 1 },
+  { name: 'cjk-ext-b-smp', text: '\u{20000}', category: 'cjk-fullwidth', ghostty: 2, cell0: 2 },
+
+  // Hangul
+  { name: 'hangul-syllable', text: '\u{d55c}', category: 'hangul', ghostty: 2, cell0: 2 },
+  { name: 'hangul-jamo-conjoining', text: '\u{1100}\u{1161}\u{11a8}', category: 'hangul', ghostty: 2, cell0: 2 },
+  { name: 'hangul-jamo-lead-alone', text: '\u{1100}', category: 'hangul', ghostty: 2, cell0: 2 },
+  { name: 'hangul-compat-jamo', text: '\u{3131}', category: 'hangul', ghostty: 2, cell0: 2 },
+
+  // Emoji, plain
+  { name: 'emoji-simple', text: '\u{1f600}', category: 'emoji-basic', ghostty: 2, cell0: 2 },
+
+  // ZWJ sequences
+  { name: 'emoji-zwj-family', text: '\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}', category: 'emoji-zwj', ghostty: 2, cell0: 2 },
+  { name: 'emoji-zwj-profession', text: '\u{1f469}\u{200d}\u{1f4bb}', category: 'emoji-zwj', ghostty: 2, cell0: 2 },
+  { name: 'emoji-zwj-rainbow', text: '\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}', category: 'emoji-zwj', ghostty: 2, cell0: 2 },
+  { name: 'emoji-family-skin-tones', text: '\u{1f469}\u{1f3fb}\u{200d}\u{1f91d}\u{200d}\u{1f468}\u{1f3ff}', category: 'emoji-zwj', ghostty: 2, cell0: 2 },
+
+  // Regional indicators and tag sequences
+  { name: 'emoji-flag', text: '\u{1f1ef}\u{1f1f5}', category: 'emoji-flags', ghostty: 2, cell0: 2 },
+  { name: 'emoji-two-flags', text: '\u{1f1ef}\u{1f1f5}\u{1f1fa}\u{1f1f8}', category: 'emoji-flags', ghostty: 4, cell0: 2 },
+  { name: 'emoji-tag-flag', text: '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', category: 'emoji-flags', ghostty: 2, cell0: 2 },
+  // A regional indicator with no pair. ghostty gives the lone RI its wide
+  // advance; xterm bills it narrow.
+  { name: 'emoji-ri-odd', text: '\u{1f1ef}', category: 'emoji-flags', ghostty: 2, xterm: 1, cell0: 1 },
+
+  // Keycaps
+  { name: 'emoji-keycap', text: '1\u{fe0f}\u{20e3}', category: 'emoji-keycap', ghostty: 2, cell0: 2 },
+  { name: 'emoji-keycap-no-vs', text: '1\u{20e3}', category: 'emoji-keycap', ghostty: 1, cell0: 1 },
+
+  // Skin tone modifiers
+  { name: 'emoji-skin-tone', text: '\u{1f44d}\u{1f3fd}', category: 'emoji-skin-tone', ghostty: 2, cell0: 2 },
+  { name: 'emoji-modifier-alone', text: '\u{1f3fd}', category: 'emoji-skin-tone', ghostty: 2, cell0: 2 },
+
+  // Variation selectors. VS15 and VS16 must NOT produce the same width.
+  { name: 'vs16-emoji-presentation', text: '\u{2764}\u{fe0f}', category: 'variation-selectors', ghostty: 2, cell0: 2 },
+  { name: 'vs15-text-presentation', text: '\u{2764}\u{fe0e}', category: 'variation-selectors', ghostty: 1, cell0: 1 },
+  { name: 'emoji-vs16-digit', text: '\u{0023}\u{fe0f}', category: 'variation-selectors', ghostty: 2, cell0: 2 },
+
+  // Combining mark stacks
+  { name: 'combining-acute', text: 'e\u{301}', category: 'combining', ghostty: 1, cell0: 1 },
+  { name: 'combining-stack', text: 'e\u{323}\u{300}\u{301}', category: 'combining', ghostty: 1, cell0: 1 },
+  { name: 'combining-zalgo', text: 'a\u{300}\u{301}\u{302}\u{303}\u{308}\u{30a}\u{323}\u{324}\u{325}\u{330}\u{331}', category: 'combining', ghostty: 1, cell0: 1 },
+  { name: 'thai-combining', text: '\u{0e01}\u{0e49}', category: 'combining', ghostty: 1, cell0: 1 },
+  { name: 'hebrew-point', text: '\u{05d0}\u{05b7}', category: 'combining', ghostty: 1, cell0: 1 },
+  // A combining mark with no base. ghostty absorbs it and stays put; xterm
+  // gives the defective cluster a cell.
+  { name: 'combining-mark-alone', text: '\u{301}', category: 'combining', ghostty: 0, xterm: 1, cell0: 1 },
+
+  // Devanagari
+  { name: 'devanagari-consonant', text: '\u{928}', category: 'devanagari', ghostty: 1, cell0: 1 },
+  { name: 'devanagari-ksha', text: '\u{915}\u{94d}\u{937}', category: 'devanagari', ghostty: 2, cell0: 1 },
+  { name: 'devanagari-matra', text: '\u{928}\u{93f}', category: 'devanagari', ghostty: 2, xterm: 1, cell0: 1 },
+
+  // Arabic
+  { name: 'arabic-isolated', text: '\u{627}', category: 'arabic', ghostty: 1, cell0: 1 },
+  { name: 'arabic-word', text: '\u{633}\u{644}\u{627}\u{645}', category: 'arabic', ghostty: 4, cell0: 1 },
+  { name: 'arabic-lam-alef', text: '\u{644}\u{627}', category: 'arabic', ghostty: 2, cell0: 1 },
+
+  // Zero-width characters
+  { name: 'zero-width-non-joiner', text: '\u{628}\u{200c}\u{629}', category: 'zero-width', ghostty: 2, cell0: 1 },
+  { name: 'zero-width-no-break-space', text: 'a\u{feff}b', category: 'zero-width', ghostty: 2, cell0: 1 },
+  { name: 'zero-width-space', text: 'a\u{200b}b', category: 'zero-width', ghostty: 2, xterm: 3, cell0: 1 },
+  { name: 'zero-width-space-alone', text: '\u{200b}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 1 },
+  { name: 'zero-width-joiner-alone', text: '\u{200d}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 1 },
+  { name: 'soft-hyphen', text: 'a\u{00ad}b', category: 'zero-width', ghostty: 3, xterm: 2, cell0: 1 },
+
+  // Box drawing and block, the glyphs whose rendering motivated the revert.
+  { name: 'box-drawing-light', text: '\u{2500}', category: 'box-block', ghostty: 1, cell0: 1 },
+  { name: 'block-full', text: '\u{2588}', category: 'box-block', ghostty: 1, cell0: 1 },
 ];
 
 /**
- * The one case where xterm and ghostty-vt disagree, documented rather than
- * papered over.
+ * The cases where xterm and ghostty-vt disagree, documented rather than
+ * papered over. Derived from the corpus so the two cannot drift apart.
  *
- * U+093F DEVANAGARI VOWEL SIGN I is a spacing combining mark. ghostty gives it
- * its own advance, so the cluster is two columns; xterm treats it as part of
- * the preceding cluster and bills one. Both are defensible: the disagreement is
- * about whether a spacing mark earns an advance, not about where the cluster
- * boundary falls, and every other Indic case in this corpus (including the
- * ksha conjunct) agrees exactly.
+ * All seven are policy calls on degenerate or standalone input, not
+ * segmentation defects. Six of them are the same argument twice over: whether
+ * a character that carries no ink of its own earns an advance. ghostty says a
+ * lone ZWSP, ZWJ or combining mark advances nothing while a spacing mark or a
+ * lone regional indicator does; xterm says the reverse. Where these characters
+ * appear in real text rather than alone -- ZWNJ inside an Arabic word, ZWJ
+ * inside an emoji sequence, U+FEFF between letters, a combining mark after its
+ * base -- the two agree exactly, which is the case that actually matters.
  *
- * If this ever needs to match ghostty, the cheap fix is a wrapper provider that
- * delegates to the addon and overrides the spacing-mark range. It is not worth
- * a ghostty-vt-backed provider: the wasm exports no standalone width or
- * grapheme-break function, only grid-scoped cell reads, so backing this would
- * mean a shadow VT and a wasm round trip per character on xterm's hottest path.
+ * If any of these ever needs to match ghostty, the cheap fix is a wrapper
+ * provider that delegates to the addon and overrides the offending range. It
+ * is not worth a ghostty-vt-backed provider: the wasm exports no standalone
+ * width or grapheme-break function, only grid-scoped cell reads, so backing
+ * this would mean a shadow VT and a wasm round trip per character on xterm's
+ * hottest path.
  */
-const KNOWN_DIVERGENCE = {
-  'devanagari-matra': { ghostty: 2, xterm: 1 },
-};
+const DIVERGENCES = Object.fromEntries(
+  CORPUS.filter((c) => c.xterm !== undefined).map((c) => [c.name, { ghostty: c.ghostty, xterm: c.xterm }]),
+);
+
+/** What xterm is expected to do: the divergent value if any, else ghostty's. */
+const expectedCols = (c) => (c.xterm !== undefined ? c.xterm : c.ghostty);
 
 async function boot(page) {
   await page.goto('/');
@@ -96,75 +156,187 @@ async function boot(page) {
     null,
     { timeout: 30_000 },
   );
+  // Let the shell's first prompt arrive and settle before anything is cleared.
+  // Without this the prompt can land in the middle of the corpus loop, where
+  // it is indistinguishable from a wide cluster: a lone combining mark on a
+  // row that caught an 8-character prompt measures as 9 columns.
+  await page.waitForTimeout(1_500);
 }
 
 /**
  * Write each cluster at the start of its own row and record how far the cursor
- * moved. Done in one evaluate so the corpus shares a single screen state.
+ * moved, plus the width xterm recorded on the row's first cell.
+ *
+ * Batched to stay inside the terminal's row count: a corpus longer than the
+ * screen would scroll its own early rows away before they were read back.
+ * Every batch also counts PTY traffic, and the callers fail the run if any
+ * arrived, so a stray prompt can never be silently measured as a width.
  */
 async function measureCorpus(page, corpus) {
-  return page.evaluate(async (entries) => {
-    const term = window.sipTerm.term;
-    const drain = () => new Promise((r) => term.write('', r));
+  const rowsPerBatch = await page.evaluate(() => window.sipTerm.term.rows - 2);
+  const measured = [];
+  let ptyTraffic = 0;
 
-    term.write('\x1b[H\x1b[2J');
-    await drain();
+  for (let start = 0; start < corpus.length; start += rowsPerBatch) {
+    const batch = corpus.slice(start, start + rowsPerBatch).map((c) => [c.name, c.text]);
+    const result = await page.evaluate(async (entries) => {
+      const term = window.sipTerm.term;
+      const drain = () => new Promise((r) => term.write('', r));
 
-    const out = [];
-    for (let i = 0; i < entries.length; i++) {
-      const [name, text] = entries[i];
-      term.write('\x1b[' + (i + 1) + ';1H');
-      term.write(text);
-      await drain();
-      const buf = term.buffer.active;
-      const line = buf.getLine(buf.baseY + i);
-      out.push({
-        name,
-        columns: buf.cursorX,
-        headCell: line ? line.getCell(0).getChars() : '',
-        headWidth: line ? line.getCell(0).getWidth() : -1,
-      });
-    }
-    return out;
-  }, corpus);
+      // Anything the PTY pushes while we measure would corrupt the numbers, so
+      // count it and let the assertion in the caller reject the whole run.
+      let pty = 0;
+      const original = window.sipTerm.handleMessage.bind(window.sipTerm);
+      window.sipTerm.handleMessage = (d) => { pty++; return original(d); };
+      try {
+        term.write('\x1b[H\x1b[2J');
+        await drain();
+
+        const out = [];
+        for (let i = 0; i < entries.length; i++) {
+          const [name, text] = entries[i];
+          term.write('\x1b[' + (i + 1) + ';1H');
+          term.write(text);
+          await drain();
+          const buf = term.buffer.active;
+          const line = buf.getLine(buf.baseY + i);
+          out.push({
+            name,
+            columns: buf.cursorX,
+            headCell: line ? line.getCell(0).getChars() : '',
+            headWidth: line ? line.getCell(0).getWidth() : -1,
+          });
+        }
+        return { out, pty };
+      } finally {
+        window.sipTerm.handleMessage = original;
+      }
+    }, batch);
+
+    measured.push(...result.out);
+    ptyTraffic += result.pty;
+  }
+
+  return { measured, ptyTraffic };
 }
 
 test('grapheme clusters advance the cursor the way ghostty-vt does', async ({ page }) => {
   await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
+  const { measured, ptyTraffic } = await measureCorpus(page, CORPUS);
+  expect(ptyTraffic, 'the PTY wrote to the screen mid-measurement; the numbers are not trustworthy').toBe(0);
   const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
 
   const mismatches = [];
-  for (const [name, text, ghosttyColumns] of CORPUS) {
-    const m = byName[name];
-    const expected = KNOWN_DIVERGENCE[name]?.xterm ?? ghosttyColumns;
+  for (const c of CORPUS) {
+    const m = byName[c.name];
+    const expected = expectedCols(c);
     if (m.columns !== expected) {
-      mismatches.push(`${name} (${JSON.stringify(text)}): expected ${expected} columns, measured ${m.columns}`);
+      mismatches.push(`${c.name} (${JSON.stringify(c.text)}): expected ${expected} columns, measured ${m.columns}`);
     }
   }
-
   expect(mismatches, mismatches.join('\n')).toEqual([]);
 
-  // Agreement with ghostty on everything outside the documented divergence.
-  const diverging = Object.keys(KNOWN_DIVERGENCE);
-  const agreeing = CORPUS.filter(([name]) => !diverging.includes(name));
-  for (const [name, , ghosttyColumns] of agreeing) {
-    expect(byName[name].columns, `${name} must match ghostty-vt exactly`).toBe(ghosttyColumns);
+  // Agreement with ghostty on everything outside the documented divergences.
+  for (const c of CORPUS.filter((c) => c.xterm === undefined)) {
+    expect(byName[c.name].columns, `${c.name} must match ghostty-vt exactly`).toBe(c.ghostty);
   }
 });
 
-test('the devanagari matra divergence is exactly where we think it is', async ({ page }) => {
-  // Pinned so the divergence cannot silently spread. If the addon ever changes
-  // its spacing-mark policy this fails and the note above gets revisited,
-  // rather than the corpus quietly being retuned to whatever xterm now does.
+test('clusters occupy the cells xterm says they do', async ({ page }) => {
+  // Cursor advance alone would pass if a cluster advanced two columns while
+  // recording two narrow cells, which breaks selection, reflow and erasure.
+  // This pins the buffer representation as well as the advance.
   await boot(page);
-  const measured = await measureCorpus(page, CORPUS);
+  const { measured, ptyTraffic } = await measureCorpus(page, CORPUS);
+  expect(ptyTraffic).toBe(0);
   const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
 
-  for (const [name, { ghostty, xterm }] of Object.entries(KNOWN_DIVERGENCE)) {
-    expect(byName[name].columns, `${name} is the documented divergence`).toBe(xterm);
+  const mismatches = [];
+  for (const c of CORPUS) {
+    const m = byName[c.name];
+    if (m.headWidth !== c.cell0) {
+      mismatches.push(`${c.name}: expected first cell width ${c.cell0}, measured ${m.headWidth}`);
+    }
+  }
+  expect(mismatches, mismatches.join('\n')).toEqual([]);
+});
+
+test('a per-category matrix is reported and every category is covered', async ({ page }) => {
+  // The matrix is the deliverable of this suite as much as the pass/fail is:
+  // it is what makes a regression legible as "emoji-flags went from 4/4 to
+  // 3/4" rather than as one anonymous failing expectation.
+  await boot(page);
+  const { measured, ptyTraffic } = await measureCorpus(page, CORPUS);
+  expect(ptyTraffic).toBe(0);
+  const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
+
+  const categories = new Map();
+  for (const c of CORPUS) {
+    if (!categories.has(c.category)) categories.set(c.category, { total: 0, agree: 0, diverge: 0, wrong: [] });
+    const row = categories.get(c.category);
+    row.total++;
+    if (byName[c.name].columns !== expectedCols(c)) row.wrong.push(c.name);
+    else if (c.xterm !== undefined) row.diverge++;
+    else row.agree++;
+  }
+
+  const lines = ['', 'category                cases  agree  diverge', ''];
+  for (const [name, r] of [...categories].sort()) {
+    lines.push(`${name.padEnd(22)}  ${String(r.total).padStart(5)}  ${String(r.agree).padStart(5)}  ${String(r.diverge).padStart(7)}`);
+  }
+  const totals = [...categories.values()].reduce(
+    (a, r) => ({ total: a.total + r.total, agree: a.agree + r.agree, diverge: a.diverge + r.diverge }),
+    { total: 0, agree: 0, diverge: 0 },
+  );
+  lines.push('', `${'TOTAL'.padEnd(22)}  ${String(totals.total).padStart(5)}  ${String(totals.agree).padStart(5)}  ${String(totals.diverge).padStart(7)}`, '');
+  console.log(lines.join('\n'));
+
+  // Every category the revert promised to answer for is present.
+  expect([...categories.keys()].sort()).toEqual([
+    'arabic', 'box-block', 'cjk-fullwidth', 'combining', 'devanagari',
+    'emoji-basic', 'emoji-flags', 'emoji-keycap', 'emoji-skin-tone',
+    'emoji-zwj', 'hangul', 'variation-selectors', 'zero-width',
+  ]);
+  for (const [name, r] of categories) {
+    expect(r.wrong, `${name} has cases that match neither emulator`).toEqual([]);
+  }
+  expect(totals.agree + totals.diverge).toBe(CORPUS.length);
+});
+
+test('the ghostty divergences are exactly where we think they are', async ({ page }) => {
+  // Pinned so the divergences cannot silently spread. If the addon ever
+  // changes one of these policies this fails and the note above gets
+  // revisited, rather than the corpus quietly being retuned to whatever xterm
+  // now does.
+  await boot(page);
+  const { measured, ptyTraffic } = await measureCorpus(page, CORPUS);
+  expect(ptyTraffic).toBe(0);
+  const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
+
+  expect(Object.keys(DIVERGENCES).sort()).toEqual([
+    'combining-mark-alone', 'devanagari-matra', 'emoji-ri-odd', 'soft-hyphen',
+    'zero-width-joiner-alone', 'zero-width-space', 'zero-width-space-alone',
+  ]);
+
+  for (const [name, { ghostty, xterm }] of Object.entries(DIVERGENCES)) {
+    expect(byName[name].columns, `${name} is a documented divergence`).toBe(xterm);
     expect(xterm, `${name} would not be a divergence if the two agreed`).not.toBe(ghostty);
   }
+});
+
+test('VS15 and VS16 produce different widths', async ({ page }) => {
+  // The two variation selectors collapsing to the same width would mean the
+  // provider is ignoring them. Called out on its own because it is the one
+  // pair whose whole point is that they differ.
+  await boot(page);
+  const { measured } = await measureCorpus(page, CORPUS);
+  const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
+
+  const vs16 = byName['vs16-emoji-presentation'].columns;
+  const vs15 = byName['vs15-text-presentation'].columns;
+  expect(vs16).toBe(2);
+  expect(vs15).toBe(1);
+  expect(vs16, 'VS15 and VS16 must not collapse to the same width').not.toBe(vs15);
 });
 
 test('a ZWJ sequence occupies one cluster, not one cell per scalar', async ({ page }) => {

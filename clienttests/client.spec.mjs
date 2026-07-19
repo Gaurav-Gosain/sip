@@ -6,6 +6,9 @@
 // Nothing here synthesizes a key event, because none of these properties
 // depend on key handling and mixing the two would make a failure ambiguous.
 
+// Cell metrics and the block/box-glyph seam live in metrics.spec.mjs, which
+// checks them against the font's own tables rather than against the client.
+
 import { test, expect } from '@playwright/test';
 
 async function boot(page, url = '/') {
@@ -165,56 +168,4 @@ test('OSC 52 never answers a read query', async ({ page, context, browserName })
     return seen;
   });
   expect(sent.join('')).not.toContain('SECRET_CLIPBOARD');
-});
-
-test('stacked block glyphs leave no seam between rows', async ({ page, browserName }) => {
-  test.skip(browserName !== 'chromium', 'reads canvas pixels back; the chromium project pins the GL setup');
-
-  // The defect this pins is what motivated reverting the renderer: the
-  // previous client drew a block glyph as ~20px of font ink into an 18px cell,
-  // so adjacent rows of U+2588 showed a background-coloured line where they
-  // met. xterm's canvas and webgl renderers draw box and block characters as
-  // vector shapes fitted to the cell, so a column through several stacked
-  // block rows must be foreground the whole way down.
-  //
-  // The canvas renderer is pinned because its layers can be composited and
-  // read back with getImageData; a WebGL context cannot be without
-  // preserveDrawingBuffer.
-  await boot(page, '/?renderer=canvas');
-  await page.waitForFunction(() => window.sipTerm.currentRenderer === 'Canvas', null, { timeout: 30_000 });
-
-  const sample = await page.evaluate(async () => {
-    const t = window.sipTerm.term;
-    t.write('\x1b[H\x1b[2J');
-    await new Promise((r) => t.write(Array(4).fill('█'.repeat(10)).join('\r\n'), r));
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-    const canvases = [...document.querySelectorAll('#terminal canvas')];
-    const merged = document.createElement('canvas');
-    merged.width = canvases[0].width;
-    merged.height = canvases[0].height;
-    const ctx = merged.getContext('2d');
-    for (const c of canvases) ctx.drawImage(c, 0, 0);
-
-    const dpr = window.devicePixelRatio || 1;
-    const cellH = (t.element.querySelector('.xterm-screen').clientHeight / t.rows) * dpr;
-    // A vertical strip through the middle of the first block column, spanning
-    // the four stacked rows and therefore three row boundaries.
-    const x = Math.round(cellH * 0.2) + 4;
-    const height = Math.round(cellH * 4);
-    const data = ctx.getImageData(x, 0, 1, height).data;
-
-    // Background #1e1e2e, foreground #cdd6f4.
-    const isBackground = (r, g, b) =>
-      Math.abs(r - 30) < 24 && Math.abs(g - 30) < 24 && Math.abs(b - 46) < 24;
-
-    let background = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      if (isBackground(data[i], data[i + 1], data[i + 2])) background++;
-    }
-    return { sampled: data.length / 4, background };
-  });
-
-  expect(sample.sampled).toBeGreaterThan(0);
-  expect(sample.background, 'a background-coloured pixel inside stacked blocks is the seam').toBe(0);
 });
