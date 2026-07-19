@@ -54,6 +54,22 @@ func (p *platformPty) Resize(cols, rows int) error {
 	return nil
 }
 
+// ResizeWithPixels resizes the PTY and forwards pixel dimensions to
+// TIOCSWINSZ ws_xpixel/ws_ypixel when the underlying PTY supports it
+// (UnixPty does). Falls back to character-only Resize otherwise.
+func (p *platformPty) ResizeWithPixels(cols, rows, widthPx, heightPx int) error {
+	if p.pty == nil {
+		return nil
+	}
+	type pixelResizer interface {
+		SetWinsize(width, height, x, y int) error
+	}
+	if pr, ok := p.pty.(pixelResizer); ok && (widthPx > 0 || heightPx > 0) {
+		return pr.SetWinsize(cols, rows, widthPx, heightPx)
+	}
+	return p.pty.Resize(cols, rows)
+}
+
 // OutputReader returns an io.Reader for reading terminal output.
 // On Unix, this reads from the PTY master.
 func (p *platformPty) OutputReader() io.Reader {

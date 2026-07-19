@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Gaurav-Gosain/sip"
 	"github.com/charmbracelet/fang"
@@ -25,10 +26,23 @@ var (
 
 // Command-line flags
 var (
-	host    string
-	port    string
-	debug   bool
-	workDir string
+	host               string
+	port               string
+	debug              bool
+	workDir            string
+	certFile           string
+	keyFile            string
+	basicUser          string
+	basicPass          string
+	basicPassFile      string
+	allowInsecureNoTLS bool
+	originPatterns     []string
+	idleTimeout        time.Duration
+	maxConns           int
+	enableKitty        bool
+	fontPath           string
+	fontFamily         string
+	rendererChoice     string
 )
 
 func main() {
@@ -38,8 +52,9 @@ func main() {
 		Long: `sip - Serve CLI commands through the browser
 
 Wraps any CLI command and exposes it through a web browser with full
-terminal emulation. Uses xterm.js for rendering and supports WebSocket
-connections.
+terminal emulation. Renders with xterm.js (WebGL, canvas or DOM),
+draws kitty graphics through a repositionable overlay, and speaks
+WebSocket or WebTransport (HTTP/3 over QUIC).
 
 The command to run must be specified after "--".`,
 		Example: `  # Run htop in browser
@@ -48,15 +63,23 @@ The command to run must be specified after "--".`,
   # Run on custom port
   sip -p 8080 -- claude -c
 
-  # Bind to all interfaces
-  sip --host 0.0.0.0 -- bash
+  # Bind to all interfaces (TLS required by default)
+  sip --host 0.0.0.0 --cert server.crt --key server.key -- bash
+
+  # Bind to all interfaces without TLS (insecure)
+  sip --host 0.0.0.0 --allow-insecure-no-tls -- bash
+
+  # Basic Auth
+  sip --basic-user admin --basic-pass-file /run/secrets/sip --cert s.crt --key s.key -- bash
+
+  # Custom font from disk
+  sip --font /path/to/CommitMono.ttf --font-family "Commit Mono" -- nvim
 
   # Run with debug logging
   sip --debug -- nvim`,
 		Version:      version,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Args after "--" are passed as args
+		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("no command specified\n\nUsage: sip [flags] -- command [args...]")
 			}
@@ -64,13 +87,42 @@ The command to run must be specified after "--".`,
 		},
 	}
 
-	// Flags
+	// Listener / TLS
 	rootCmd.Flags().StringVarP(&host, "host", "H", "localhost", "Host to bind to")
 	rootCmd.Flags().StringVarP(&port, "port", "p", "7681", "Port to listen on")
+	rootCmd.Flags().StringVar(&certFile, "cert", "", "TLS certificate file (PEM)")
+	rootCmd.Flags().StringVar(&keyFile, "key", "", "TLS key file (PEM)")
+	rootCmd.Flags().BoolVar(&allowInsecureNoTLS, "allow-insecure-no-tls", false,
+		"Allow non-loopback bind / basic auth without TLS (insecure; use behind trusted proxy only)")
+	rootCmd.Flags().StringSliceVar(&originPatterns, "origin", nil,
+		"Browser origin allowlist (path.Match glob, repeatable)")
+
+	// Auth
+	rootCmd.Flags().StringVar(&basicUser, "basic-user", "", "HTTP Basic Auth username")
+	rootCmd.Flags().StringVar(&basicPass, "basic-pass", "",
+		"HTTP Basic Auth password (prefer --basic-pass-file or $SIP_PASSWORD)")
+	rootCmd.Flags().StringVar(&basicPassFile, "basic-pass-file", "",
+		"Read basic auth password from file (precedence: file > env > flag)")
+
+	// Limits
+	rootCmd.Flags().IntVar(&maxConns, "max-conns", 0, "Concurrent session limit (0 = unlimited)")
+	rootCmd.Flags().DurationVar(&idleTimeout, "idle-timeout", 0,
+		"Close sessions with no inbound bytes for this duration (0 = disabled)")
+
+	// Renderer / fonts
+	rootCmd.Flags().StringVar(&fontPath, "font", "",
+		"Custom font file (.ttf/.otf/.woff/.woff2) served at /static/fonts/custom*")
+	rootCmd.Flags().StringVar(&fontFamily, "font-family", "",
+		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
+	rootCmd.Flags().StringVar(&rendererChoice, "renderer", "",
+		"Client terminal renderer: \"webgl\", \"canvas\", \"dom\", or empty to prefer WebGL and fall back")
+	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,
+		"Force the server-side kitty graphics PNG → RGBA transcoder (client decodes PNG by default)")
+
+	// Misc
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
 	rootCmd.Flags().StringVarP(&workDir, "dir", "d", "", "Working directory for the command")
 
-	// Execute with fang
 	if err := fang.Execute(
 		context.Background(),
 		rootCmd,
@@ -85,7 +137,6 @@ func runServer(cmdArgs []string) error {
 		sip.SetLogLevel(log.DebugLevel)
 	}
 
-	// Set up working directory
 	wd := workDir
 	if wd == "" {
 		var err error
@@ -95,18 +146,47 @@ func runServer(cmdArgs []string) error {
 		}
 	}
 
+	// Resolve basic auth password: file > env > flag.
+	password := basicPass
+	if envPass := os.Getenv("SIP_PASSWORD"); envPass != "" {
+		password = envPass
+	}
+	if basicPassFile != "" {
+		data, err := os.ReadFile(basicPassFile)
+		if err != nil {
+			return fmt.Errorf("read basic-pass-file: %w", err)
+		}
+		password = strings.TrimRight(string(data), "\r\n")
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	config := sip.Config{
-		Host:  host,
-		Port:  port,
-		Debug: debug,
+		Host:                  host,
+		Port:                  port,
+		Debug:                 debug,
+		TLSCert:               certFile,
+		TLSKey:                keyFile,
+		BasicUsername:         basicUser,
+		BasicPassword:         password,
+		AllowInsecureNoTLS:    allowInsecureNoTLS,
+		OriginPatterns:        originPatterns,
+		MaxConnections:        maxConns,
+		IdleTimeout:           idleTimeout,
+		FontPath:              fontPath,
+		FontFamily:            fontFamily,
+		Renderer:              rendererChoice,
+		EnableKittyTranscoder: enableKitty,
 	}
 
 	server := sip.NewServer(config)
 
-	fmt.Printf("Starting server at http://%s:%s\n", host, port)
+	scheme := "http"
+	if certFile != "" {
+		scheme = "https"
+	}
+	fmt.Printf("Starting server at %s://%s:%s\n", scheme, host, port)
 	fmt.Printf("Running: %s\n", strings.Join(cmdArgs, " "))
 
 	return server.ServeCommand(ctx, cmdArgs[0], cmdArgs[1:], wd)

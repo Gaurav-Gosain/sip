@@ -81,3 +81,24 @@ func GenerateSelfSignedCert(_ string) (*CertInfo, error) {
 		Hash:      certHash,
 	}, nil
 }
+
+// newCertInfoFromTLS wraps a user-supplied tls.Certificate into a CertInfo
+// matching what GenerateSelfSignedCert returns. The DER + SHA-256 hash are
+// computed from the leaf certificate so the WebTransport handshake can
+// publish a serverCertificateHashes value the browser will accept (when the
+// cert is short-lived enough for Chrome's 14-day window).
+func newCertInfoFromTLS(cert tls.Certificate) (*CertInfo, error) {
+	if len(cert.Certificate) == 0 {
+		return nil, fmt.Errorf("tls.Certificate has no DER blocks")
+	}
+	der := cert.Certificate[0]
+	hash := sha256.Sum256(der)
+	return &CertInfo{
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+		DER:  der,
+		Hash: hash,
+	}, nil
+}

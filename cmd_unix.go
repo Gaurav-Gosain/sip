@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 
 	xpty "github.com/charmbracelet/x/xpty"
@@ -15,8 +16,11 @@ import (
 
 // cmdPlatformPty holds platform-specific PTY resources for command execution.
 type cmdPlatformPty struct {
-	pty xpty.Pty
-	cmd *exec.Cmd
+	pty      xpty.Pty
+	cmd      *exec.Cmd
+	waitOnce sync.Once
+	waitErr  error
+	waitDone chan struct{}
 }
 
 // newCmdPlatformPty creates a new PTY and spawns the command on Unix systems.
@@ -48,19 +52,25 @@ func newCmdPlatformPty(name string, args []string, dir string, cols, rows int) (
 	}
 
 	return &cmdPlatformPty{
-		pty: ptyInstance,
-		cmd: cmd,
+		pty:      ptyInstance,
+		cmd:      cmd,
+		waitDone: make(chan struct{}),
 	}, nil
 }
 
-// Close closes the PTY and waits for the command to exit.
+// Close closes the PTY and reaps the command. It is safe to call
+// concurrently with the reaper's Wait: both funnel through the single
+// waitOnce owner, so exec.Cmd.Wait is never called twice. Close returns
+// only once the child has been fully reaped.
 func (p *cmdPlatformPty) Close() error {
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
 	if p.pty != nil {
 		_ = p.pty.Close()
 	}
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-		_ = p.cmd.Wait()
+	if p.cmd != nil {
+		_ = p.Wait()
 	}
 	return nil
 }
@@ -73,6 +83,21 @@ func (p *cmdPlatformPty) Resize(cols, rows int) error {
 	return nil
 }
 
+// ResizeWithPixels forwards pixel dimensions to TIOCSWINSZ when the
+// underlying PTY supports it (UnixPty does). Otherwise plain Resize.
+func (p *cmdPlatformPty) ResizeWithPixels(cols, rows, widthPx, heightPx int) error {
+	if p.pty == nil {
+		return nil
+	}
+	type pixelResizer interface {
+		SetWinsize(width, height, x, y int) error
+	}
+	if pr, ok := p.pty.(pixelResizer); ok && (widthPx > 0 || heightPx > 0) {
+		return pr.SetWinsize(cols, rows, widthPx, heightPx)
+	}
+	return p.pty.Resize(cols, rows)
+}
+
 // OutputReader returns an io.Reader for reading command output.
 func (p *cmdPlatformPty) OutputReader() io.Reader {
 	return p.pty
@@ -83,12 +108,18 @@ func (p *cmdPlatformPty) InputWriter() io.Writer {
 	return p.pty
 }
 
-// Wait waits for the command to exit.
+// Wait waits for the command to exit. It is the single owner of
+// exec.Cmd.Wait: repeated or concurrent calls block on the first one's
+// result instead of invoking Wait again.
 func (p *cmdPlatformPty) Wait() error {
-	if p.cmd != nil {
-		return p.cmd.Wait()
-	}
-	return nil
+	p.waitOnce.Do(func() {
+		if p.cmd != nil {
+			p.waitErr = p.cmd.Wait()
+		}
+		close(p.waitDone)
+	})
+	<-p.waitDone
+	return p.waitErr
 }
 
 // Process returns the underlying process.

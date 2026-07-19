@@ -3,19 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TUIOS Web Terminal</title>
-    <link rel="stylesheet" href="/static/xterm.css">
-    <link rel="stylesheet" href="/static/terminal.css">
-    <link rel="preload" href="/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf" as="font" type="font/ttf" crossorigin>
-    <link rel="preload" href="/static/fonts/JetBrainsMonoNerdFontMono-Bold.ttf" as="font" type="font/ttf" crossorigin>
+    <title>Sip</title>
+    <link rel="stylesheet" href="static/xterm.css">
+    <link rel="stylesheet" href="static/webterm.css">
+    <link rel="stylesheet" href="static/terminal.css">
+    <link rel="preload" href="static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf" as="font" type="font/ttf" crossorigin>
+    <link rel="preload" href="static/fonts/JetBrainsMonoNerdFontMono-Bold.ttf" as="font" type="font/ttf" crossorigin>
+    {{FONT_FACE_EXTRA}}
 </head>
 <body>
     <div id="terminal-container">
-        <div id="terminal"></div>
+        <div id="terminal" class="webterm"></div>
     </div>
     <div id="connection-status">
         <span id="status-icon">●</span>
-        <span id="status-text">Loading fonts...</span>
+        <span id="status-text">Loading…</span>
     </div>
     <button id="settings-toggle" title="Settings">⚙</button>
     <div id="settings-panel" class="hidden">
@@ -39,23 +41,23 @@
         </div>
         <div class="setting-group">
             <label>Font Size</label>
-            <input type="range" id="font-size" min="10" max="24" value="14">
+            <input type="range" id="font-size" min="10" max="28" value="14">
             <span id="font-size-value">14px</span>
         </div>
-        <div class="setting-info">
-            <div id="renderer-info">Renderer: detecting...</div>
-            <div id="transport-info">Transport: detecting...</div>
+        <div class="setting-group">
+            <label><input type="checkbox" id="copy-on-select"> Copy on select</label>
+            <label><input type="checkbox" id="cursor-blink"> Blink cursor</label>
+            <label><input type="checkbox" id="browser-context-menu"> Browser right-click menu (shift always shows it)</label>
+            <label><input type="checkbox" id="capture-reserved-keys"> Capture Ctrl+W and friends (fullscreen only)</label>
         </div>
-        <button id="settings-apply" class="primary">Apply & Reconnect</button>
+        <div class="setting-info">
+            <div id="renderer-info">Renderer: detecting…</div>
+            <div id="transport-info">Transport: detecting…</div>
+        </div>
+        <button id="settings-apply" class="primary">Apply &amp; Reconnect</button>
         <button id="settings-close">Close</button>
     </div>
-    <script src="/static/xterm.js"></script>
-    <script src="/static/xterm-addon-fit.js"></script>
-    <script src="/static/xterm-addon-webgl.js"></script>
-    <script src="/static/xterm-addon-canvas.js"></script>
-    <script src="/static/xterm-addon-web-links.js"></script>
-    <script src="/static/xterm-addon-image.js"></script>
-    <script src="/static/xterm-kitty-overlay.js"></script>
-    <script src="/static/terminal.js"></script>
+    <script src="static/webterm.js"></script>
+    <script src="static/terminal.js"></script>
 </body>
 </html>

@@ -177,6 +177,47 @@ config := sip.Config{
 4. Terminal I/O is bridged between the PTY and browser via xterm.js
 5. Mouse events, keyboard input, and window resizes are forwarded to your model
 
+## Clipboard
+
+Sip supports copying from the remote terminal to your local system clipboard.
+There are two independent paths, and which one you need depends on the program
+you run.
+
+Native browser selection (works everywhere, no config):
+
+- Left-click and drag to select text, then release. The selection is copied
+  automatically.
+- Double-click copies a word, triple-click copies a line.
+- When a program holds the mouse (tmux, vim, htop with mouse mode on), hold
+  Shift while dragging to select. Shift bypasses mouse reporting so the browser
+  can select the screen text. Press Ctrl+Shift+C to copy, or enable "Copy on
+  select" in the settings panel to copy on release.
+- Right-click opens the browser menu with the usual copy and paste entries.
+
+OSC 52 (programs that write to the clipboard themselves):
+
+- Programs such as vim and tmux can push text to the clipboard with an OSC 52
+  escape. Sip forwards these to the browser, which writes them to your system
+  clipboard. This is enabled in the bundled web client.
+- tmux does not emit OSC 52 under its default `set-clipboard external`. If you
+  run tmux inside Sip and want yanks to reach your clipboard, add this to your
+  tmux.conf:
+
+  ```tmux
+  set -g set-clipboard on
+  ```
+
+  With nested tmux you need it at every level. Without it, use the native
+  selection path above instead, which does not depend on tmux at all.
+- For OSC 52 writes to land, the browser must allow programmatic clipboard
+  access. On a secure origin (https, or http on localhost) this is automatic.
+  On an insecure origin (a plain http LAN address, or a reverse proxy without
+  TLS) the browser blocks the async clipboard API, so Sip falls back to a
+  legacy copy that runs on your next click or keypress. Serving over https is
+  the way to get instant, gesture-free clipboard writes.
+- Sip never answers OSC 52 read queries. A remote program cannot read your
+  clipboard back through the terminal.
+
 ## Related Projects
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - The TUI framework Sip is built for

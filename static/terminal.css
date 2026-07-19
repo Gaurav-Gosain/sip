@@ -1,8 +1,8 @@
-/* TUIOS Web Terminal Styles */
+/* Sip web terminal — xterm.js renderer */
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
     font-weight: 400;
     font-style: normal;
     font-display: block;
@@ -10,7 +10,7 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('/static/fonts/JetBrainsMonoNerdFontMono-Bold.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Bold.ttf') format('truetype');
     font-weight: 700;
     font-style: normal;
     font-display: block;
@@ -18,7 +18,7 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('/static/fonts/JetBrainsMonoNerdFontMono-Italic.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Italic.ttf') format('truetype');
     font-weight: 400;
     font-style: italic;
     font-display: block;
@@ -26,7 +26,7 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('/static/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf') format('truetype');
     font-weight: 700;
     font-style: italic;
     font-display: block;
@@ -51,6 +51,7 @@ html, body {
     height: 100%;
     padding: 0;
     background-color: #1e1e2e;
+    min-height: 0;
 }
 
 #terminal {
@@ -125,7 +126,8 @@ html, body {
     pointer-events: none;
 }
 
-#connection-status.connecting #status-icon {
+#connection-status.connecting #status-icon,
+#connection-status.reconnecting #status-icon {
     color: #f9e2af;
     animation: pulse 1s infinite;
 }
