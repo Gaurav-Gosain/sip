@@ -490,11 +490,106 @@
                 setTimeout(() => { c.style.outline = 'none'; }, 150);
             });
 
+            this.setupCopyKeys();
             this.setupSettingsPanel();
             this.setupMobileKeyboard();
 
             await this.connect();
             this.webterm.focus();
+        }
+
+        // --- Copy ------------------------------------------------------------
+
+        /**
+         * Bind the copy chords.
+         *
+         * webterm owns paste (xterm listens for the browser's native paste
+         * event, so Ctrl+V and Ctrl+Shift+V already arrive) and it owns OSC 52,
+         * but it binds no copy chord, so Ctrl+C on a selection used to fall
+         * straight through to the encoder: the selection stayed on screen and
+         * the shell got an interrupt. Nothing in webterm claims the custom key
+         * handler slot, so taking it here does not displace anything.
+         */
+        setupCopyKeys() {
+            this.webterm.xterm.attachCustomKeyEventHandler(ev => {
+                // The handler runs for keypress as well as keydown; acting on
+                // both would copy twice for one chord.
+                if (ev.type !== 'keydown') return true;
+                if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+                if (ev.code !== 'KeyC') return true;
+
+                // The branch the whole fix turns on. Ctrl+C is overloaded: it
+                // is the only way to interrupt the foreground program, and it
+                // is what everyone reaches for to copy. Terminals resolve that
+                // by letting the selection decide, because a selection is a
+                // deliberate act that says "this chord is about text". With no
+                // selection there is nothing to copy, so the chord has to stay
+                // an interrupt or the terminal becomes unusable.
+                //
+                // Ctrl+Shift+C copies too where it survives the browser, but it
+                // is not the path to rely on: Chromium and Firefox both reserve
+                // it for devtools and it never reaches the page.
+                const selection = this.webterm.xterm.getSelection();
+                if (!selection) return true;
+
+                // Returning false stops xterm encoding the chord, but it does
+                // not suppress the browser's own copy, which would race this
+                // write against an empty DOM selection.
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.copyText(selection);
+                return false;
+            });
+        }
+
+        /**
+         * Write text to the system clipboard, reporting failure rather than
+         * swallowing it.
+         *
+         * The async API is gated on a secure context and on permission, and it
+         * rejects instead of throwing, so an unhandled promise here is exactly
+         * the silent no-op this fix is about. The execCommand path is the
+         * fallback for a plain-http origin, where navigator.clipboard is
+         * undefined; it needs a real selection, hence the offscreen textarea.
+         */
+        copyText(text) {
+            if (!text) return;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).catch(() => {
+                    if (!this.copyFallback(text)) {
+                        this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy failed');
+                    }
+                });
+                return;
+            }
+            if (!this.copyFallback(text)) {
+                this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy unavailable');
+            }
+        }
+
+        /** The pre-Clipboard-API copy, for origins the async API refuses. */
+        copyFallback(text) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            // Off screen rather than hidden: an element with no layout box
+            // cannot hold a selection, so display:none would break the copy.
+            ta.style.position = 'fixed';
+            ta.style.top = '-1000px';
+            ta.style.opacity = '0';
+            ta.setAttribute('readonly', '');
+            document.body.appendChild(ta);
+            let ok = false;
+            try {
+                ta.select();
+                ok = document.execCommand('copy');
+            } catch (e) {
+                ok = false;
+            }
+            document.body.removeChild(ta);
+            // Focus went to the textarea, so hand it back or the next keystroke
+            // is lost.
+            this.webterm.focus();
+            return ok;
         }
 
         // --- Connection ----------------------------------------------------
