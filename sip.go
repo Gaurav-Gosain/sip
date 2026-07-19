@@ -2,8 +2,7 @@
 //
 // Sip provides a way to make any Bubble Tea TUI application accessible
 // through a web browser with full terminal emulation, mouse support, and
-// hardware-accelerated rendering via libghostty (ghostty-web wasm) — a
-// real terminal emulator running in the browser.
+// hardware-accelerated rendering via xterm.js and its WebGL renderer.
 //
 // Basic usage:
 //
@@ -182,10 +181,10 @@ type Config struct {
 	// "JetBrainsMono Nerd Font Mono".
 	FontFamily string
 
-	// Renderer selects the client-side terminal renderer. "webgl" uses the
-	// vendored vtgl glyph-atlas renderer; anything else (including empty)
-	// uses the canvas 2D renderer, which remains the default. A user's
-	// saved setting and a ?renderer= query param both override this.
+	// Renderer selects the client-side terminal renderer: "webgl",
+	// "canvas" or "dom". Empty means "auto", which prefers WebGL and
+	// falls back to canvas and then the DOM. A user's saved setting and
+	// a ?renderer= query param both override this.
 	Renderer string
 
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
@@ -205,10 +204,10 @@ type Config struct {
 	// EnableKittyTranscoder runs every PTY → client byte stream through the
 	// server-side kitty graphics PNG → RGBA transcoder.
 	//
-	// The ghostty-web client now decodes PNG kitty graphics itself via the
-	// wasm DECODE_PNG callback, so this is off by default and the raw APC
-	// stream is forwarded untouched (keeping PNG payloads compressed end to
-	// end). Enable it only to force server-side transcoding as a fallback.
+	// The client's kitty overlay decodes PNG itself through
+	// createImageBitmap, so this is off by default and the raw APC stream
+	// is forwarded untouched (keeping PNG payloads compressed end to end).
+	// Enable it only to force server-side transcoding as a fallback.
 	EnableKittyTranscoder bool
 }
 

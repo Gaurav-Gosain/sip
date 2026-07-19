@@ -52,10 +52,9 @@ func main() {
 		Long: `sip - Serve CLI commands through the browser
 
 Wraps any CLI command and exposes it through a web browser with full
-terminal emulation. Renders with libghostty (ghostty-web wasm) for
-high-fidelity terminal output, decodes kitty graphics (including PNG)
-client-side in the wasm VT, and speaks WebSocket or WebTransport
-(HTTP/3 over QUIC).
+terminal emulation. Renders with xterm.js (WebGL, canvas or DOM),
+draws kitty graphics through a repositionable overlay, and speaks
+WebSocket or WebTransport (HTTP/3 over QUIC).
 
 The command to run must be specified after "--".`,
 		Example: `  # Run htop in browser
@@ -116,7 +115,7 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringVar(&fontFamily, "font-family", "",
 		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
 	rootCmd.Flags().StringVar(&rendererChoice, "renderer", "",
-		"Client terminal renderer: \"webgl\" for the vtgl glyph-atlas renderer, empty for canvas 2D")
+		"Client terminal renderer: \"webgl\", \"canvas\", \"dom\", or empty to prefer WebGL and fall back")
 	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,
 		"Force the server-side kitty graphics PNG → RGBA transcoder (client decodes PNG by default)")
 

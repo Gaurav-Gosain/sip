@@ -17,10 +17,11 @@ import (
 
 // kittyGfxTranscoder is a stateful byte-stream filter that intercepts kitty
 // graphics protocol APC sequences carrying PNG payloads (f=100) and rewrites
-// them as raw RGBA payloads (f=32). The wasm build of ghostty-vt used by
-// ghostty-web does not link wuffs, so PNGs are rejected with
-// "EINVAL: unsupported format" — this transcoder makes PNG-emitting TUI
-// libraries (kitten icat, ntcharts, etc.) work transparently.
+// them as raw RGBA payloads (f=32). It exists for clients that cannot decode
+// PNG themselves; the current browser overlay can, through createImageBitmap,
+// so this is opt-in via EnableKittyTranscoder and off by default. Turning it
+// on makes PNG-emitting TUI libraries (kitten icat, ntcharts, etc.) work on a
+// client without its own decoder, at the cost of sending uncompressed RGBA.
 //
 // Single- and multi-chunk APC transmissions are both supported. APC sequences
 // using formats other than f=100 pass through untouched. So do non-graphics

@@ -1,6 +1,6 @@
 # AGENTS.md - Sip
 
-> Sip is a Go library for serving Bubble Tea TUI applications through web browsers, rendered with libghostty (ghostty-web wasm) for high-fidelity terminal emulation.
+> Sip is a Go library for serving Bubble Tea TUI applications through web browsers, rendered with xterm.js.
 
 ## Quick Reference
 
@@ -8,9 +8,8 @@
 # Build library and CLI
 go build ./...
 
-# Client-side tests
-node --test 'clienttests/*.test.mjs'         # fast, no browser
-(cd clienttests && npm install && npx playwright test)  # drives a real server
+# Client-side tests (drive a real server in a real browser)
+(cd clienttests && npm install && npx playwright test)
 
 # Run example (Bubble Tea mode)
 go run ./examples/simple
@@ -53,7 +52,7 @@ Limits:
       --idle-timeout duration Close sessions idle for this long (0 = off)
 
 Renderer / fonts:
-      --renderer string       Client renderer: "webgl" for vtgl, empty for canvas 2D
+      --renderer string       Client renderer: "webgl", "canvas", "dom", empty = auto
       --font path             Custom font (.ttf/.otf/.woff/.woff2)
       --font-family string    CSS font-family (overrides default JBM Nerd Font)
       --disable-kitty-transcoder
@@ -105,19 +104,12 @@ sip/
 │   ├── sip/                # CLI binary
 │   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
 ├── static/
-│   ├── index.html          # Loads ES module terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
-│   ├── terminal.js         # ES module: wires SipTerminal + SipAutoAdapter, settings panel, mobile keyboard
+│   ├── index.html          # Loads the xterm bundle + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
+│   ├── terminal.js         # Classic script: SipTerminal (transports, protocol, settings, clipboard)
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
-│   ├── ghostty-web/        # Vendored MIT (NimbleMarkets fork of coder/ghostty-web, nm-kitty-meow)
-│   │   ├── ghostty-vt.wasm   (~611 KB)
-│   │   └── ghostty-web.js    (~1.1 MB)
-│   ├── vtgl/               # Vendored MIT glyph-atlas WebGL2 renderer (built artifact)
-│   │   ├── vtgl.js           (~30 KB minified ESM)
-│   │   └── README.md         # Provenance + how to refresh
-│   ├── sip-client/         # ES modules adapted from go-booba's TS bundle (MIT, NimbleMarkets):
-│   │   sip.js, adapter.js, websocket_adapter.js, webtransport_adapter.js,
-│   │   auto_adapter.js, protocol.js, clipboard.js, urls.js, types.js,
-│   │   vtgl_source.js, vtgl_bridge.js
+│   ├── xterm.js            # Vendored MIT xterm.js (~384 KB) + xterm.css
+│   ├── xterm-addon-*.js    # fit, webgl, canvas, web-links, image, unicode-graphemes
+│   ├── xterm-kitty-overlay.js  # Local: APC 71 handler + repositionable canvas layer
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 └── examples/simple/        # Counter example (Bubble Tea mode)
 ```
@@ -144,120 +136,111 @@ sip/
 
 ### Communication flow
 
-1. Browser loads `static/index.html` → `static/terminal.js` (ES module)
-2. `SipTerminal` (wrapper around ghostty-web's `Terminal` + `FitAddon`) initializes the libghostty wasm
-3. `SipAutoAdapter` tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
+1. Browser loads `static/index.html` → the xterm bundle → `static/terminal.js`
+2. `SipTerminal` loads the fonts, constructs `Terminal`, then picks a renderer
+3. It tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
 4. Server creates a PTY for the session, spawns either Bubble Tea or the wrapped command
-5. PTY output is filtered through the kitty graphics transcoder before being framed and sent to the browser
-6. The browser pipes inbound bytes into ghostty-vt; outbound input goes to the PTY
+5. PTY output is framed and sent to the browser (through the kitty transcoder only when enabled)
+6. The browser writes inbound bytes into xterm; outbound input goes to the PTY
 
 ### Renderer
 
-- **libghostty** parses VT sequences (correctness on par with ghostty proper)
-- Renders to a single 2D `<canvas>` by default
-- Kitty graphics protocol supported natively via the NimbleMarkets ghostty-web fork
-- Kitty keyboard protocol forwardable through `MsgKittyKbd` ('8')
-- OSC 52 clipboard writes routed to `navigator.clipboard` (gated by `allowOSC52`)
+- **xterm.js** parses VT sequences and owns input, selection and scrollback
+- Renderer ladder: WebGL → canvas → DOM, chosen once at `term.open()`
+- `--renderer`, `?renderer=`, and the settings panel all pick a rung; switching
+  it reloads the page, because the addon attaches only at open
+- Kitty graphics go through the local overlay, not the image addon (below)
+- Sixel goes through the image addon, which is loaded with `kittySupport: false`
+- OSC 52 clipboard writes are handled by a registered OSC handler (below)
+- Kitty *keyboard* protocol is not supported: xterm.js does not speak it, so
+  `MsgKittyKbd` ('8') is never sent. The server still accepts and ignores it.
 
-#### Optional WebGL renderer (vtgl)
+#### Cell geometry
 
-Opt in with `--renderer webgl`, `?renderer=webgl`, or the settings panel. The
-2D path remains the default until this has had burn-in. There is no VT change:
-ghostty-vt still parses everything, and vtgl only draws.
+`lineHeight` is **1.0** and must stay there. A font's line box already includes
+its line gap, so multiplying it again renders glyph ink taller than the cell.
+That is what produced the seam between stacked block glyphs (U+2588 drawing
+~20px of ink into an 18px cell) that motivated returning to xterm.js.
 
-Layering. A WebGL2 context and a 2D context cannot share one canvas, so vtgl
-gets its own, positioned behind the bundle's. The bundle's canvas stays in
-normal flow (page layout is unchanged) and becomes a transparent overlay:
+xterm's canvas and webgl renderers draw box and block drawing characters as
+vector shapes fitted to the cell rather than as font glyphs, which removes the
+seam structurally instead of tuning around it.
+`clienttests/client.spec.mjs` pins this by compositing the canvas layers and
+asserting that a column through four stacked block rows contains no
+background-coloured pixel.
 
-```
-z 0  canvas.sip-vtgl-canvas   text grid + cell backgrounds   (pointer-events: none)
-z 1  bundle canvas            selection tint, kitty graphics, cursor, scrollbar
-```
+Fonts are loaded through the FontFace API and awaited **before** `new Terminal`.
+Constructing the terminal first makes it measure the fallback face and cache the
+wrong cell box.
 
-Input, selection tracking, clipboard, scrollback, link detection and kitty
-graphics all keep running in the bundle untouched, which is why this mode does
-not fork the bundle's behavior.
+#### Grapheme clustering
 
-The seam is one hook, `renderer.__sipRenderHook`, in the same surgical style as
-the existing `__sip*` patch points. Three lines in `ghostty-web.js`:
+The vendored bundle already carries the modern Unicode API: `charProperties`
+(width `(v>>1)&3`, shouldJoin `v&1`) and an InputHandler that subtracts the
+preceding width on a join. What it ships by default is `UnicodeV6`, a thin
+wrapper over wcwidth with no notion of a cluster, so a ZWJ family emoji is
+billed per scalar and eats eight columns.
 
-- `renderLine()` clears its row and returns early when the hook is set, so the
-  overlay stays transparent and stale overlay pixels are still cleared.
-- The hook is called once per frame after the row pass, before the kitty and
-  cursor passes, so z-order comes out right.
-- `resize()` clears rather than filling the background when the hook is set.
-- The row pass skips its `getLine()` when the hook is set. `renderLine()` only
-  clears the overlay row in that mode, so reading the cells was pure waste.
+`xterm-addon-unicode-graphemes.js` (@xterm/addon-unicode-graphemes 0.4.0, 58 KB
+UMD, no external imports) supplies a UAX 29 provider against the same bit
+layout. It is loaded before `term.open()` and `activeVersion` is set to
+`15-graphemes`.
 
-### The viewport memo
+Against the 24-cluster corpus measured from the real ghostty-vt, it agrees on
+23. The one divergence is `devanagari-matra` (U+0928 U+093F): ghostty gives the
+spacing mark its own advance for 2 columns, xterm bills 1. That is a spacing
+mark advance policy call, not a segmentation bug, and it is pinned as a known
+divergence in `clienttests/grapheme_corpus.spec.mjs` rather than papered over.
 
-`wasmTerm.getViewport()` walks the whole grid at roughly eight wasm crossings
-per cell, and `getLine(row)` is implemented as "walk the viewport, slice one
-row". The render loop calls `getLine()` once per damaged row, so an unmemoized
-`getViewport()` made a frame O(rows^2 \* cols) crossings. At 80x24 that is
-invisible; at the ~200x55 of a maximised terminal it dominates the frame and
-was the cause of the "slow on both renderers" reports.
+Do not reach for a ghostty-vt-backed provider to close that one case. The wasm
+exports no standalone width or grapheme-break function — only grid-scoped
+`ghostty_cell_get` and `ghostty_grid_ref_graphemes` — so it would need a shadow
+VT with a wasm round trip per character on xterm's hottest path. A wrapper
+provider overriding the spacing-mark range is the cheap fix if it ever matters.
 
-`getViewport()` therefore memoizes into `__sipViewportValid`, invalidated at
-every point where the grid can actually change: `write()`, `resize()`,
-`setCellPixelSize()`, `markClean()`, and the colour setters `setColorOption()`
-and `applyConfig()` (the pool caches resolved per-cell RGB, so a palette change
-restyles cells without touching them). Because `markClean()` is the end of a
-frame, the memo is per-frame by construction: one walk per frame regardless of
-how many rows are read. `clienttests/viewport_reads.spec.mjs` pins the ratio.
+#### Kitty graphics overlay
 
-Anything added to this file that reads cells must go through `getLine()` or
-`getViewport()` so it shares the memo, and any new mutation path must
-invalidate it.
+`xterm-kitty-overlay.js` registers an APC handler for identifier 71 via
+`term.parser.registerApcHandler`, parses the kitty protocol itself, and draws
+each placement as an absolutely positioned canvas in a DOM layer above xterm's.
 
-### Input: chords must never leak as text
+It exists instead of the image addon's kitty support because the addon bakes
+placements into the cell buffer and cannot reposition them, which is fatal for a
+window manager that moves windows around. The overlay repositions every
+placement on scroll and resize through a microtask-batched scheduler.
 
-`handleKeyDown` had three paths that returned **without** calling
-`preventDefault()`: the IME guard (`isComposing`, or `keyCode === 229`), and an
-unmapped `event.code`. The browser then proceeded to its default action, fired
-`beforeinput` with `inputType: "insertText"`, and `handleBeforeInput` sent the
-bare character. Ctrl+L put `0x6c` ("l") on the wire instead of `0x0c`, and every
-chord degraded the same way.
+Supported: actions t/T/p/d/q, direct base64 transmission, formats 24/32/100,
+zlib via `DecompressionStream`, chunked transmission, deletion by image or
+placement id. PNG (f=100) is decoded natively with `createImageBitmap`, which is
+why the server-side transcoder is off by default. Out of scope by design:
+animation, file and shared-memory transmission, Unicode placeholder placement.
 
-The trigger is environmental, which is why it survived a green suite: Firefox on
-Linux running an IME daemon (ibus/fcitx) reports keyCode 229, the "IME is
-processing" sentinel, for ordinary keys. Chromium does not, and **synthesized
-Playwright key events never carry it**, so `page.keyboard.press('Control+l')`
-passes on the broken build.
-
-The fix computes `sipChord` (`ctrl XOR alt`, or meta -- Ctrl+Alt is excluded
-because that is AltGr and genuinely composes) and: skips the composition guard
-for chords, calls `preventDefault()` before returning on an unmapped code while
-a chord is held, and drops `insertText` arriving within 50ms of a chord keydown.
-Unmodified keys still fall through to `beforeinput` on purpose, since that is
-the mobile and IME input route.
-
-`clienttests/chord_leak.spec.mjs` drives the bail-out conditions directly rather
-than hoping the harness reproduces the environment.
+**`registerApcHandler` is load-bearing.** @xterm/xterm 6.0.0 stable has no APC
+parser at all — zero occurrences in its runtime bundle and its typings — so
+upgrading the vendored bundle to it would kill kitty graphics outright. 6.1.0
+restores it. Check for the handler before any bundle bump.
 
 ### Browser coverage
 
 `playwright.config.mjs` defines two projects. `chromium` runs everything.
-`firefox` runs only the input specs, because the renderer specs read pixels back
-out of a SwiftShader WebGL context, which is a Chromium-specific setup.
+`firefox` runs only `keyboard.spec.mjs`, because the renderer checks read pixels
+back out of a canvas under a pinned GL setup, which is Chromium-specific.
 
 Firefox is not optional decoration: it is the only engine here that reaches
 **WebTransport** against a loopback server (Chromium falls back to WebSocket), so
-it is the only coverage of that transport, and it is where the input divergences
-show up. Two consequences for anyone writing a browser test:
+it is the only coverage of that transport. Two consequences for anyone writing a
+browser test:
 
 - Do not wait on `classList.contains('connected')`. Under WebTransport the
-  status class is `webtransport`. Accept either.
+  status class is `webtransport`. Wait on `window.sipTerm.connected` instead.
 - Do not hook `WebSocket.prototype.send` to capture what the client sends.
   Under WebTransport nothing passes through it, so the hook records zero frames
   and the test fails by timeout or passes vacuously.
-- Do not hook the shared adapter's `sipWrite` either, even though it is
-  transport-independent. That is the problem, not the fix: it sits *above* both
-  transports and records identical bytes whichever one is live, so it cannot
-  tell them apart and a green run says nothing about either. Hook the transport
-  boundary instead, `ws.send` or the WebTransport stream writer's `write`, as
-  `keyboard.spec.mjs` does. That also checks the framing, which differs between
-  the two.
+- Hook the transport boundary — `sipTerm.wsConnection.send` or
+  `sipTerm.wtWriter.write` — as `keyboard.spec.mjs` does, never a shared send
+  path above them. A hook above the transport records identical bytes whichever
+  one is live, so it cannot tell them apart and a green run says nothing about
+  either. The boundary also proves the framing, which differs between the two.
 
 **Transport is a test dimension, not an implementation detail.** This suite has
 been caught blind twice: once Chromium-only, then WebSocket-only. The second
@@ -272,19 +255,19 @@ engine can actually reach and is itself asserted: a combination recorded as
 unsupported must prove the fallback is real before it skips, so the table
 cannot quietly drift out of date.
 
-`vtgl_source.js` adapts the wasm buffer to vtgl's `VtSource` (absolute row
-coordinates, theme-resolved colors). `vtgl_bridge.js` owns the canvas, the
-geometry sync and the selection tint.
+#### What the keyboard suite does not prove
 
-Cell geometry stays the bundle's, so toggling the renderer never reflows the
-terminal or shifts mouse hit-testing; vtgl is coerced onto it via derived
-lineHeight/letterSpacing. The one value flowing the other way is the text
-baseline, because the bundle's block cursor redraws its cell's glyph with the
-2D text path.
+It is a guard on the **encoding table** and nothing more. The chord-leak class
+of bug — Ctrl+L reaching the server as `0x6c` instead of `0x0c` — has been
+proven unreproducible from synthesized key events **in either direction**: the
+handler was instrumented doing the right thing while the wrong byte arrived,
+and the identical code path produced the correct byte headless. The trigger is
+environmental (Firefox on Linux with an ibus/fcitx daemon reports keyCode 229,
+the "IME is processing" sentinel, for ordinary keys) and Playwright cannot carry
+it.
 
-Known gaps in this mode: link underlines and selection foreground recoloring
-are not drawn (selection is a translucent overlay instead), and kitty virtual
-placeholder cells are not rendered by vtgl.
+A green run means the table is intact. It does not mean chords work on a real
+desktop, and it must never again be cited as if it did. Verify chords by hand.
 
 ### Wire protocol
 
@@ -347,9 +330,9 @@ Subpackages:
 
 ### Server-side kitty graphics transcoder
 
-`kittygfx.go` intercepts kitty graphics APC sequences in the PTY → client byte stream. PNG (`f=100`) payloads are decoded server-side and re-emitted as raw RGBA (`f=32`) chunks because the wasm build of ghostty-vt doesn't link wuffs (no PNG decoder).
+`kittygfx.go` can intercept kitty graphics APC sequences in the PTY → client byte stream and re-emit PNG (`f=100`) payloads as raw RGBA (`f=32`) chunks. It is **off by default**: the browser overlay decodes PNG natively with `createImageBitmap`, so forwarding the compressed payload untouched is both smaller and faster. Enable with `Config.EnableKittyTranscoder = true` for a client with no PNG decoder of its own.
 
-JPEG / GIF support is enabled via `image/jpeg` and `image/gif` import side-effects. Disable with `Config.DisableKittyTranscoder = true`.
+JPEG / GIF support is enabled via `image/jpeg` and `image/gif` import side-effects.
 
 ### Config knobs (all optional, sensible defaults)
 
@@ -396,8 +379,8 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 - `sync.Map` for concurrent session tracking
 
 ### Frontend
-- ES modules — `static/terminal.js` is the entry, imports from `static/sip-client/sip.js`
-- ghostty-web vendored as-is; no transpile step
+- Classic scripts — the xterm bundle publishes globals, `static/terminal.js` consumes them
+- xterm.js and its addons vendored as-is; no build or transpile step
 - Settings persisted via `localStorage["sip-web-settings"]`
 
 ### Naming
@@ -420,8 +403,9 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 - `quic-go/quic-go`, `quic-go/webtransport-go`
 
 ### Frontend (vendored, MIT)
-- ghostty-web (NimbleMarkets `nm-kitty-meow` fork — adds kitty graphics + virtual placement)
-- sip-client TS bundle adapted from go-booba
+- xterm.js + fit / webgl / canvas / web-links / image addons
+- @xterm/addon-unicode-graphemes 0.4.0 (UAX 29 grapheme provider)
+- `xterm-kitty-overlay.js` is local, not vendored
 
 ## Important notes
 
@@ -437,8 +421,9 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 - Session owns lifecycle — `Close()` is idempotent
 
 ### Embedded assets
-- `//go:embed static/*` ships everything in the binary (~3 MB total: JBM fonts + ghostty-web wasm)
-- Fonts cached 1 year client-side; wasm cached 1 year
+- `//go:embed static/*` ships everything in the binary (JBM fonts dominate the size)
+- Assets are tagged with a content ETag and `Cache-Control: no-cache`, so the
+  browser revalidates and a redeployed client actually takes effect
 - Custom font (`--font`) is served from disk, not embedded
 
 **Editing `static/` does nothing until you rebuild.** The server never reads
@@ -447,7 +432,7 @@ a running server keeps serving the bundle it was compiled with no matter what
 the working tree says. Restarting the same binary does not help either.
 
 This has already burned a whole debugging session. A keyboard fix was confirmed
-present in `static/ghostty-web/ghostty-web.js`, the server went on serving the
+present in the client bundle on disk, the server went on serving the
 previous build of that file, the chords stayed broken, and the investigation
 went hunting for a second bug that did not exist. Verifying a fix by grepping
 the file on disk proves nothing about what the browser is running.
@@ -456,7 +441,7 @@ Two guards exist now, use them instead of trusting the tree:
 - On startup, if `static/` exists next to the process and differs from the
   embedded copy, the server logs `serving a STALE embedded bundle` and names
   the files. Watch for it whenever a frontend fix appears to do nothing.
-- `curl -s $URL/static/ghostty-web/ghostty-web.js | grep <your marker>` asks
+- `curl -s $URL/static/terminal.js | grep <your marker>` asks
   the running server what it is actually serving, which is the only answer that
   matters.
 
@@ -478,5 +463,5 @@ coexist with a broken running server.
 2. **Port +1 for WebTransport** — HTTP on 7681 ⇒ WT on 7682
 3. **Logger colors disabled** — ANSI off so escape sequences don't leak when sip itself logs
 4. **Suspend filtered** — `tea.SuspendMsg` becomes `tea.ResumeMsg` (no process suspend in browser)
-5. **Bundle size jump** — moving from xterm.js (~1 MB) to libghostty (~1.7 MB raw) doubles cold-load weight; both are gzip-friendly. Keep an eye on `static/ghostty-web/` if you bump the upstream
+5. **`registerApcHandler` is load-bearing** — the kitty overlay's entry point. @xterm/xterm 6.0.0 stable removed the APC parser entirely; check for the handler before bumping the vendored bundle
 6. **Kitty transcoder is stateful per session** — one `kittyGfxTranscoder` per output stream goroutine; do not share
