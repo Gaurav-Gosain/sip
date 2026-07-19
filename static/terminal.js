@@ -44,9 +44,9 @@ const CATPPUCCIN_MOCHA = {
 function loadSettings() {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) return { transport: 'auto', fontSize: 14, copyOnSelect: false, renderer: 'canvas', ...JSON.parse(saved) };
+        if (saved) return { transport: 'auto', fontSize: 14, copyOnSelect: false, cursorBlink: false, renderer: 'canvas', ...JSON.parse(saved) };
     } catch (_) {}
-    return { transport: 'auto', fontSize: 14, copyOnSelect: false, renderer: 'canvas' };
+    return { transport: 'auto', fontSize: 14, copyOnSelect: false, cursorBlink: false, renderer: 'canvas' };
 }
 
 function saveSettings(s) {
@@ -95,7 +95,9 @@ function updateStatus(state, msg) {
 const sipTerm = new SipTerminal('terminal', {
     fontFamily,
     fontSize: settings.fontSize,
-    cursorBlink: true,
+    // A blinking cursor is a persistent animation, so it repaints forever on
+    // an otherwise idle terminal. Off unless asked for.
+    cursorBlink: settings.cursorBlink ?? false,
     cursorStyle: 'block',
     scrollback: 5000,
     allowOSC52: true,
@@ -238,6 +240,7 @@ const transportSelect = document.getElementById('transport-select');
 const fontSizeInput = document.getElementById('font-size');
 const fontSizeValue = document.getElementById('font-size-value');
 const copyOnSelectInput = document.getElementById('copy-on-select');
+const cursorBlinkInput = document.getElementById('cursor-blink');
 const rendererSelect = document.getElementById('renderer-select');
 
 if (rendererSelect) rendererSelect.value = rendererChoice;
@@ -245,6 +248,7 @@ transportSelect.value = settings.transport;
 fontSizeInput.value = settings.fontSize;
 fontSizeValue.textContent = settings.fontSize + 'px';
 if (copyOnSelectInput) copyOnSelectInput.checked = !!settings.copyOnSelect;
+if (cursorBlinkInput) cursorBlinkInput.checked = !!settings.cursorBlink;
 
 toggle.addEventListener('click', () => {
     panel.classList.toggle('hidden');
@@ -260,6 +264,10 @@ apply.addEventListener('click', () => {
     settings.transport = transportSelect.value;
     settings.fontSize = parseInt(fontSizeInput.value, 10);
     if (copyOnSelectInput) settings.copyOnSelect = copyOnSelectInput.checked;
+    if (cursorBlinkInput) {
+        settings.cursorBlink = cursorBlinkInput.checked;
+        sipTerm.term.options.cursorBlink = settings.cursorBlink;
+    }
     const rendererChanged = rendererSelect && rendererSelect.value !== rendererChoice;
     if (rendererSelect) settings.renderer = rendererSelect.value;
     saveSettings(settings);
