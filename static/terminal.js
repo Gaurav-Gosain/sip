@@ -36,6 +36,16 @@
         // A blinking cursor is a persistent animation, so it repaints forever
         // on an otherwise idle terminal. Off unless asked for.
         cursorBlink: false,
+        // The browser context menu covers the terminal on right click, which
+        // hides whatever the program under the cursor wanted to do with the
+        // button. Terminals suppress it for that reason; turn this on to get
+        // the browser menu back.
+        browserContextMenu: false,
+        // Ctrl+W, Ctrl+T and friends are reserved by the browser and cannot be
+        // intercepted by an ordinary page. The Keyboard Lock API hands them to
+        // us, but only while the document is fullscreen, so this only takes
+        // effect there.
+        captureReservedKeys: true,
     };
 
     // Per-deployment config injected by the server (see renderIndex). Absent
@@ -290,6 +300,8 @@
 
             const container = document.getElementById('terminal');
             this.term.open(container);
+            this.installContextMenuPolicy(container);
+            this.installReservedKeyCapture();
 
             // Renderer selection runs after open so the addons have an
             // element to attach to.
@@ -513,6 +525,8 @@
             const fontSizeValue = document.getElementById('font-size-value');
             const copyOnSelectInput = document.getElementById('copy-on-select');
             const cursorBlinkInput = document.getElementById('cursor-blink');
+            const contextMenuInput = document.getElementById('browser-context-menu');
+            const reservedKeysInput = document.getElementById('capture-reserved-keys');
 
             transportSelect.value = this.settings.transport;
             rendererSelect.value = this.settings.renderer;
@@ -520,6 +534,8 @@
             fontSizeValue.textContent = this.settings.fontSize + 'px';
             copyOnSelectInput.checked = !!this.settings.copyOnSelect;
             cursorBlinkInput.checked = !!this.settings.cursorBlink;
+            if (contextMenuInput) contextMenuInput.checked = !!this.settings.browserContextMenu;
+            if (reservedKeysInput) reservedKeysInput.checked = !!this.settings.captureReservedKeys;
 
             toggle.addEventListener('click', () => {
                 panel.classList.toggle('hidden');
@@ -540,6 +556,11 @@
                 this.settings.fontSize = parseInt(fontSizeInput.value, 10);
                 this.settings.copyOnSelect = copyOnSelectInput.checked;
                 this.settings.cursorBlink = cursorBlinkInput.checked;
+                if (contextMenuInput) this.settings.browserContextMenu = contextMenuInput.checked;
+                if (reservedKeysInput) {
+                    this.settings.captureReservedKeys = reservedKeysInput.checked;
+                    this.syncReservedKeyCapture?.();
+                }
                 this.saveSettings();
 
                 panel.classList.add('hidden');
@@ -593,6 +614,50 @@
             } catch (e) {
                 console.warn('Font loading failed:', e);
             }
+        }
+
+        // Suppress the browser context menu over the terminal so a right click
+        // reaches the program instead of being covered by a menu. Shift is the
+        // conventional escape hatch: holding it always yields the browser menu,
+        // matching how the same modifier bypasses mouse reporting for
+        // selection.
+        installContextMenuPolicy(container) {
+            if (!container) return;
+            container.addEventListener('contextmenu', (e) => {
+                if (this.settings.browserContextMenu || e.shiftKey) return;
+                e.preventDefault();
+            });
+        }
+
+        // Ask for the keys the browser normally keeps for itself (Ctrl+W,
+        // Ctrl+T, Ctrl+N, Ctrl+Tab and so on) so they reach the terminal.
+        //
+        // preventDefault cannot stop these: browsers reserve them deliberately
+        // so a page cannot trap the user. The Keyboard Lock API is the only
+        // sanctioned route, and it is granted only while the document is
+        // fullscreen, so the lock is taken on entering fullscreen and dropped
+        // on leaving. Outside fullscreen these keys keep their browser meaning
+        // and there is nothing to be done about it.
+        installReservedKeyCapture() {
+            if (!navigator.keyboard || typeof navigator.keyboard.lock !== 'function') return;
+            const sync = async () => {
+                const wantLock = this.settings.captureReservedKeys && !!document.fullscreenElement;
+                try {
+                    if (wantLock) {
+                        await navigator.keyboard.lock([
+                            'KeyW', 'KeyT', 'KeyN', 'KeyR', 'KeyL',
+                            'Tab', 'Escape', 'Digit1', 'Digit2', 'Digit3',
+                        ]);
+                    } else {
+                        navigator.keyboard.unlock();
+                    }
+                } catch (e) {
+                    console.warn('sip: keyboard lock unavailable:', e);
+                }
+            };
+            document.addEventListener('fullscreenchange', sync);
+            this.syncReservedKeyCapture = sync;
+            sync();
         }
 
         async initRenderer() {
