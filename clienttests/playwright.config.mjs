@@ -60,7 +60,15 @@ export default defineConfig({
     command: `go run ./cmd/sip -p ${PORT} -- sh`,
     cwd: '..',
     url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
+    // Never reuse a server, not even locally. The client assets are go:embed'ed
+    // into the binary, so a server left running from an earlier build serves the
+    // old static/ files while the source on disk says otherwise. Editing
+    // static/ and rerunning then tests the previous build and reports a pass or
+    // a failure that has nothing to do with the change. Nothing surfaces an
+    // error when this happens, which is what makes it expensive: it cost three
+    // meaningless runs of the clipboard work before the pattern gave it away.
+    // A rebuild per run is cheap next to a result that cannot be trusted.
+    reuseExistingServer: false,
     timeout: 120_000,
     stdout: 'ignore',
     stderr: 'pipe',
