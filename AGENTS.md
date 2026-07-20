@@ -208,23 +208,25 @@ VT with a wasm round trip per character on xterm's hottest path.
 
 #### Patches to the vendored bundles
 
-Vendored files are shipped as published, with one exception each marked inline
-by a `/*__sipPatch:<name>*/` comment so `grep -r __sipPatch static/` lists every
-one. Re-apply them deliberately after any bundle bump.
+There are none. `static/webterm.js` is byte for byte a webterm `main` build, and
+nothing under `static/` is edited after vendoring. Anything that used to be a
+`/*__sipPatch:<name>*/` marker now lives in webterm's source, so a bundle bump
+carries it rather than dropping it.
 
-- `round-device-cell-width` in `webterm.js`. Both atlas renderers computed
-  `device.char.width = Math.floor(advance * dpr)`. The atlas rasterises each
-  glyph into a box of exactly that width, so at dpr 2, where the 14px advance
-  is 16.8 device px, every cell was 16 and any glyph drawn to the full advance
-  lost 0.8 device px off its right edge: powerline separators, box and block
-  glyphs, Nerd Font icons. An eight-cell powerline pill measured 128 device px
-  of ink against the DOM renderer's 135. Now `Math.round`. Rounding rather than
-  ceiling is the point: at dpr 1 the cell stays 8 for an 8.4px advance, so text
-  is not loosened to fix icons. Guarded by the HiDPI test in
-  `clienttests/metrics.spec.mjs`, which fails with the unpatched bundle.
-  Upstream still ships `Math.floor`, and webterm cannot carry the fix because
-  it takes the addons as peer dependencies rather than vendoring them, so this
-  patch has to be re-applied to every rebuilt `webterm.js`.
+The one that mattered is the rounded device cell width. Both atlas renderers
+compute `device.char.width = Math.floor(advance * dpr)` and the atlas rasterises
+each glyph into a box of exactly that width, so at dpr 2, where the 14px advance
+is 16.8 device px, every cell was 16 and any glyph drawn to the full advance lost
+0.8 device px off its right edge: powerline separators, box and block glyphs,
+Nerd Font icons. An eight-cell powerline pill measured 128 device px of ink
+against the DOM renderer's 135. sip carried that as a hand edit to the vendored
+addon bundles until the webterm split, where it was silently lost. It now lives
+in webterm's `src/cell-metrics.ts`, which gives the renderer a char size service
+reporting an advance that floors to the rounded device width, leaving the core's
+own service and therefore layout, selection and the kitty overlay measuring the
+real advance. Upstream xterm still ships the floor. Guarded on both sides: the
+HiDPI test in `clienttests/metrics.spec.mjs` and webterm's own
+`test/browser/metrics.spec.mjs` at `chromium-dpr2`.
 
 #### Kitty graphics overlay
 

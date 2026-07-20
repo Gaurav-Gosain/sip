@@ -290,10 +290,12 @@ test.describe('on a HiDPI display', () => {
     // device px of ink where the DOM renderer, which does no rounding at all,
     // drew 135.
     //
-    // static/xterm-addon-webgl.js and static/xterm-addon-canvas.js are patched
-    // to round instead, marked __sipPatch:round-device-cell-width. Rounding
-    // rather than ceiling is deliberate: at dpr 1 it keeps the cell at 8, so
-    // ordinary text is not loosened to fix icons.
+    // Upstream xterm still ships the floor. webterm corrects it in
+    // src/cell-metrics.ts, which hands the renderer a char size service
+    // reporting an advance that floors to the rounded device width, so the fix
+    // rides in the vendored bundle instead of being a hand edit to it.
+    // Rounding rather than ceiling is deliberate: at dpr 1 it keeps the cell at
+    // 8 for an 8.4px advance, so ordinary text is not loosened to fix icons.
     await boot(page);
     const m = await page.evaluate(() => {
       const core = window.sipTerm.term._core;
