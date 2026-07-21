@@ -65,14 +65,21 @@ const CORPUS = [
   { name: 'emoji-two-flags', text: '\u{1f1ef}\u{1f1f5}\u{1f1fa}\u{1f1f8}', category: 'emoji-flags', ghostty: 4, cell0: 2 },
   { name: 'emoji-tag-flag', text: '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', category: 'emoji-flags', ghostty: 2, cell0: 2 },
   // A regional indicator with no pair. ghostty gives the lone RI its wide
-  // advance; xterm bills it narrow.
-  { name: 'emoji-ri-odd', text: '\u{1f1ef}', category: 'emoji-flags', ghostty: 2, xterm: 1, cell0: 1 },
+  // advance; the addon bills it narrow, so the vendored override provider forces
+  // every indicator to two. A pair is unaffected: the second indicator keeps its
+  // join and the flag stays two columns. See webterm's src/unicode.ts.
+  { name: 'emoji-ri-odd', text: '\u{1f1ef}', category: 'emoji-flags', ghostty: 2, cell0: 2 },
 
   // Keycaps
   { name: 'emoji-keycap', text: '1\u{fe0f}\u{20e3}', category: 'emoji-keycap', ghostty: 2, cell0: 2 },
   { name: 'emoji-keycap-no-vs', text: '1\u{20e3}', category: 'emoji-keycap', ghostty: 1, cell0: 1 },
 
-  // Skin tone modifiers
+  // Skin tone modifiers. A based modifier folds into one width-2 cluster. A lone
+  // modifier is width 2 at column 0 (asserted here) and, after a non-base
+  // character, is re-segmented by the vendored provider into its own width-2
+  // cluster rather than absorbed. That in-context case is what a reproducer that
+  // brackets each cluster catches; the corpus writes at column 0 so it is pinned
+  // by its own bracketed test below. See webterm's src/unicode.ts.
   { name: 'emoji-skin-tone', text: '\u{1f44d}\u{1f3fd}', category: 'emoji-skin-tone', ghostty: 2, cell0: 2 },
   { name: 'emoji-modifier-alone', text: '\u{1f3fd}', category: 'emoji-skin-tone', ghostty: 2, cell0: 2 },
 
@@ -94,7 +101,11 @@ const CORPUS = [
   // Devanagari
   { name: 'devanagari-consonant', text: '\u{928}', category: 'devanagari', ghostty: 1, cell0: 1 },
   { name: 'devanagari-ksha', text: '\u{915}\u{94d}\u{937}', category: 'devanagari', ghostty: 2, cell0: 1 },
-  { name: 'devanagari-matra', text: '\u{928}\u{93f}', category: 'devanagari', ghostty: 2, xterm: 1, cell0: 1 },
+  // Consonant plus a spacing matra. ghostty counts the cluster two; the addon
+  // clusters it but bills the matra zero. The vendored override provider restates
+  // the cluster width through the matra, which keeps its join. See webterm's
+  // src/unicode.ts.
+  { name: 'devanagari-matra', text: '\u{928}\u{93f}', category: 'devanagari', ghostty: 2, cell0: 2 },
 
   // Arabic
   { name: 'arabic-isolated', text: '\u{627}', category: 'arabic', ghostty: 1, cell0: 1 },
@@ -112,6 +123,14 @@ const CORPUS = [
   { name: 'zero-width-space', text: 'a\u{200b}b', category: 'zero-width', ghostty: 2, cell0: 1 },
   { name: 'zero-width-space-alone', text: '\u{200b}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 0 },
   { name: 'zero-width-joiner-alone', text: '\u{200d}', category: 'zero-width', ghostty: 0, xterm: 1, cell0: 1 },
+  // U+00AD SOFT HYPHEN. General_Category Cf (Format): a conditional
+  // line-break/hyphenation hint, invisible unless a line breaks on it. A
+  // terminal never hyphenates, so it correctly contributes zero width (xterm and
+  // wcwidth agree). ghostty draws it as a visible width-1 glyph, which is the
+  // opinionated, less-correct choice and is left unmatched on purpose: making it
+  // visible would add a stray column to every ordinary word carrying a
+  // soft-hyphen break hint. The vendored InputHandler also drops codepoint 173
+  // before any provider is asked. This is an intentional divergence, not a bug.
   { name: 'soft-hyphen', text: 'a\u{00ad}b', category: 'zero-width', ghostty: 3, xterm: 2, cell0: 1 },
 
   // Box drawing and block, the glyphs whose rendering motivated the revert.
@@ -325,7 +344,7 @@ test('the ghostty divergences are exactly where we think they are', async ({ pag
   const byName = Object.fromEntries(measured.map((m) => [m.name, m]));
 
   expect(Object.keys(DIVERGENCES).sort()).toEqual([
-    'combining-mark-alone', 'devanagari-matra', 'emoji-ri-odd', 'soft-hyphen',
+    'combining-mark-alone', 'soft-hyphen',
     'zero-width-joiner-alone', 'zero-width-space-alone',
   ]);
 
@@ -373,4 +392,53 @@ test('a ZWJ sequence occupies one cluster, not one cell per scalar', async ({ pa
   expect(family.width).toBe(2);
   // The whole cluster lives in the one cell.
   expect([...family.chars].length).toBeGreaterThan(1);
+});
+
+test('a base-less emoji modifier stands as its own cluster, a based one does not', async ({ page }) => {
+  // The corpus writes every cluster at column 0, where a lone Fitzpatrick
+  // modifier already advances two. The divergence a bracketed reproducer
+  // (scripts/grapheme-check.sh) catches is one column to the right: a modifier
+  // after a NON-base character is a grapheme Extend, so UAX #29 GB9 folds it onto
+  // that character and absorbs its width. UTS #51 instead shows a base-less
+  // modifier as a standalone swatch, and the vendored provider re-segments it so.
+  //
+  // Pins both halves so neither a "never join a modifier" nor an "always join"
+  // rewrite could pass: after '[' the modifier must stand alone (its own wide
+  // cell), and after a real base or a text-presentation base it must still fold
+  // into one width-two cluster.
+  await boot(page);
+
+  const m = await page.evaluate(async () => {
+    const term = window.sipTerm.term;
+    const drain = () => new Promise((r) => term.write('', r));
+    const layout = async (text) => {
+      term.write('\x1b[H\x1b[2J\x1b[1;1H');
+      await drain();
+      term.write(text);
+      await drain();
+      const buf = term.buffer.active;
+      const line = buf.getLine(buf.baseY);
+      return { cols: buf.cursorX, cell1: line.getCell(1).getWidth(), cell1chars: line.getCell(1).getChars() };
+    };
+    return {
+      bracketModifier: await layout('[\u{1f3fd}]'),
+      bracketThumbMod: await layout('[\u{1f44d}\u{1f3fd}]'),
+      bracketPointMod: await layout('[\u{261d}\u{1f3fd}]'),
+    };
+  });
+
+  // Lone modifier after '[': a separate width-2 cell sitting after the bracket.
+  expect(m.bracketModifier.cols).toBe(4);
+  expect(m.bracketModifier.cell1).toBe(2);
+  expect(m.bracketModifier.cell1chars).toBe('\u{1f3fd}');
+
+  // Based modifier: folded into the base's one width-2 cluster, still four cols.
+  expect(m.bracketThumbMod.cols).toBe(4);
+  expect(m.bracketThumbMod.cell1).toBe(2);
+  expect([...m.bracketThumbMod.cell1chars].length).toBe(2);
+
+  // Text-presentation base + modifier: not split, one width-2 cluster.
+  expect(m.bracketPointMod.cols).toBe(4);
+  expect(m.bracketPointMod.cell1).toBe(2);
+  expect([...m.bracketPointMod.cell1chars].length).toBe(2);
 });

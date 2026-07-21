@@ -396,10 +396,11 @@
             return this.webterm ? this.webterm.image : null;
         }
 
-        /** 'WebGL' | 'Canvas' | 'DOM', the labels the settings panel shows. */
+        /** 'vtgl' | 'WebGL' | 'Canvas' | 'DOM', the labels the settings panel shows. */
         get currentRenderer() {
             if (!this.webterm) return 'unknown';
             switch (this.webterm.renderer) {
+                case 'vtgl': return 'vtgl';
                 case 'webgl': return 'WebGL';
                 case 'canvas': return 'Canvas';
                 default: return 'DOM';
