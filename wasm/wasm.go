@@ -1,10 +1,16 @@
 //go:build js && wasm
 
 // Package wasm provides a bridge for running BubbleTea programs in the
-// browser. It registers JavaScript functions on window
-// (bubbletea_read, bubbletea_write, bubbletea_resize) that the sip web
-// frontend's SipWasmAdapter polls to shuttle data between the
-// libghostty terminal emulator and the Go program.
+// browser. It registers three JavaScript functions on the global object
+// (bubbletea_read, bubbletea_write, bubbletea_resize) and leaves the page
+// to drive them: bubbletea_write takes terminal input bytes,
+// bubbletea_read drains the program's ANSI output, and bubbletea_resize
+// delivers a tea.WindowSizeMsg.
+//
+// The page is the caller's. sip's own static/terminal.js is a client for
+// the socket protocol and has no adapter for these globals, so a wasm
+// build ships its own index.html and its own terminal emulator or
+// renderer. static/mobile.js is standalone and can be used from one.
 //
 // Usage:
 //
@@ -35,6 +41,11 @@ type Program struct {
 	writeFunc  js.Func
 	readFunc   js.Func
 	resizeFunc js.Func
+
+	// Last size actually delivered, so a resize storm that ends where it
+	// started costs nothing. Only ever touched from a js.Func callback,
+	// which the wasm runtime serialises onto the one thread.
+	lastCols, lastRows int
 }
 
 // NewProgram creates a new BubbleTea program for the browser. It
@@ -79,12 +90,21 @@ func NewProgram(model tea.Model, opts ...tea.ProgramOption) *Program {
 	js.Global().Set("bubbletea_read", p.readFunc)
 
 	p.resizeFunc = js.FuncOf(func(_ js.Value, args []js.Value) any {
-		if len(args) >= 2 {
-			p.prog.Send(tea.WindowSizeMsg{
-				Width:  args[0].Int(),
-				Height: args[1].Int(),
-			})
+		if len(args) < 2 {
+			return nil
 		}
+		cols, rows := args[0].Int(), args[1].Int()
+		if cols <= 0 || rows <= 0 {
+			return nil
+		}
+		// Deduplicate. A browser fires resize on every layout tick while a
+		// window edge is being dragged, and a repeated size costs the program
+		// a full re-layout and a full recomposite for no visible change.
+		if cols == p.lastCols && rows == p.lastRows {
+			return nil
+		}
+		p.lastCols, p.lastRows = cols, rows
+		p.prog.Send(tea.WindowSizeMsg{Width: cols, Height: rows})
 		return nil
 	})
 	js.Global().Set("bubbletea_resize", p.resizeFunc)
