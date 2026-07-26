@@ -104,8 +104,10 @@ sip/
 │   ├── sip/                # CLI binary
 │   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
 ├── static/
-│   ├── index.html          # Loads webterm.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
+│   ├── index.html          # Loads webterm.js + mobile.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
 │   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal (settings, status)
+│   ├── mobile.js           # Classic script: the touch key bar, the keyboard-aware
+│   │                       # layout and installDraggable. Publishes window.SipMobile
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
 │   ├── webterm.js          # Vendored webterm standalone (~835 KB): xterm.js, its addons,
 │   │                       # the kitty overlay, the clipboard layer and the width overrides
@@ -132,7 +134,12 @@ sip/
 3. **WASM mode (in-browser only, no server)**
    - `wasm.Run(model)` (or `sip.RunBrowser(model)` polymorphic)
    - Bubble Tea program compiled to wasm runs entirely in the browser
-   - Frontend connects via `SipWasmAdapter` polling `bubbletea_read/write/resize` globals
+   - The Go side registers `bubbletea_read` / `bubbletea_write` /
+     `bubbletea_resize` on `globalThis` and nothing else. `static/terminal.js`
+     has no adapter for them: it was dropped in the webterm split and has not
+     been rebuilt, so a wasm app currently supplies its own page and drives
+     those three globals itself. `static/mobile.js` is standalone and usable
+     from such a page as it stands.
    - Build with `go run ./cmd/sip-wasm-build -o web/app.wasm ./your/cmd/`
 
 ### Communication flow
@@ -262,6 +269,66 @@ animation, file and shared-memory transmission, Unicode placeholder placement.
 parser at all — zero occurrences in its runtime bundle and its typings — so
 upgrading the vendored bundle to it would kill kitty graphics outright. 6.1.0
 restores it. Check for the handler before any bundle bump.
+
+### Touch and the software keyboard
+
+`static/mobile.js` is a standalone classic script publishing `window.SipMobile`.
+It imports nothing, injects its own styles and builds its own DOM, and it is
+installed only on a touch device (`detectTouch`, overridable with `?mobile=1`
+and `?mobile=0` for testing). `terminal.js` wires it up in `setupMobile`.
+
+Three parts:
+
+- **The key bar.** A scrolling strip of the keys a phone keyboard does not have.
+  The key set is the caller's: `installKeyBar(host, { keys, actions })`, with
+  `Config.MobileKeys` and `Config.DisableMobileKeyBar` as the Go-side route into
+  it through `window.__sipConfig`. The default set is Escape, Tab, sticky Ctrl
+  and Alt, the arrows and some punctuation, and it deliberately assumes nothing
+  about what is running: sip serves arbitrary programs and has no business
+  guessing at their keymap. An application with chords worth a button supplies
+  them.
+- **The keyboard's share of the window.** `--sip-kb-inset` and `--sip-keybar-h`
+  are published on the document element and `terminal.css` pads
+  `#terminal-container` with them, which makes webterm's own ResizeObserver
+  refit the grid. The inset is the max of two measurements, the VirtualKeyboard
+  API (Chromium on Android) and the visualViewport difference (Safari on iOS),
+  because no one browser has both and a browser that resized the layout itself
+  reports zero on both. A bad measurement costs space, never layout.
+- **`installDraggable(el, opts)`.** Independent of the rest. It makes one
+  fixed-position control draggable and remembers where it was left. sip uses it
+  for the settings gear, which floats over whatever the program is drawing.
+
+#### Two things in there that will be silently re-broken
+
+**The bar is `overflow: hidden` and pans itself.** The obvious implementation is
+`overflow-x: auto`, and it costs the software keyboard. A native touch scroll is
+a gesture the page has already lost by the time it can see it: Blink delivers
+`touchmove` and `touchend` with `cancelable === false`, so the page cannot stop
+it, and the browser takes the keyboard down when a scroll starts under it.
+Emulation shows none of that. The two fixes look irreconcilable, because
+cancelling the touch sequence is what keeps the keyboard up and cancelling it is
+what stops a native scroll. They are only irreconcilable while the browser is
+the one scrolling: the strip is `overflow: hidden`, the whole bar is
+`touch-action: none`, every touch is cancelled at `touchstart`, and the pan is
+`scrollLeft` assignment, which an `overflow: hidden` box still honours.
+
+An earlier theory blamed the compat mouse events a tap synthesises. It was
+measured and it was wrong. Do not revert to it.
+
+**Sticky modifiers are folded in on the byte path, not the key path.**
+`SipConnection.send` is the last point at which a keystroke is still visible as
+itself: xterm has already encoded the key by then, and an Android IME keyboard
+never produced a usable key event in the first place (keyCode 229, no `.key`).
+`transformInput` rewrites a single character or a single bare cursor key and
+consumes the one-shot modifier; anything longer is a mouse report, a paste or a
+device-query reply, which passes through with the modifier left armed. With
+nothing armed it returns its argument, so the desktop cost is two property
+reads.
+
+`clienttests/mobile.spec.mjs` pins both. The pan test drives a real multi-step
+touch sequence through CDP (Playwright's `touchscreen` only taps) and asserts
+that the strip moved, that no event arrived non-cancellable, that focus never
+left xterm's textarea, and that flicking past a button did not press it.
 
 ### Browser coverage
 
@@ -395,6 +462,8 @@ type Config struct {
     MaxWindowDims                              WindowSize     // default 4096×4096
     InitialResizeTimeout                       time.Duration  // default 10s
     FontPath, FontFamily                       string         // custom font upload
+    MobileKeys                                 []MobileKey    // touch key bar key set
+    DisableMobileKeyBar                        bool
     ConnectMiddleware                          []ConnectMiddleware
     SessionMiddleware                          []SessionMiddleware
     HandlerMiddleware                          []Middleware

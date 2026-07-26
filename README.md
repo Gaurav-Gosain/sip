@@ -58,6 +58,10 @@ whole client, fonts included, into one binary.
   terminal.
 - Clusters graphemes to UAX 29 rather than billing per scalar, so a ZWJ family
   emoji takes the columns it draws in instead of eight.
+- Puts a key bar over the software keyboard on a phone, carrying the keys a
+  phone keyboard does not have: Escape, Tab, the arrows, and Ctrl and Alt as
+  sticky modifiers, because a touch screen cannot hold one key while pressing
+  another. It measures the keyboard and gives the terminal what is left.
 - Refuses to bind a non-loopback address without TLS, and refuses basic auth
   without it, unless told otherwise by an explicit flag that logs what it is
   giving up. Loopback gets a self-signed certificate generated on the spot.
@@ -193,6 +197,40 @@ and end lines.
 A Bubble Tea program can also be compiled to wasm and run with no server at all:
 `go run ./cmd/sip-wasm-build -o web/app.wasm ./cmd/myapp` builds it, and the
 client connects to it through the same adapter it uses for a socket.
+
+## Phones
+
+A phone keyboard has no Escape, no Tab, no Ctrl and no arrows, which is most of
+what a terminal is driven with, and when it opens it covers the bottom half of
+the terminal it was opened for. On a touch device sip puts a scrolling key bar
+above the keyboard with those keys on it, measures how much of the window the
+keyboard is actually covering, and reserves it so the grid is refitted to what
+is left rather than being hidden behind it. Ctrl and Alt are sticky: one tap
+arms the modifier for the next keystroke, a second locks it until tapped off.
+
+The default key set assumes nothing about what is running, because sip serves
+arbitrary programs. A library caller that knows better can replace it:
+
+```go
+srv, _ := sip.New(sip.Config{
+    MobileKeys: []sip.MobileKey{
+        {Label: "esc", Title: "Escape", Key: "Escape"},
+        {Label: "ctrl", Title: "Ctrl", Mod: "ctrl"},
+        {Label: "^C", Title: "Interrupt", Key: "c", Ctrl: true},
+        {Label: "/", Title: "Search", Key: "/", Narrow: true},
+    },
+})
+```
+
+`Key` is a `KeyboardEvent` key name or a literal character, `Mod` makes the
+button a sticky modifier instead, and `DisableMobileKeyBar` leaves the strip out
+for a program that draws touch controls of its own while keeping the
+keyboard-aware layout.
+
+The floating settings gear is draggable on a desktop and remembers where it was
+left, because it floats over whatever the program is drawing and there is no
+corner that is free of every program. On a phone it is not a floating control at
+all: it moves into the key bar.
 
 ## Clipboard
 

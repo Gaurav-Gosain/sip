@@ -187,6 +187,21 @@ type Config struct {
 	// a ?renderer= query param both override this.
 	Renderer string
 
+	// MobileKeys replaces the client's default touch key bar with a key
+	// set of the deployment's own. Empty keeps the default, which is the
+	// keys a phone keyboard lacks and every terminal program understands
+	// (Escape, Tab, sticky Ctrl and Alt, the arrows, some punctuation).
+	//
+	// Set it when the program being served has chords worth a button:
+	// sip has no way to know what those are. The bar is only built on a
+	// touch device, so this has no effect on a desktop.
+	MobileKeys []MobileKey
+
+	// DisableMobileKeyBar suppresses the touch key bar entirely, for a
+	// program that draws touch controls of its own. The software
+	// keyboard's share of the window is still measured and reserved.
+	DisableMobileKeyBar bool
+
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
 	// + connection-limit middleware are appended after the user chain
 	// so they run innermost (last).
@@ -209,6 +224,48 @@ type Config struct {
 	// is forwarded untouched (keeping PNG payloads compressed end to end).
 	// Enable it only to force server-side transcoding as a fallback.
 	EnableKittyTranscoder bool
+}
+
+// MobileKey is one button on the client's touch key bar. It is handed to
+// the browser as-is, so the field names match what static/mobile.js reads.
+//
+// A key sends input:
+//
+//	sip.MobileKey{Label: "esc", Title: "Escape", Key: "Escape"}
+//	sip.MobileKey{Label: "|", Title: "Pipe", Key: "|", Narrow: true}
+//
+// A modifier is sticky instead: one tap arms it for the next keystroke, a
+// second locks it until tapped off, because a touch screen cannot hold a
+// key down while pressing another.
+//
+//	sip.MobileKey{Label: "ctrl", Title: "Ctrl", Mod: "ctrl"}
+type MobileKey struct {
+	// Label is the text on the button. Keep it short: the bar is a
+	// single strip on a phone screen.
+	Label string `json:"label"`
+
+	// Title is the tooltip and the accessible name.
+	Title string `json:"title,omitempty"`
+
+	// Key is a KeyboardEvent key name ("Escape", "Tab", "ArrowLeft",
+	// "Home", "PageUp") or a literal character ("/", "|"). Ignored when
+	// Mod is set.
+	Key string `json:"key,omitempty"`
+
+	// Mod makes this a sticky modifier instead of a key: "ctrl" or
+	// "alt".
+	Mod string `json:"mod,omitempty"`
+
+	// Ctrl, Alt and Shift are modifiers the button carries itself, on
+	// top of whatever the bar has armed. A "^C" button is
+	// {Label: "^C", Key: "c", Ctrl: true}.
+	Ctrl  bool `json:"ctrl,omitempty"`
+	Alt   bool `json:"alt,omitempty"`
+	Shift bool `json:"shift,omitempty"`
+
+	// Narrow gives the button less horizontal padding, for a
+	// single-character label.
+	Narrow bool `json:"narrow,omitempty"`
 }
 
 // DefaultConfig returns sensible default configuration.

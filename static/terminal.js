@@ -12,6 +12,9 @@
     'use strict';
 
     const { WebTerm } = window.WebTerm;
+    // The touch layer: the key bar, the keyboard-aware layout and the
+    // draggable page controls. See static/mobile.js.
+    const SipMobile = window.SipMobile;
 
     // Message types (must match server)
     const MSG_INPUT = 0x30;    // '0'
@@ -148,9 +151,17 @@
             return this.ready;
         }
 
-        /** Terminal input, already chunked by webterm to input.chunkBytes. */
+        /**
+         * Terminal input, already chunked by webterm to input.chunkBytes.
+         *
+         * This is the last point at which a keystroke is still visible as
+         * itself, which is why the key bar's sticky modifiers are folded in
+         * here: xterm has already encoded the key by the time the client sees
+         * it, and a software keyboard never produced a key event to modify in
+         * the first place. Off a touch device the call returns its argument.
+         */
         send(bytes) {
-            return this.sendMessage(MSG_INPUT, bytes);
+            return this.sendMessage(MSG_INPUT, this.client.applyStickyModifiers(bytes));
         }
 
         close() {
@@ -371,6 +382,8 @@
 
             this.settings = this.loadSettings();
             this.fontFamily = sipConfig.fontFamily || FONT_FAMILY;
+            // Replaced by the key bar on a touch device, inert everywhere else.
+            this.mobile = { enabled: false, mods: { ctrl: 0, alt: 0 }, transformInput: (t) => t };
             this.currentTransport = 'unknown';
             this.urls = resolveSipURLs(document.baseURI);
 
@@ -421,6 +434,12 @@
             const q = new URLSearchParams(window.location.search).get('renderer');
             if (q) settings.renderer = q;
             else if (!stored.renderer && sipConfig.renderer) settings.renderer = sipConfig.renderer;
+            // A narrow touch screen starts a point smaller so the program has
+            // some columns to work with, but only until the user picks a size,
+            // which is what a stored fontSize means.
+            if (SipMobile) {
+                settings.fontSize = SipMobile.pickFontSize(settings.fontSize, stored.fontSize !== undefined);
+            }
             return settings;
         }
 
@@ -493,7 +512,7 @@
 
             this.setupCopyKeys();
             this.setupSettingsPanel();
-            this.setupMobileKeyboard();
+            this.setupMobile();
 
             await this.connect();
             this.webterm.focus();
@@ -568,28 +587,60 @@
             }
         }
 
-        /** The pre-Clipboard-API copy, for origins the async API refuses. */
+        /**
+         * The pre-Clipboard-API copy, for origins the async API refuses.
+         *
+         * The selection and the focus are both borrowed and put back. The
+         * selection because this runs on a terminal that has one, which is the
+         * text being copied, and clearing it would make the copy look like it
+         * failed. The focus because on a phone it is what the software keyboard
+         * is riding on, and losing it takes the keyboard down mid-copy.
+         *
+         * iOS needs the contenteditable and readonly pair plus
+         * setSelectionRange; select() alone is ignored there. The textarea is
+         * fixed at the origin rather than parked off screen, because a browser
+         * scrolls to an off-screen element before it will select it.
+         */
         copyFallback(text) {
+            const previous = document.activeElement;
+            const selection = document.getSelection();
+            const saved = [];
+            if (selection) {
+                for (let i = 0; i < selection.rangeCount; i++) saved.push(selection.getRangeAt(i));
+            }
+
             const ta = document.createElement('textarea');
             ta.value = text;
-            // Off screen rather than hidden: an element with no layout box
-            // cannot hold a selection, so display:none would break the copy.
-            ta.style.position = 'fixed';
-            ta.style.top = '-1000px';
-            ta.style.opacity = '0';
             ta.setAttribute('readonly', '');
+            ta.contentEditable = 'true';
+            ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;'
+                + 'padding:0;border:0;margin:0;opacity:0;pointer-events:none;';
             document.body.appendChild(ta);
+
             let ok = false;
             try {
+                ta.focus({ preventScroll: true });
                 ta.select();
+                ta.setSelectionRange(0, text.length);
                 ok = document.execCommand('copy');
             } catch (e) {
                 ok = false;
+            } finally {
+                ta.remove();
+                if (selection) {
+                    selection.removeAllRanges();
+                    for (const range of saved) selection.addRange(range);
+                }
+                if (previous && previous.focus) {
+                    try {
+                        previous.focus({ preventScroll: true });
+                    } catch (e) {
+                        previous.focus();
+                    }
+                } else {
+                    this.webterm.focus();
+                }
             }
-            document.body.removeChild(ta);
-            // Focus went to the textarea, so hand it back or the next keystroke
-            // is lost.
-            this.webterm.focus();
             return ok;
         }
 
@@ -822,16 +873,66 @@
             transportInfo.textContent = `Transport: ${this.currentTransport}`;
         }
 
-        setupMobileKeyboard() {
-            if (!window.visualViewport) return;
-            const container = document.getElementById('terminal-container');
-            window.visualViewport.addEventListener('resize', () => {
-                const keyboardHeight = window.innerHeight - window.visualViewport.height;
-                container.style.height = keyboardHeight > 100
-                    ? window.visualViewport.height + 'px'
-                    : '';
-                // webterm's own ResizeObserver refits from the height change.
+        /**
+         * The touch layer.
+         *
+         * On a desktop this installs nothing and returns an inert controller.
+         * On a phone it puts up the key bar, reserves the software keyboard's
+         * share of the window through the two CSS custom properties that
+         * terminal.css pads the container with, and moves the settings gear
+         * into the bar, because a floating control on a phone floats over a
+         * screen with no room to spare.
+         *
+         * The key set is the default one from mobile.js unless the deployment
+         * named its own with Config.MobileKeys. sip serves arbitrary programs,
+         * so the default is keys every terminal program understands and nothing
+         * that assumes a keymap: an application that wants its own chords on
+         * the bar supplies them.
+         */
+        setupMobile() {
+            if (!SipMobile) return;
+
+            const toggle = document.getElementById('settings-toggle');
+            const actions = toggle ? [{
+                label: '',
+                title: 'Settings',
+                run: () => toggle.click(),
+            }] : [];
+
+            this.mobile = SipMobile.installKeyBar({
+                send: (text) => this.sendInput(text),
+                // xterm's own helper textarea is what holds the software
+                // keyboard up, so it is what the bar has to keep focus on.
+                focusTarget: () => (this.webterm ? this.webterm.xterm.textarea : null),
+                isReady: () => this.connected && !this.readOnly,
+            }, {
+                keys: Array.isArray(sipConfig.mobileKeys) && sipConfig.mobileKeys.length
+                    ? sipConfig.mobileKeys
+                    : SipMobile.DEFAULT_KEYS,
+                actions,
+                keyBar: sipConfig.mobileKeyBar !== false,
             });
+
+            // The desktop keeps the floating gear and lets it be moved out of
+            // the way of whatever is under it.
+            if (!this.mobile.enabled) {
+                SipMobile.installDraggable(toggle, { storageKey: 'sip-web-gear-pos', margin: 8 });
+            }
+        }
+
+        /**
+         * Fold the key bar's armed modifiers into outbound terminal input.
+         *
+         * Called from SipConnection.send, on every frame of terminal input.
+         * The bar is inert off a touch device and returns early with nothing
+         * armed, so the cost on the common path is two property reads.
+         */
+        applyStickyModifiers(bytes) {
+            const m = this.mobile;
+            if (!m.enabled || (!m.mods.ctrl && !m.mods.alt)) return bytes;
+            const text = this.decoder.decode(bytes);
+            const out = m.transformInput(text);
+            return out === text ? bytes : this.encoder.encode(out);
         }
 
         updateStatus(status, text) {

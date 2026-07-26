@@ -49,7 +49,12 @@ html, body {
 #terminal-container {
     width: 100%;
     height: 100%;
-    padding: 0;
+    /* The two custom properties mobile.js publishes: the software keyboard's
+       share of the window and the height of the key bar sitting on top of it.
+       Both are 0px on a desktop, so this is the full window there. Padding
+       rather than height, so shrinking the box makes webterm's own
+       ResizeObserver fire and the grid is refitted from it. */
+    padding: 0 0 calc(var(--sip-kb-inset, 0px) + var(--sip-keybar-h, 0px));
     background-color: #1e1e2e;
     min-height: 0;
 }
@@ -105,7 +110,10 @@ html, body {
 /* Connection status indicator */
 #connection-status {
     position: fixed;
-    bottom: 20px;
+    /* Above the key bar and the software keyboard rather than behind them.
+       Both custom properties are 0px until mobile.js has something to report,
+       so this is plain bottom: 20px on a desktop. */
+    bottom: calc(20px + var(--sip-kb-inset, 0px) + var(--sip-keybar-h, 0px));
     right: 20px;
     background: rgba(30, 30, 46, 0.95);
     border: 1px solid #45475a;
@@ -149,7 +157,12 @@ html, body {
     50% { opacity: 0.5; }
 }
 
-/* Settings toggle button */
+/* Settings toggle button.
+
+   It floats over whatever the program is drawing, and a full-screen program
+   owns every corner of the screen, so there is no placement that is out of the
+   way of everything. It is draggable instead, and remembers where it was left;
+   see installDraggable in mobile.js. */
 #settings-toggle {
     position: fixed;
     top: 10px;
@@ -160,16 +173,28 @@ html, body {
     border: 1px solid #45475a;
     background: rgba(30, 30, 46, 0.9);
     color: #cdd6f4;
-    font-size: 16px;
-    cursor: pointer;
+    /* The label is a Nerd Font glyph, so it has to be set in the Nerd Font. */
+    font-family: 'JetBrainsMono Nerd Font Mono', monospace;
+    font-size: 15px;
+    line-height: 1;
+    cursor: grab;
     z-index: 1001;
     transition: background 0.2s, opacity 0.3s;
     opacity: 0.5;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
 }
 
 #settings-toggle:hover {
     background: #45475a;
     opacity: 1;
+}
+
+#settings-toggle.dragging {
+    cursor: grabbing;
+    opacity: 1;
+    background: #45475a;
 }
 
 /* Settings panel */
@@ -303,4 +328,41 @@ html, body {
 
 #terminal:not(:focus-within) .xterm-cursor-layer {
     opacity: 0.6;
+}
+
+/* Touch layout. body.sip-touch is set by mobile.js while the key bar is up. */
+
+/* No floating gear on a phone: floating it means floating it over whatever the
+   program is drawing, on a screen with no room to spare. It moves into the key
+   bar instead, which terminal.js passes as an action. */
+body.sip-touch #settings-toggle {
+    display: none;
+}
+
+/* A 280px panel anchored to a corner is most of a phone screen and still
+   manages to hang off the edge of a narrow one. Full width, below the status
+   line, and never taller than what the keyboard and the key bar have left. */
+body.sip-touch #settings-panel {
+    top: 8px;
+    bottom: auto;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-height: calc(100% - 24px - var(--sip-kb-inset, 0px) - var(--sip-keybar-h, 0px));
+    overflow-y: auto;
+}
+
+/* Thumb-sized controls. The desktop sizes are aimed at a mouse. */
+body.sip-touch #settings-panel button,
+body.sip-touch .setting-group select {
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+body.sip-touch .setting-group input[type="range"] {
+    height: 32px;
+}
+
+body.sip-touch .setting-group label {
+    padding: 2px 0;
 }

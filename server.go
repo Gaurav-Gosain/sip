@@ -338,16 +338,16 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(rendered)
 }
 
-// renderIndex injects per-deployment font config into the index HTML.
+// renderIndex injects per-deployment client config into the index HTML.
 // The {{FONT_FACE_EXTRA}} placeholder is replaced with an additional
-// @font-face rule + a window.__sipConfig blob so the JS picks the
-// custom family up.
+// @font-face rule + a window.__sipConfig blob carrying the custom family,
+// the renderer preference and the touch key bar's key set.
 func (s *httpServer) renderIndex(data []byte) []byte {
 	out := bytes.NewBuffer(make([]byte, 0, len(data)+512))
 	body := string(data)
 
 	var extra strings.Builder
-	cfg := map[string]string{}
+	cfg := map[string]any{}
 	if s.config.FontPath != "" {
 		family := s.config.FontFamily
 		if family == "" {
@@ -366,6 +366,12 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	}
 	if s.config.Renderer != "" {
 		cfg["renderer"] = s.config.Renderer
+	}
+	if len(s.config.MobileKeys) > 0 {
+		cfg["mobileKeys"] = s.config.MobileKeys
+	}
+	if s.config.DisableMobileKeyBar {
+		cfg["mobileKeyBar"] = false
 	}
 	if len(cfg) > 0 {
 		blob, _ := json.Marshal(cfg)

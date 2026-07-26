@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,5 +41,43 @@ func TestWTURLFromHost(t *testing.T) {
 				t.Fatalf("wtURLFromHost(%q, %q) = %q, want %q", tt.reqHost, tt.wtPort, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRenderIndexMobileKeys checks the touch key bar's key set survives the
+// trip into the page: the JS reads window.__sipConfig.mobileKeys, so the JSON
+// field names are part of the contract, not an implementation detail. The
+// default is no blob at all, which is what makes the bar fall back to its own
+// key set.
+func TestRenderIndexMobileKeys(t *testing.T) {
+	const page = "<head>{{FONT_FACE_EXTRA}}</head>"
+
+	plain := &httpServer{config: Config{}}
+	if got := string(plain.renderIndex([]byte(page))); strings.Contains(got, "__sipConfig") {
+		t.Fatalf("default config injected a blob: %s", got)
+	}
+
+	s := &httpServer{config: Config{
+		MobileKeys: []MobileKey{
+			{Label: "esc", Title: "Escape", Key: "Escape"},
+			{Label: "^C", Key: "c", Ctrl: true},
+			{Label: "ctrl", Mod: "ctrl"},
+		},
+	}}
+	got := string(s.renderIndex([]byte(page)))
+	for _, want := range []string{
+		`"mobileKeys"`,
+		`{"label":"esc","title":"Escape","key":"Escape"}`,
+		`{"label":"^C","key":"c","ctrl":true}`,
+		`{"label":"ctrl","mod":"ctrl"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered index missing %s:\n%s", want, got)
+		}
+	}
+
+	off := &httpServer{config: Config{DisableMobileKeyBar: true}}
+	if got := string(off.renderIndex([]byte(page))); !strings.Contains(got, `"mobileKeyBar":false`) {
+		t.Fatalf("DisableMobileKeyBar did not reach the page: %s", got)
 	}
 }
