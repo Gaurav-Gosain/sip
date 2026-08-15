@@ -132,6 +132,35 @@ type Config struct {
 	// TLSKey path to TLS private key
 	TLSKey string
 
+	// AutoTLS serves HTTPS from a self-signed keypair sip manages for the
+	// user, generating one on first use and reusing it after that. It is
+	// ignored when TLSCert and TLSKey are set.
+	//
+	// It exists because the alternative people actually reached for was
+	// AllowInsecureNoTLS, permanently. Binding a LAN address is what you do
+	// to reach a terminal from a phone, that bind is refused without TLS,
+	// and until now nothing in sip helped with the certificate, so the
+	// documented path ended at "obtain a certificate somehow".
+	//
+	// The certificate signs for itself, so the first visit from any browser
+	// shows a warning. See SelfSignedWarning for what to tell the user, and
+	// say it: a warning nobody was warned about reads as a broken tool.
+	AutoTLS bool
+
+	// CertDir overrides where AutoTLS keeps its keypair. Empty uses
+	// DefaultCertDir.
+	CertDir string
+
+	// CertHosts are extra DNS names and IP addresses AutoTLS puts in the
+	// certificate's SAN. The bind address, the loopback names, the
+	// machine's hostname and its interface addresses are covered already;
+	// this is for a name only some other resolver knows about.
+	CertHosts []string
+
+	// CertValidity is how long an AutoTLS certificate lasts.
+	// 0 means DefaultCertValidity.
+	CertValidity time.Duration
+
 	// Debug enables verbose logging
 	Debug bool
 

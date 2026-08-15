@@ -104,6 +104,9 @@ func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
 }
 
 func (s *httpServer) start(ctx context.Context) error {
+	if err := s.resolveAutoTLS(); err != nil {
+		return err
+	}
 	if err := s.validateConfig(); err != nil {
 		return err
 	}
@@ -252,14 +255,65 @@ func (s *httpServer) start(ctx context.Context) error {
 	}
 }
 
+// tlsRemedy is the second half of every TLS refusal. The refusal itself was
+// already correct; what it lacked was a way out that was not "turn the check
+// off", so that is the option it names first and the insecure one last.
+const tlsRemedy = "set AutoTLS (CLI: --auto-tls) to serve from a self-signed " +
+	"certificate sip generates and manages, or pass your own with --cert/--key, " +
+	"or set AllowInsecureNoTLS to run in cleartext anyway (insecure)"
+
+// resolveAutoTLS points the TLS paths at sip's managed keypair, generating one
+// when there is none, when it has expired, or when it does not cover the
+// address being bound.
+//
+// It runs before validateConfig, so a deployment with AutoTLS set satisfies
+// the non-loopback TLS requirement by having TLS rather than by being excused
+// from it. Nothing here can relax that check.
+func (s *httpServer) resolveAutoTLS() error {
+	if !s.config.AutoTLS || s.mainTLSEnabled() {
+		return nil
+	}
+	cert, created, err := EnsureManagedCert(CertOptions{
+		Dir:      s.config.CertDir,
+		Hosts:    s.config.CertHosts,
+		BindHost: s.config.Host,
+		Validity: s.config.CertValidity,
+	})
+	if err != nil {
+		return fmt.Errorf("auto TLS: %w", err)
+	}
+	s.config.TLSCert = cert.CertFile
+	s.config.TLSKey = cert.KeyFile
+
+	// The certificate is public by definition and naming it is how a user
+	// finds the file to install on a phone. The key's path is left out on
+	// purpose: sip's whole job is putting a terminal on a screen someone
+	// else may be watching or recording, and a private key's location is
+	// not something to volunteer into that.
+	if created {
+		logger.Info("generated a self-signed TLS certificate",
+			"cert", cert.CertFile,
+			"expires", cert.NotAfter.Format(time.RFC3339),
+			"fingerprint", cert.Fingerprint,
+		)
+		logger.Warn("browsers do not trust this certificate yet; the first visit shows a warning. Choose Advanced, then Proceed. Run `sip cert info` for the full explanation")
+	} else {
+		logger.Info("serving TLS from sip's managed certificate",
+			"cert", cert.CertFile,
+			"expires", cert.NotAfter.Format(time.RFC3339),
+		)
+	}
+	return nil
+}
+
 func (s *httpServer) validateConfig() error {
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
 		return fmt.Errorf("TLSCert and TLSKey must be provided together")
 	case s.hasBasicAuth() && !s.mainTLSEnabled() && !s.config.AllowInsecureNoTLS:
-		return fmt.Errorf("basic auth requires TLS; pass --cert/--key, or set AllowInsecureNoTLS to override (insecure)")
+		return fmt.Errorf("basic auth requires TLS; %s", tlsRemedy)
 	case !s.mainTLSEnabled() && !isLoopbackHost(s.config.Host) && !s.config.AllowInsecureNoTLS:
-		return fmt.Errorf("non-loopback listeners require TLS; pass --cert/--key, or set AllowInsecureNoTLS to override (insecure)")
+		return fmt.Errorf("non-loopback listeners require TLS; %s", tlsRemedy)
 	}
 
 	if s.hasBasicAuth() && !s.mainTLSEnabled() && s.config.AllowInsecureNoTLS {
