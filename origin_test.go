@@ -59,19 +59,19 @@ func TestCheckOriginAcceptsOwnHTTPOrigin(t *testing.T) {
 			wantReason: "hostname differs",
 		},
 		{
-			name: "non-default HTTP port is honoured",
+			name:     "non-default HTTP port is honoured",
 			httpPort: "9000",
 			host:     "localhost:9001", origin: "http://localhost:9000", want: true,
 			wantReason: "same host, configured HTTP port",
 		},
 		{
-			name: "old HTTP port is rejected once the port is reconfigured",
+			name:     "old HTTP port is rejected once the port is reconfigured",
 			httpPort: "9000",
 			host:     "localhost:9001", origin: "http://localhost:7681", want: false,
 			wantReason: "not the configured HTTP port",
 		},
 		{
-			name: "proxied https origin on the default port is accepted",
+			name:     "proxied https origin on the default port is accepted",
 			httpPort: "443",
 			host:     "app.example.com:7682", origin: "https://app.example.com", want: true,
 			wantReason: "implicit 443 matches the configured HTTP port",

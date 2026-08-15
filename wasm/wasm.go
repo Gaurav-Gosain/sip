@@ -120,14 +120,14 @@ func (p *Program) Run() (tea.Model, error) {
 	return p.prog.Run()
 }
 
-func (p *Program) Send(msg tea.Msg)              { p.prog.Send(msg) }
-func (p *Program) Quit()                         { p.prog.Quit() }
-func (p *Program) Kill()                         { p.prog.Kill() }
-func (p *Program) Wait()                         { p.prog.Wait() }
-func (p *Program) ReleaseTerminal() error        { return nil }
-func (p *Program) RestoreTerminal() error        { return nil }
-func (p *Program) Println(args ...any)           { p.prog.Println(args...) }
-func (p *Program) Printf(t string, args ...any)  { p.prog.Printf(t, args...) }
+func (p *Program) Send(msg tea.Msg)             { p.prog.Send(msg) }
+func (p *Program) Quit()                        { p.prog.Quit() }
+func (p *Program) Kill()                        { p.prog.Kill() }
+func (p *Program) Wait()                        { p.prog.Wait() }
+func (p *Program) ReleaseTerminal() error       { return nil }
+func (p *Program) RestoreTerminal() error       { return nil }
+func (p *Program) Println(args ...any)          { p.prog.Println(args...) }
+func (p *Program) Printf(t string, args ...any) { p.prog.Printf(t, args...) }
 
 // Run creates a BubbleTea program from the given model, registers the
 // JavaScript bridge functions, and blocks until the program exits.
