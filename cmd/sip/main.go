@@ -94,6 +94,14 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringVar(&keyFile, "key", "", "TLS key file (PEM)")
 	rootCmd.Flags().BoolVar(&allowInsecureNoTLS, "allow-insecure-no-tls", false,
 		"Allow non-loopback bind / basic auth without TLS (insecure; use behind trusted proxy only)")
+	rootCmd.Flags().BoolVar(&autoTLS, "auto-tls", false,
+		"Serve HTTPS from a self-signed certificate sip generates and manages (see `sip cert`)")
+	rootCmd.PersistentFlags().StringVar(&certDir, "cert-dir", "",
+		"Where --auto-tls keeps its keypair (default: sip's directory in your user config dir)")
+	rootCmd.PersistentFlags().StringSliceVar(&certHosts, "cert-host", nil,
+		"Extra DNS name or IP for the --auto-tls certificate (repeatable)")
+	rootCmd.PersistentFlags().IntVar(&certDays, "cert-days", 0,
+		"Days an --auto-tls certificate is valid for (0 = 365; under 14 also keeps Chrome's WebTransport path)")
 	rootCmd.Flags().StringSliceVar(&originPatterns, "origin", nil,
 		"Browser origin allowlist (path.Match glob, repeatable)")
 
@@ -122,6 +130,8 @@ The command to run must be specified after "--".`,
 	// Misc
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
 	rootCmd.Flags().StringVarP(&workDir, "dir", "d", "", "Working directory for the command")
+
+	rootCmd.AddCommand(newCertCmd())
 
 	if err := fang.Execute(
 		context.Background(),
@@ -159,6 +169,10 @@ func runServer(cmdArgs []string) error {
 		password = strings.TrimRight(string(data), "\r\n")
 	}
 
+	// Before the server refuses the bind, since the whole point is to offer
+	// the way out while there is still someone there to take it.
+	maybeOfferTLS()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -168,6 +182,10 @@ func runServer(cmdArgs []string) error {
 		Debug:                 debug,
 		TLSCert:               certFile,
 		TLSKey:                keyFile,
+		AutoTLS:               autoTLS,
+		CertDir:               certDir,
+		CertHosts:             certHosts,
+		CertValidity:          certValidity(),
 		BasicUsername:         basicUser,
 		BasicPassword:         password,
 		AllowInsecureNoTLS:    allowInsecureNoTLS,
@@ -183,7 +201,7 @@ func runServer(cmdArgs []string) error {
 	server := sip.NewServer(config)
 
 	scheme := "http"
-	if certFile != "" {
+	if certFile != "" || autoTLS {
 		scheme = "https"
 	}
 	fmt.Printf("Starting server at %s://%s:%s\n", scheme, host, port)
