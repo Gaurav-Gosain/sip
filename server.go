@@ -424,6 +424,12 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	if len(s.config.MobileKeys) > 0 {
 		cfg["mobileKeys"] = s.config.MobileKeys
 	}
+	if len(s.config.MobileRows) > 0 {
+		cfg["mobileRows"] = s.config.MobileRows
+	}
+	if !s.config.MobilePrefix.IsZero() {
+		cfg["mobilePrefix"] = s.config.MobilePrefix
+	}
 	if s.config.DisableMobileKeyBar {
 		cfg["mobileKeyBar"] = false
 	}

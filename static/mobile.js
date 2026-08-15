@@ -32,22 +32,44 @@
 //
 // options:
 //
-//   keys      the typing half of the bar. Defaults to DEFAULT_KEYS. Each entry
-//             is { label, title, key, ctrl, alt, shift, narrow, id } for a key,
-//             or { label, title, mod: 'ctrl' | 'alt' } for a sticky modifier.
-//             key is a KeyboardEvent key name ('Escape', 'ArrowLeft', 'PageUp')
-//             or a literal character; ctrl, alt and shift are modifiers the
-//             button carries itself, on top of whatever the bar has armed.
-//   actions   the second half, behind a divider and tinted apart: entries of
-//             { label, title, run, id, narrow } whose run() is called inside
-//             the tap gesture. This is where a page puts its own controls, and
-//             where an application puts command chords of its own. Empty by
-//             default, because sip serves arbitrary programs and has no
-//             business guessing at their keymap.
+//   keys      the typing row of the bar. Defaults to DEFAULT_KEYS. Each entry
+//             is { label, title, key, code, ctrl, alt, shift, narrow, id } for
+//             a key, or { label, title, mod: 'ctrl' | 'alt' } for a sticky
+//             modifier. key is a KeyboardEvent key name ('Escape',
+//             'ArrowLeft', 'PageUp') or a literal character; code is the
+//             KeyboardEvent code, unused by the default encoder and passed
+//             through for hosts that encode from a keymap; ctrl, alt and shift
+//             are modifiers the button carries itself, on top of whatever the
+//             bar has armed.
+//   actions   appended to the last row behind a divider and tinted apart:
+//             entries of { label, title, run, id, narrow } whose run() is
+//             called inside the tap gesture. This is where a page puts its own
+//             controls. Empty by default.
+//   rows      full control of the layout, for a key set that has outgrown one
+//             strip: an array of { label, keys, collapsible, id }, drawn top
+//             to bottom, with the typing row conventionally last because it is
+//             the one nearest the thumb that is already on the software
+//             keyboard. Given rows, `keys` is ignored and `actions` still
+//             joins the last row. A collapsible row can be folded away by a
+//             control pinned to the right of the bar, and whether it is folded
+//             is remembered.
+//   prefix    the leader chord this deployment is driven by, as
+//             { key, code, ctrl, alt, shift }: tmux's Ctrl+B, screen's Ctrl+A,
+//             emacs's Ctrl+X. It powers two kinds of button, and without it
+//             both degrade to nothing rather than to something wrong:
+//               { prefix: true }     arms the chord and lights up until the
+//                                    next key goes out, so the second half can
+//                                    be typed on the software keyboard. Left
+//                                    out of the bar when no prefix is set.
+//               { prefixed: true, key: 'c' }
+//                                    one tap sends the leader and then a bare
+//                                    'c'. With no prefix set it sends the key
+//                                    on its own.
 //   keyboardKey  false to leave out the pinned show/hide keyboard key.
 //   keyBar    false to leave the strip out altogether and keep only the
 //             keyboard-aware layout and the sticky modifiers, for a page that
 //             draws touch controls of its own.
+//   storagePrefix  namespace for what the bar remembers. Defaults to 'sip'.
 //
 // It returns a controller with:
 //
@@ -62,6 +84,10 @@
 //                     the armed modifiers folded in. Use one or the other.
 //   .setState(id, state)  mark a bar button '', 'active', 'armed' or 'locked'.
 //                     For an action that has a state of its own.
+//   .prefixPending    whether the leader has been sent and the program is
+//                     waiting for the key that finishes the chord.
+//   .sendPrefix()     send the leader chord. False when none is configured.
+//   .setRowsOpen(bool)  fold or unfold the collapsible rows.
 //   .focusInput()     raise the software keyboard. Must be in a user gesture.
 //   .destroy()
 //
@@ -130,25 +156,42 @@
      * the order is the priority order. Everything in it is a key any terminal
      * program understands; nothing here assumes anything about what is running.
      */
+    // The code and shift fields are not read by encodeKeySpec, which works
+    // from key alone. They are here because a host may substitute an encoder
+    // of its own, and a keymap encoder derives the character from code plus
+    // the shift state rather than from the key name, so a table without them
+    // is unusable at exactly the extension point this file advertises.
     const DEFAULT_KEYS = [
-        { label: 'esc', title: 'Escape', key: 'Escape' },
-        { label: 'tab', title: 'Tab', key: 'Tab' },
+        { label: 'esc', title: 'Escape', key: 'Escape', code: 'Escape' },
+        { label: 'tab', title: 'Tab', key: 'Tab', code: 'Tab' },
         { label: 'ctrl', title: 'Ctrl (tap to arm, tap again to lock)', mod: 'ctrl' },
         { label: 'alt', title: 'Alt (tap to arm, tap again to lock)', mod: 'alt' },
-        { label: '←', title: 'Left', key: 'ArrowLeft', narrow: true },
-        { label: '↓', title: 'Down', key: 'ArrowDown', narrow: true },
-        { label: '↑', title: 'Up', key: 'ArrowUp', narrow: true },
-        { label: '→', title: 'Right', key: 'ArrowRight', narrow: true },
-        { label: '/', title: 'Slash', key: '/', narrow: true },
-        { label: '-', title: 'Minus', key: '-', narrow: true },
-        { label: '|', title: 'Pipe', key: '|', narrow: true },
-        { label: ':', title: 'Colon', key: ':', narrow: true },
+        { label: '←', title: 'Left', key: 'ArrowLeft', code: 'ArrowLeft', narrow: true },
+        { label: '↓', title: 'Down', key: 'ArrowDown', code: 'ArrowDown', narrow: true },
+        { label: '↑', title: 'Up', key: 'ArrowUp', code: 'ArrowUp', narrow: true },
+        { label: '→', title: 'Right', key: 'ArrowRight', code: 'ArrowRight', narrow: true },
+        { label: '/', title: 'Slash', key: '/', code: 'Slash', narrow: true },
+        { label: '-', title: 'Minus', key: '-', code: 'Minus', narrow: true },
+        { label: '|', title: 'Pipe', key: '|', code: 'Backslash', shift: true, narrow: true },
+        { label: ':', title: 'Colon', key: ':', code: 'Semicolon', shift: true, narrow: true },
     ];
 
-    // Pinned to the right of the bar, outside the scroller: the way back to the
-    // software keyboard has to be reachable from wherever the bar is scrolled.
+    // Pinned to the right of the bar, outside the scrollers: the way back to
+    // the software keyboard has to be reachable from wherever any row is
+    // scrolled to.
     const KEYBOARD_KEY = {
         label: 'abc', title: 'Show or hide the software keyboard', keyboard: true,
+    };
+
+    // Pinned above it, and folds the collapsible rows away.
+    //
+    // A second row over a software keyboard costs about three rows of terminal
+    // on a phone, and for a user who only types it is a row they never touch.
+    // Only the rows a deployment marks collapsible fold: the typing row is why
+    // the bar exists at all, and a chord row is still reachable through the
+    // prefix key and the software keyboard.
+    const FOLD_KEY = {
+        label: '▾', title: 'Hide the extra rows', fold: true, narrow: true,
     };
 
     const STYLE = `
@@ -186,12 +229,26 @@ body.sip-touch {
 body.sip-kb-open #sip-keybar {
   padding-bottom: 3px;
 }
-/* The scroller is wrapped so the edge fades can be positioned against
-   something that does not scroll with the buttons. */
-#sip-keybar-wrap {
-  position: relative;
+/* The rows stack, and they stack upwards: the last row declared sits at the
+   bottom, nearest the thumb, and folding a row above it leaves it where it
+   was. A row that moved when another one folded would put the key under the
+   finger somewhere else between one tap and the next. */
+#sip-keybar-rows {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 3px;
+}
+/* Each scroller is wrapped so the edge fades can be positioned against
+   something that does not scroll with the buttons. */
+.sip-keybar-row {
+  position: relative;
+  min-width: 0;
+}
+#sip-keybar.folded .sip-keybar-row.collapsible {
+  display: none;
 }
 /* hidden, not auto: this box is scrolled, but only ever by assigning
    scrollLeft. An overflow: hidden box still honours that, while offering the
@@ -199,7 +256,7 @@ body.sip-kb-open #sip-keybar {
    keyboard-dismissing behaviour to. It also keeps touch-action: none applying
    to the whole bar, since both engines reset the inherited touch-action at an
    element that is scrollable by the user and this one is not. */
-#sip-keybar-scroll {
+.sip-keybar-scroll {
   display: flex;
   align-items: center;
   gap: 3px;
@@ -208,14 +265,14 @@ body.sip-kb-open #sip-keybar {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-#sip-keybar-scroll::-webkit-scrollbar {
+.sip-keybar-scroll::-webkit-scrollbar {
   display: none;
 }
 /* Something is off the edge in that direction. Set on build and on every pan,
    so a bar that overflows says so on the first frame rather than only once it
    has been touched. */
-#sip-keybar-wrap::before,
-#sip-keybar-wrap::after {
+.sip-keybar-row::before,
+.sip-keybar-row::after {
   content: '';
   position: absolute;
   top: 0;
@@ -225,16 +282,16 @@ body.sip-kb-open #sip-keybar {
   opacity: 0;
   transition: opacity 120ms ease;
 }
-#sip-keybar-wrap::before {
+.sip-keybar-row::before {
   left: 0;
   background: linear-gradient(to right, rgba(24, 24, 37, 0.98), rgba(24, 24, 37, 0));
 }
-#sip-keybar-wrap::after {
+.sip-keybar-row::after {
   right: 0;
   background: linear-gradient(to left, rgba(24, 24, 37, 0.98), rgba(24, 24, 37, 0));
 }
-#sip-keybar-wrap.more-left::before,
-#sip-keybar-wrap.more-right::after {
+.sip-keybar-row.more-left::before,
+.sip-keybar-row.more-right::after {
   opacity: 1;
 }
 #sip-keybar .sep {
@@ -287,14 +344,21 @@ body.sip-kb-open #sip-keybar {
 #sip-keybar button.pressed {
   background: #45475a;
 }
-/* Pinned, so it survives however far the bar is scrolled. */
+/* Pinned, so these survive however far any row is scrolled. They stack in the
+   same direction the rows do, so the keyboard key stays on the bottom line
+   next to the typing row whether or not anything above it is folded. */
 #sip-keybar-pin {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 3px;
   padding-left: 4px;
   border-left: 1px solid #45475a;
   touch-action: none;
+}
+#sip-keybar button.fold {
+  font-size: 16px;
 }
 #sip-keybar button.active {
   background: #45475a;
@@ -429,9 +493,16 @@ body.sip-kb-open #sip-keybar {
             this.options = options || {};
             this.enabled = false;
             this.mods = { ctrl: 0, alt: 0 }; // 0 off, 1 armed for one key, 2 locked
+            // The leader chord this deployment is driven by, and whether it is
+            // currently armed. See sendPrefix.
+            this.prefix = this.options.prefix || null;
+            this.prefixPending = false;
             this.inset = 0;
             this.listeners = [];
             this.buttons = new Map(); // id -> button
+            // The bar's rows, top first, each { el, scroll, collapsible }.
+            this.rows = [];
+            this.rowsOpen = true;
             // The frame a flick is being carried on, and the deadline after a
             // gesture within which a keyboard that vanishes is assumed to have
             // been taken rather than dismissed. See installBarTouch and
@@ -439,6 +510,7 @@ body.sip-kb-open #sip-keybar {
             this.glideFrame = 0;
             this.rescueUntil = 0;
             this.encode = typeof host.encodeKey === 'function' ? host.encodeKey : encodeKeySpec;
+            this.storeKey = `${this.options.storagePrefix || 'sip'}.keybar.rows`;
         }
 
         install() {
@@ -496,19 +568,25 @@ body.sip-kb-open #sip-keybar {
          * those would take it away from the key the user is about to press.
          */
         transformInput(text) {
-            if (!this.mods.ctrl && !this.mods.alt) return text;
+            if (!this.mods.ctrl && !this.mods.alt && !this.prefixPending) return text;
             if (typeof text !== 'string' || text.length === 0) return text;
             const mods = { ctrl: this.mods.ctrl > 0, alt: this.mods.alt > 0, shift: false };
 
+            // The same test decides both questions. What counts as a keystroke
+            // for spending an armed modifier is what counts as the key that
+            // finishes a leader chord, and everything else on this path is a
+            // mouse report, a paste or a device-query reply.
             const chars = Array.from(text);
             if (chars.length === 1) {
                 this.consumeOneShot();
+                this.setPrefixPending(false);
                 const ch = mods.ctrl ? ctrlByte(chars[0]) : chars[0];
                 return (mods.alt ? '\x1b' : '') + ch;
             }
             const bare = BARE_CSI.exec(text);
             if (bare) {
                 this.consumeOneShot();
+                this.setPrefixPending(false);
                 return `\x1b[1;${modifierParam(mods)}${bare[1]}`;
             }
             return text;
@@ -521,8 +599,11 @@ body.sip-kb-open #sip-keybar {
          * desktop it costs two property reads.
          */
         wrapKey(e) {
-            if (!this.mods.ctrl && !this.mods.alt) return e;
             if (BARE_MODIFIERS.has(e.key)) return e;
+            // Before the early exit, so a key typed on the software keyboard
+            // clears the leader light whether or not a modifier is armed.
+            if (this.prefixPending) this.setPrefixPending(false);
+            if (!this.mods.ctrl && !this.mods.alt) return e;
             const shim = {
                 key: e.key,
                 code: e.code,
@@ -566,6 +647,46 @@ body.sip-kb-open #sip-keybar {
 
         // --- the bar ---------------------------------------------------------
 
+        /**
+         * The rows to draw, as declared or as inferred from the older
+         * single-row options.
+         *
+         * A deployment that says nothing gets one row of DEFAULT_KEYS, which
+         * is what this file did before rows existed. Whatever the source, the
+         * page's own `actions` join the last row behind a divider, because
+         * that row is the one at thumb height.
+         */
+        resolveRows() {
+            const declared = Array.isArray(this.options.rows) && this.options.rows.length
+                ? this.options.rows
+                : [{ keys: this.options.keys || DEFAULT_KEYS }];
+            const rows = declared
+                .map((row) => ({ ...row, keys: (row.keys || []).filter((s) => this.usable(s)) }))
+                .filter((row) => row.keys.length);
+            const actions = this.options.actions || [];
+            if (actions.length) {
+                const last = rows[rows.length - 1] || { keys: [] };
+                if (!rows.length) rows.push(last);
+                last.keys = last.keys.concat(
+                    [{ sep: true }],
+                    actions.map((s) => ({ ...s, action: true })),
+                );
+            }
+            return rows;
+        }
+
+        /**
+         * Whether a button can do anything here.
+         *
+         * A prefix key with no prefix configured is the one button that would
+         * be a lie: it would light up and arm a chord that is never sent. It
+         * is left out instead, so a key set written for a leader-driven
+         * program degrades to its plain keys rather than to a dead control.
+         */
+        usable(spec) {
+            return !(spec.prefix && !this.prefix);
+        }
+
         buildBar() {
             const bar = document.createElement('div');
             bar.id = 'sip-keybar';
@@ -578,44 +699,21 @@ body.sip-kb-open #sip-keybar {
             // divider, in a 3px gap.
             this.specs = new Map();
 
-            const wrap = document.createElement('div');
-            wrap.id = 'sip-keybar-wrap';
-            const scroll = document.createElement('div');
-            scroll.id = 'sip-keybar-scroll';
+            const rowsEl = document.createElement('div');
+            rowsEl.id = 'sip-keybar-rows';
+            const declared = this.resolveRows();
+            declared.forEach((row, i) => this.buildRow(rowsEl, row, i));
+            bar.appendChild(rowsEl);
 
-            // The buttons are appended flat rather than in group elements: a
-            // wrapper would need display:contents to keep the flex layout, and
-            // a box with no box of its own is exactly the thing screen readers
-            // disagree about. The grouping is carried by the divider, the tint
-            // and the labels.
-            const addGroup = (specs, extraClass) => {
-                specs.forEach((spec) => {
-                    const btn = this.buildButton(spec);
-                    if (extraClass) btn.classList.add(extraClass);
-                    scroll.appendChild(btn);
-                });
-            };
-
-            const keys = this.options.keys || DEFAULT_KEYS;
-            const actions = this.options.actions || [];
-            addGroup(keys);
-            if (actions.length) {
-                const sep = document.createElement('span');
-                sep.className = 'sep';
-                sep.setAttribute('aria-hidden', 'true');
-                scroll.appendChild(sep);
-                addGroup(actions.map((s) => ({ ...s, action: true })), 'action');
+            const pin = document.createElement('div');
+            pin.id = 'sip-keybar-pin';
+            if (this.rows.some((r) => r.collapsible)) {
+                pin.appendChild(this.buildButton(FOLD_KEY));
             }
-
-            wrap.appendChild(scroll);
-            bar.appendChild(wrap);
-
             if (this.options.keyboardKey !== false && this.focusEl()) {
-                const pin = document.createElement('div');
-                pin.id = 'sip-keybar-pin';
                 pin.appendChild(this.buildButton(KEYBOARD_KEY));
-                bar.appendChild(pin);
             }
+            if (pin.childElementCount) bar.appendChild(pin);
 
             // Anything inside the bar that manages to take focus takes the
             // software keyboard down with it, and this fires inside the gesture
@@ -635,29 +733,67 @@ body.sip-kb-open #sip-keybar {
 
             (this.options.container || document.body).appendChild(bar);
             this.bar = bar;
-            this.scroller = scroll;
-            this.scrollWrap = wrap;
             this.installBarTouch();
-            this.on(scroll, 'scroll', () => this.refreshScrollHints(), { passive: true });
-            // A trackpad or a mouse wheel on a touch laptop, where the bar
-            // exists but nothing ever touches it. The box has no scrollbar and
-            // no native scrolling of its own, so this is the only way it moves
-            // without a finger.
-            this.on(scroll, 'wheel', (e) => {
-                const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-                if (!d) return;
-                e.preventDefault();
-                this.panBy(d);
-            }, { passive: false });
             if (typeof ResizeObserver === 'function') {
                 this.barObserver = new ResizeObserver(() => {
                     this.measureBar();
                     this.refreshScrollHints();
                 });
                 this.barObserver.observe(bar);
-                this.barObserver.observe(scroll);
             }
+            for (const row of this.rows) {
+                this.on(row.scroll, 'scroll', () => this.refreshScrollHints(), { passive: true });
+                // A trackpad or a mouse wheel on a touch laptop, where the bar
+                // exists but nothing ever touches it. The box has no scrollbar
+                // and no native scrolling of its own, so this is the only way
+                // it moves without a finger.
+                this.on(row.scroll, 'wheel', (e) => {
+                    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+                    if (!d) return;
+                    e.preventDefault();
+                    this.panBy(row.scroll, d);
+                }, { passive: false });
+                if (this.barObserver) this.barObserver.observe(row.scroll);
+            }
+            this.applyRowsOpen(this.readRowsOpen());
             this.refreshScrollHints();
+        }
+
+        /**
+         * One row: a wrapper the edge fades hang off, and the box that is
+         * panned.
+         *
+         * The buttons are appended flat rather than in group elements: a
+         * wrapper would need display:contents to keep the flex layout, and a
+         * box with no box of its own is exactly the thing screen readers
+         * disagree about. The grouping is carried by the row, the divider, the
+         * tint and the labels.
+         */
+        buildRow(parent, row, index) {
+            const wrap = document.createElement('div');
+            wrap.className = 'sip-keybar-row';
+            if (row.collapsible) wrap.classList.add('collapsible');
+            wrap.setAttribute('role', 'group');
+            wrap.setAttribute('aria-label', row.label || `Row ${index + 1}`);
+
+            const scroll = document.createElement('div');
+            scroll.className = 'sip-keybar-scroll';
+            for (const spec of row.keys) {
+                if (spec.sep) {
+                    const sep = document.createElement('span');
+                    sep.className = 'sep';
+                    sep.setAttribute('aria-hidden', 'true');
+                    scroll.appendChild(sep);
+                    continue;
+                }
+                const btn = this.buildButton(spec);
+                if (spec.action) btn.classList.add('action');
+                scroll.appendChild(btn);
+            }
+
+            wrap.appendChild(scroll);
+            parent.appendChild(wrap);
+            this.rows.push({ el: wrap, scroll, collapsible: !!row.collapsible });
         }
 
         /**
@@ -674,8 +810,11 @@ body.sip-kb-open #sip-keybar {
             btn.title = spec.title || spec.label;
             btn.setAttribute('aria-label', spec.title || spec.label);
             if (spec.narrow) btn.classList.add('narrow');
+            if (spec.fold) btn.classList.add('fold');
             if (spec.mod) this.modButtons[spec.mod] = btn;
             if (spec.keyboard) this.keyboardBtn = btn;
+            if (spec.fold) this.foldBtn = btn;
+            if (spec.prefix) this.prefixBtn = btn;
             if (spec.id) this.buttons.set(spec.id, btn);
             // Nothing in the bar is in the focus order. A button that can be
             // focused is a button that can hold the focus the software keyboard
@@ -752,17 +891,20 @@ body.sip-kb-open #sip-keybar {
                 if (g) return;
                 this.stopGlide();
                 const t = e.changedTouches[0];
-                const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+                const hit = e.target && e.target.closest ? e.target : null;
+                const btn = hit ? hit.closest('button') : null;
+                // The row the finger landed on is the row that pans, so each
+                // strip scrolls on its own. A touch that started on a pinned
+                // key, or on the bar's own padding, is over no row at all and
+                // is a press or nothing.
+                const scroller = hit ? hit.closest('.sip-keybar-scroll') : null;
                 g = {
                     id: t.identifier,
                     x0: t.clientX, y0: t.clientY, x: t.clientX,
-                    anchor: t.clientX, from: this.scroller ? this.scroller.scrollLeft : 0,
+                    anchor: t.clientX, from: scroller ? scroller.scrollLeft : 0,
                     at: performance.now(), v: 0, moved: false,
                     btn, spec: btn ? this.specs.get(btn) : null,
-                    // Only a touch that started over the strip pans it. One that
-                    // started on the pinned key, or on the bar's own padding, is
-                    // a press or nothing.
-                    pan: !!(this.scroller && this.scroller.contains(e.target)),
+                    scroller,
                 };
                 if (btn) btn.classList.add('pressed');
             }, { passive: false });
@@ -778,7 +920,7 @@ body.sip-kb-open #sip-keybar {
                     // where it went down, or crossing the threshold would jump
                     // the strip by the slop.
                     g.anchor = t.clientX;
-                    g.from = this.scroller ? this.scroller.scrollLeft : 0;
+                    g.from = g.scroller ? g.scroller.scrollLeft : 0;
                     if (g.btn) g.btn.classList.remove('pressed');
                 }
                 const now = performance.now();
@@ -790,7 +932,7 @@ body.sip-kb-open #sip-keybar {
                     g.at = now;
                 }
                 g.x = t.clientX;
-                if (g.moved && g.pan) this.panTo(g.from - (t.clientX - g.anchor));
+                if (g.moved && g.scroller) this.panTo(g.scroller, g.from - (t.clientX - g.anchor));
             }, { passive: false });
 
             this.on(bar, 'touchend', (e) => {
@@ -799,8 +941,8 @@ body.sip-kb-open #sip-keybar {
                 const a = release();
                 if (!a.moved) {
                     if (a.spec) this.tapBarKey(a.spec);
-                } else if (a.pan) {
-                    this.glide(-a.v);
+                } else if (a.scroller) {
+                    this.glide(a.scroller, -a.v);
                 }
                 // Inside the gesture, which is the only context in which asking
                 // for focus brings the keyboard back rather than being ignored.
@@ -815,32 +957,38 @@ body.sip-kb-open #sip-keybar {
             this.on(bar, 'touchcancel', () => { release(); }, { passive: true });
         }
 
-        /** Move the strip to an offset, clamped by the box itself. */
-        panTo(left) {
-            if (!this.scroller) return;
-            this.scroller.scrollLeft = left;
+        /** Move a strip to an offset, clamped by the box itself. */
+        panTo(scroller, left) {
+            if (!scroller) return;
+            scroller.scrollLeft = left;
             this.refreshScrollHints();
         }
 
-        panBy(dx) {
-            if (!this.scroller) return;
-            this.scroller.scrollLeft += dx;
+        panBy(scroller, dx) {
+            if (!scroller) return;
+            scroller.scrollLeft += dx;
             this.refreshScrollHints();
         }
 
-        /** Carry a flick on after the finger has gone. v is px per millisecond. */
-        glide(v) {
+        /**
+         * Carry a flick on after the finger has gone. v is px per millisecond.
+         *
+         * One glide at a time across the whole bar: flicking a second row
+         * stops the first, because two strips moving under a stationary finger
+         * is the layout shifting on its own.
+         */
+        glide(scroller, v) {
             this.stopGlide();
-            if (!this.scroller || Math.abs(v) < BAR_GLIDE_MIN_V) return;
+            if (!scroller || Math.abs(v) < BAR_GLIDE_MIN_V) return;
             let last = performance.now();
             const step = (now) => {
                 const dt = Math.min(now - last, 32);
                 last = now;
-                const before = this.scroller.scrollLeft;
-                this.panBy(v * dt);
+                const before = scroller.scrollLeft;
+                this.panBy(scroller, v * dt);
                 // The end of the strip stops the glide: the box clamped what it
                 // was given, so nothing moved.
-                if (this.scroller.scrollLeft === before) return;
+                if (scroller.scrollLeft === before) return;
                 v *= Math.pow(BAR_GLIDE_DECAY, dt / 16);
                 if (Math.abs(v) < BAR_GLIDE_MIN_V) return;
                 this.glideFrame = requestAnimationFrame(step);
@@ -853,14 +1001,53 @@ body.sip-kb-open #sip-keybar {
             this.glideFrame = 0;
         }
 
-        /** Light the edge fade on whichever side has buttons off screen. */
+        /** Light each row's edge fade on whichever side has buttons off screen. */
         refreshScrollHints() {
-            const el = this.scroller;
-            const wrap = this.scrollWrap;
-            if (!el || !wrap) return;
-            const max = el.scrollWidth - el.clientWidth;
-            wrap.classList.toggle('more-left', el.scrollLeft > 2);
-            wrap.classList.toggle('more-right', max > 2 && el.scrollLeft < max - 2);
+            for (const { el, scroll } of this.rows) {
+                const max = scroll.scrollWidth - scroll.clientWidth;
+                el.classList.toggle('more-left', scroll.scrollLeft > 2);
+                el.classList.toggle('more-right', max > 2 && scroll.scrollLeft < max - 2);
+            }
+        }
+
+        // --- folding ----------------------------------------------------------
+
+        /**
+         * Whether the collapsible rows were left open. Anything but the stored
+         * '0' means open, so a corrupt or unreadable value fails towards the
+         * bar the deployment declared rather than towards a hidden one.
+         */
+        readRowsOpen() {
+            try {
+                return localStorage.getItem(this.storeKey) !== '0';
+            } catch (e) {
+                return true; // private mode
+            }
+        }
+
+        setRowsOpen(open) {
+            this.applyRowsOpen(open);
+            try {
+                localStorage.setItem(this.storeKey, open ? '1' : '0');
+            } catch (e) {
+                /* private mode: the fold still works, it is just not remembered */
+            }
+        }
+
+        /** Fold or unfold without recording the answer, for the initial restore. */
+        applyRowsOpen(open) {
+            this.rowsOpen = !!open;
+            if (this.bar) this.bar.classList.toggle('folded', !this.rowsOpen);
+            const btn = this.foldBtn;
+            if (btn) {
+                btn.textContent = this.rowsOpen ? '▾' : '▴';
+                btn.title = this.rowsOpen ? 'Hide the extra rows' : 'Show the extra rows';
+                btn.setAttribute('aria-label', btn.title);
+                btn.setAttribute('aria-expanded', this.rowsOpen ? 'true' : 'false');
+            }
+            // The bar just changed height, and the terminal is sized from it.
+            this.measureBar();
+            this.refreshScrollHints();
         }
 
         measureBar() {
@@ -887,11 +1074,100 @@ body.sip-kb-open #sip-keybar {
                 this.toggleKeyboard();
                 return;
             }
+            if (spec.fold) {
+                this.setRowsOpen(!this.rowsOpen);
+                return;
+            }
             if (typeof spec.run === 'function') {
                 spec.run(this);
                 return;
             }
+            if (spec.prefix) {
+                this.tapPrefix();
+                return;
+            }
+            if (spec.prefixed) {
+                this.pressChord(spec);
+                return;
+            }
             this.pressKey(spec);
+        }
+
+        // --- the leader chord -------------------------------------------------
+
+        /**
+         * Send the configured leader, as a keystroke rather than as bytes.
+         *
+         * It goes through the same encoder every other button uses, so a host
+         * that speaks a protocol of its own encodes the leader in it too
+         * instead of receiving a hand-written control byte that its terminal
+         * would have framed differently.
+         *
+         * Reports whether anything went out, which is false when no prefix is
+         * configured.
+         */
+        sendPrefix() {
+            if (!this.prefix || !this.ready()) return false;
+            const bytes = this.encode(this.prefix, {
+                ctrl: !!this.prefix.ctrl,
+                alt: !!this.prefix.alt,
+                shift: !!this.prefix.shift,
+            });
+            if (!bytes) return false;
+            this.host.send(bytes);
+            return true;
+        }
+
+        /**
+         * The prefix button: send the leader and light up until the next key.
+         *
+         * This is what makes a chord the bar has no button for reachable at
+         * all: tap it, then type the second half on the software keyboard.
+         * The light is a mirror of what the program was told, which is why
+         * tapping it a second time sends a second leader rather than quietly
+         * going dark. Every program with a leader defines what a doubled one
+         * means (tmux and tuios take it as cancel, or as the literal leader
+         * for a nested session); none of them define what happens when the bar
+         * lies about the state.
+         */
+        tapPrefix() {
+            if (!this.prefix) return;
+            // A chord is a fixed sequence, so a locked Ctrl is cleared rather
+            // than folded into it. Ctrl+B then Ctrl+C is a different chord
+            // from Ctrl+B then C, and the user pressed one button.
+            this.clearMods();
+            if (!this.sendPrefix()) return;
+            this.setPrefixPending(!this.prefixPending);
+        }
+
+        setPrefixPending(on) {
+            this.prefixPending = !!on;
+            if (this.prefixBtn) this.prefixBtn.classList.toggle('armed', this.prefixPending);
+        }
+
+        /**
+         * One tap for a whole chord: the leader, then this key on its own.
+         *
+         * The leader is skipped when the user already armed it by hand, so
+         * tapping prefix and then a chord button does not send it twice. That
+         * is safe because the latch is cleared by every key that goes out, so
+         * it can only still be set when nothing at all has been sent since the
+         * tap that set it.
+         *
+         * With no prefix configured this sends the bare key, which is the
+         * honest degradation: the button still means what its label says for a
+         * program that binds the key directly.
+         */
+        pressChord(spec) {
+            if (!this.ready()) return;
+            this.clearMods();
+            if (!this.prefixPending) this.sendPrefix();
+            this.setPrefixPending(false);
+            const bytes = this.encode(
+                { key: spec.key, code: spec.code, shift: !!spec.shift },
+                { ctrl: false, alt: false, shift: !!spec.shift },
+            );
+            if (bytes) this.host.send(bytes);
         }
 
         /**
@@ -909,7 +1185,11 @@ body.sip-kb-open #sip-keybar {
             };
             const bytes = this.encode(spec, mods);
             this.consumeOneShot();
-            if (bytes) this.host.send(bytes);
+            if (!bytes) return;
+            this.host.send(bytes);
+            // A key went to the program, so it has consumed whatever leader
+            // was pending.
+            this.setPrefixPending(false);
         }
 
         // --- the software keyboard -------------------------------------------
@@ -1124,6 +1404,8 @@ body.sip-kb-open #sip-keybar {
             this.listeners = [];
             this.stopGlide();
             this.rescueUntil = 0;
+            this.rows = [];
+            this.prefixPending = false;
             if (this.barObserver) this.barObserver.disconnect();
             if (this.bar) this.bar.remove();
             if (this.styleEl) this.styleEl.remove();
@@ -1138,9 +1420,12 @@ body.sip-kb-open #sip-keybar {
     const INERT = {
         enabled: false,
         mods: { ctrl: 0, alt: 0 },
+        prefixPending: false,
         transformInput: (t) => t,
         wrapKey: (e) => e,
         setState() {},
+        setRowsOpen() {},
+        sendPrefix: () => false,
         focusInput() {},
         destroy() {},
     };

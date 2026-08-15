@@ -224,7 +224,28 @@ type Config struct {
 	// Set it when the program being served has chords worth a button:
 	// sip has no way to know what those are. The bar is only built on a
 	// touch device, so this has no effect on a desktop.
+	//
+	// It is the one-row shorthand for MobileRows, which wins when both are
+	// set.
 	MobileKeys []MobileKey
+
+	// MobileRows lays the touch key bar out in more than one strip, for a
+	// key set that has outgrown a single one. Rows are drawn top to bottom
+	// and the typing row conventionally goes last, nearest the thumb that
+	// is already on the software keyboard.
+	MobileRows []MobileRow
+
+	// MobilePrefix declares the leader chord this deployment is driven by:
+	// tmux's Ctrl+B, screen's Ctrl+A, emacs's Ctrl+X. A phone cannot hold a
+	// modifier while pressing a letter, so without this every binding in a
+	// leader-driven program is unreachable from a touch device, which is
+	// most of what such a program can do.
+	//
+	// It powers two kinds of button, and neither exists without it:
+	// MobileKey.Prefix arms the chord so the second half can be typed on
+	// the software keyboard, and MobileKey.Prefixed sends the leader and a
+	// key together in one tap.
+	MobilePrefix MobilePrefix
 
 	// DisableMobileKeyBar suppresses the touch key bar entirely, for a
 	// program that draws touch controls of its own. The software
@@ -268,9 +289,19 @@ type Config struct {
 // key down while pressing another.
 //
 //	sip.MobileKey{Label: "ctrl", Title: "Ctrl", Mod: "ctrl"}
+//
+// A chord is two buttons or one, and both need MobilePrefix set:
+//
+//	sip.MobileKey{Label: "pfx", Title: "Prefix, then a key", Prefix: true}
+//	sip.MobileKey{Label: "split", Title: "Split the pane", Key: "%", Prefixed: true}
+//
+// A button is a keystroke and nothing more. If the program has no binding for
+// the key, tapping it does what typing that key does, which for an unbound
+// chord is nothing at all. sip cannot know a deployment's keymap, so it never
+// pretends to: a button reports no success it did not have.
 type MobileKey struct {
-	// Label is the text on the button. Keep it short: the bar is a
-	// single strip on a phone screen.
+	// Label is the text on the button. Keep it short: a row is a single
+	// strip on a phone screen.
 	Label string `json:"label"`
 
 	// Title is the tooltip and the accessible name.
@@ -280,6 +311,13 @@ type MobileKey struct {
 	// "Home", "PageUp") or a literal character ("/", "|"). Ignored when
 	// Mod is set.
 	Key string `json:"key,omitempty"`
+
+	// Code is the KeyboardEvent code ("KeyC", "Backslash"). The default
+	// client-side encoder works from Key alone and ignores this; it is
+	// carried for a page that supplies an encoder of its own, since a
+	// keymap encoder derives the character from the code and the shift
+	// state rather than from the key name.
+	Code string `json:"code,omitempty"`
 
 	// Mod makes this a sticky modifier instead of a key: "ctrl" or
 	// "alt".
@@ -292,10 +330,63 @@ type MobileKey struct {
 	Alt   bool `json:"alt,omitempty"`
 	Shift bool `json:"shift,omitempty"`
 
+	// Prefix makes this the leader button: it sends Config.MobilePrefix
+	// and stays lit until the next key goes out, so a chord with no button
+	// of its own can be finished on the software keyboard. The button is
+	// left out of the bar when no prefix is configured, rather than
+	// arming a chord that would never be sent.
+	Prefix bool `json:"prefix,omitempty"`
+
+	// Prefixed sends Config.MobilePrefix and then this key, bare, in one
+	// tap. Sticky modifiers are cleared rather than folded in: a chord is
+	// a fixed sequence and the user pressed one button. With no prefix
+	// configured it sends the key on its own.
+	Prefixed bool `json:"prefixed,omitempty"`
+
 	// Narrow gives the button less horizontal padding, for a
 	// single-character label.
 	Narrow bool `json:"narrow,omitempty"`
+
+	// ID names the button so a page script can mark its state through the
+	// controller's setState.
+	ID string `json:"id,omitempty"`
 }
+
+// MobileRow is one strip of the touch key bar.
+type MobileRow struct {
+	// Label is the row's accessible name.
+	Label string `json:"label,omitempty"`
+
+	// Keys are the buttons, left to right.
+	Keys []MobileKey `json:"keys"`
+
+	// Collapsible lets the user fold this row away with a control pinned
+	// to the right of the bar, and remembers the answer. Two rows over a
+	// software keyboard cost about three rows of terminal on a phone, and
+	// a user who only types never touches the chord row. Leave the typing
+	// row un-collapsible: it is why the bar exists.
+	Collapsible bool `json:"collapsible,omitempty"`
+}
+
+// MobilePrefix is a leader chord: the key held with its modifiers that a
+// program waits on before reading the next key as a command.
+//
+//	tmux, screen:  sip.MobilePrefix{Key: "b", Code: "KeyB", Ctrl: true}
+//	rebound tmux:  sip.MobilePrefix{Key: "a", Code: "KeyA", Ctrl: true}
+//	emacs:         sip.MobilePrefix{Key: "x", Code: "KeyX", Ctrl: true}
+//
+// Zero value means no prefix, which is what a program without a leader wants
+// and what every deployment that predates this field already has.
+type MobilePrefix struct {
+	Key   string `json:"key,omitempty"`
+	Code  string `json:"code,omitempty"`
+	Ctrl  bool   `json:"ctrl,omitempty"`
+	Alt   bool   `json:"alt,omitempty"`
+	Shift bool   `json:"shift,omitempty"`
+}
+
+// IsZero reports whether no prefix chord is configured.
+func (p MobilePrefix) IsZero() bool { return p.Key == "" }
 
 // DefaultConfig returns sensible default configuration.
 func DefaultConfig() Config {

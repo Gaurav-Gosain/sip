@@ -909,6 +909,8 @@
                 keys: Array.isArray(sipConfig.mobileKeys) && sipConfig.mobileKeys.length
                     ? sipConfig.mobileKeys
                     : SipMobile.DEFAULT_KEYS,
+                rows: Array.isArray(sipConfig.mobileRows) ? sipConfig.mobileRows : null,
+                prefix: sipConfig.mobilePrefix || null,
                 actions,
                 keyBar: sipConfig.mobileKeyBar !== false,
             });
