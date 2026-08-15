@@ -806,7 +806,11 @@ body.sip-kb-open #sip-keybar {
                     continue;
                 }
                 const btn = this.buildButton(spec);
-                if (spec.action) btn.classList.add('action');
+                // A chord is not a keystroke into whatever is being typed: it
+                // is a command, and one of them may well close something. The
+                // tint is the cheapest way to say so in a strip this small,
+                // and it is the same one the page's own actions get.
+                if (spec.action || spec.prefix || spec.prefixed) btn.classList.add('action');
                 scroll.appendChild(btn);
             }
 
