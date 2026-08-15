@@ -161,7 +161,7 @@
          * the first place. Off a touch device the call returns its argument.
          */
         send(bytes) {
-            return this.sendMessage(MSG_INPUT, this.client.applyStickyModifiers(bytes));
+            return this.sendMessage(MSG_INPUT, this.client.applyBarState(bytes));
         }
 
         close() {
@@ -383,7 +383,7 @@
             this.settings = this.loadSettings();
             this.fontFamily = sipConfig.fontFamily || FONT_FAMILY;
             // Replaced by the key bar on a touch device, inert everywhere else.
-            this.mobile = { enabled: false, mods: { ctrl: 0, alt: 0 }, transformInput: (t) => t };
+            this.mobile = { enabled: false, mods: { ctrl: 0, alt: 0 }, pending: false, transformInput: (t) => t };
             this.currentTransport = 'unknown';
             this.urls = resolveSipURLs(document.baseURI);
 
@@ -923,15 +923,17 @@
         }
 
         /**
-         * Fold the key bar's armed modifiers into outbound terminal input.
+         * Let the key bar act on outbound terminal input: fold in its armed
+         * modifiers, and let it see the keystroke that finishes a leader chord.
          *
          * Called from SipConnection.send, on every frame of terminal input.
-         * The bar is inert off a touch device and returns early with nothing
-         * armed, so the cost on the common path is two property reads.
+         * Whether there is anything to do is the bar's own question to answer,
+         * because it is the bar that knows what it is holding; asking it costs
+         * two property reads off a touch device.
          */
-        applyStickyModifiers(bytes) {
+        applyBarState(bytes) {
             const m = this.mobile;
-            if (!m.enabled || (!m.mods.ctrl && !m.mods.alt)) return bytes;
+            if (!m.enabled || !m.pending) return bytes;
             const text = this.decoder.decode(bytes);
             const out = m.transformInput(text);
             return out === text ? bytes : this.encoder.encode(out);

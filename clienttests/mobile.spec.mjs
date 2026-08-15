@@ -141,7 +141,7 @@ test.describe('touch key bar (touch viewport)', () => {
     });
     await boot(page);
 
-    const labels = await page.locator('#sip-keybar-scroll button').allTextContents();
+    const labels = await page.locator('.sip-keybar-scroll button').allTextContents();
     expect(labels.slice(0, 2)).toEqual(['esc', '^C']);
     expect(labels).not.toContain('ctrl');
 
@@ -230,7 +230,7 @@ test.describe('touch key bar (touch viewport)', () => {
       document.activeElement === window.sipTerm.webterm.xterm.textarea);
     expect(await focused()).toBe(true);
 
-    const scrollLeft = () => page.evaluate(() => document.getElementById('sip-keybar-scroll').scrollLeft);
+    const scrollLeft = () => page.evaluate(() => document.querySelector('.sip-keybar-scroll').scrollLeft);
     expect(await scrollLeft()).toBe(0);
 
     // Record whether the browser ever handed us a non-cancellable touch event,
@@ -267,5 +267,181 @@ test.describe('touch key bar (touch viewport)', () => {
     expect(await focused()).toBe(true);
     // A flick past a button is not a press of it.
     expect(await wire(page)).toEqual([]);
+  });
+});
+
+// The leader chord, which is the reason the bar can drive tmux, screen, zellij
+// or emacs at all. None of them can be reached from a phone otherwise: their
+// bindings all start with a modifier held while a letter is pressed, and a
+// touch screen cannot hold anything.
+//
+// Every assertion here is a byte at the transport boundary. A chord that lights
+// the button and sends nothing, or sends the leader twice, looks identical from
+// the DOM and is exactly the failure worth catching.
+test.describe('leader chords and rows (touch viewport)', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  // A tmux-shaped deployment, written the way a stranger would write one:
+  // nothing here knows anything about the program on the other end except its
+  // leader and three of its bindings.
+  const TMUX = {
+    mobilePrefix: { key: 'b', code: 'KeyB', ctrl: true },
+    mobileRows: [
+      {
+        label: 'tmux',
+        collapsible: true,
+        keys: [
+          { label: 'pfx', title: 'Prefix, then a key', prefix: true },
+          { label: 'new', title: 'New window', key: 'c', code: 'KeyC', prefixed: true },
+          { label: 'next', title: 'Next window', key: 'n', code: 'KeyN', prefixed: true },
+        ],
+      },
+      {
+        keys: [
+          { label: 'esc', title: 'Escape', key: 'Escape', code: 'Escape' },
+          { label: 'ctrl', title: 'Ctrl', mod: 'ctrl' },
+        ],
+      },
+    ],
+  };
+
+  const withConfig = (page, cfg) => page.addInitScript((c) => { window.__sipConfig = c; }, cfg);
+
+  test('a chord button sends the leader and then the key, bare', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+    await clearWire(page);
+    await tapKey(page, 'new');
+    // Ctrl+B, then a plain c. Not Ctrl+B Ctrl+C, which is a different chord.
+    expect(await wire(page)).toEqual([0x02, 0x63]);
+
+    await clearWire(page);
+    await tapKey(page, 'next');
+    expect(await wire(page)).toEqual([0x02, 0x6e]);
+  });
+
+  test('the prefix button arms the chord for the software keyboard', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+    const pfx = (await keyCentre(page, 'pfx')).btn;
+
+    await clearWire(page);
+    await tapKey(page, 'pfx');
+    expect(await wire(page)).toEqual([0x02]);
+    await expect(pfx).toHaveClass(/armed/);
+
+    // The half of the feature the bar cannot supply buttons for: every other
+    // binding the program has, typed on the keyboard proper.
+    await clearWire(page);
+    await page.keyboard.type('d');
+    await page.waitForTimeout(80);
+    expect(await wire(page)).toEqual([0x64]);
+    await expect(pfx).not.toHaveClass(/armed/);
+  });
+
+  test('arming by hand and then tapping a chord does not send the leader twice', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+    await tapKey(page, 'pfx');
+    await clearWire(page);
+    await tapKey(page, 'new');
+    expect(await wire(page)).toEqual([0x63]);
+    await expect((await keyCentre(page, 'pfx')).btn).not.toHaveClass(/armed/);
+  });
+
+  test('a sticky modifier is cleared by a chord, not folded into it', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+    const ctrl = (await keyCentre(page, 'ctrl')).btn;
+    await tapKey(page, 'ctrl');
+    await expect(ctrl).toHaveClass(/armed/);
+
+    await clearWire(page);
+    await tapKey(page, 'new');
+    // A stuck Ctrl folded in would make this 0x02 0x03: a different chord
+    // from the one on the button, sent by a user who pressed one button.
+    expect(await wire(page)).toEqual([0x02, 0x63]);
+    await expect(ctrl).not.toHaveClass(/armed/);
+  });
+
+  test('with no prefix configured the button is left out and a chord key sends itself', async ({ page }) => {
+    await withConfig(page, { ...TMUX, mobilePrefix: undefined });
+    await boot(page);
+
+    // A button that armed a chord which is never sent would be a lie, so it
+    // is not built. The keys around it still work.
+    await expect(page.locator('#sip-keybar button', { hasText: /^pfx$/ })).toHaveCount(0);
+    await clearWire(page);
+    await tapKey(page, 'new');
+    expect(await wire(page)).toEqual([0x63]);
+  });
+
+  test('rows stack, fold away, and are remembered', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+
+    const rows = page.locator('.sip-keybar-row');
+    await expect(rows).toHaveCount(2);
+    // Declared order is drawn order, and the typing row goes last because it
+    // is the one nearest the thumb already on the keyboard.
+    const first = await rows.nth(0).boundingBox();
+    const second = await rows.nth(1).boundingBox();
+    expect(first.y).toBeLessThan(second.y);
+
+    const barH = () => page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sip-keybar-h')));
+    const open = await barH();
+
+    await tapKey(page, '▾');
+    await expect(rows.nth(0)).toBeHidden();
+    await expect(rows.nth(1)).toBeVisible();
+    // Folding has to give the space back, or it is only hiding the buttons.
+    expect(await barH()).toBeLessThan(open);
+    const pad = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.getElementById('terminal-container')).paddingBottom));
+    expect(pad).toBeCloseTo(await barH(), 0);
+    expect(await page.evaluate(() => localStorage.getItem('sip.keybar.rows'))).toBe('0');
+
+    await boot(page);
+    await expect(page.locator('.sip-keybar-row').nth(0)).toBeHidden();
+    await tapKey(page, '▴');
+    await expect(page.locator('.sip-keybar-row').nth(0)).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('sip.keybar.rows'))).toBe('1');
+  });
+
+  test('each row pans on its own', async ({ page }) => {
+    await withConfig(page, {
+      mobilePrefix: TMUX.mobilePrefix,
+      mobileRows: [
+        { label: 'wide', keys: Array.from({ length: 24 }, (_, i) => ({ label: `a${i}`, key: 'a' })) },
+        { label: 'also wide', keys: Array.from({ length: 24 }, (_, i) => ({ label: `b${i}`, key: 'b' })) },
+      ],
+    });
+    await boot(page);
+
+    const offsets = () => page.evaluate(() =>
+      Array.from(document.querySelectorAll('.sip-keybar-scroll')).map((el) => el.scrollLeft));
+    expect(await offsets()).toEqual([0, 0]);
+
+    const cdp = await page.context().newCDPSession(page);
+    const start = await keyCentre(page, 'b0');
+    const touch = (type, x) => cdp.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: type === 'touchEnd' ? [] : [{ x, y: start.y, id: 1 }],
+    });
+    await touch('touchStart', start.x);
+    for (let i = 1; i <= 10; i++) {
+      await touch('touchMove', start.x - i * 12);
+      await page.waitForTimeout(16);
+    }
+    await touch('touchEnd', start.x - 120);
+    await page.waitForTimeout(400);
+
+    const [top, bottom] = await offsets();
+    expect(bottom).toBeGreaterThan(50);
+    // The row the finger did not touch stayed where it was. One shared
+    // scroller would move both, which puts every key on the other row
+    // somewhere else between one tap and the next.
+    expect(top).toBe(0);
   });
 });

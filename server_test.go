@@ -81,3 +81,49 @@ func TestRenderIndexMobileKeys(t *testing.T) {
 		t.Fatalf("DisableMobileKeyBar did not reach the page: %s", got)
 	}
 }
+
+// TestRenderIndexMobileRowsAndPrefix pins the other half of the same contract.
+// The client reads these field names off window.__sipConfig, so a rename here
+// is a silently dead key bar: the page keeps loading and every chord button
+// stops meaning anything.
+func TestRenderIndexMobileRowsAndPrefix(t *testing.T) {
+	const page = "<head>{{FONT_FACE_EXTRA}}</head>"
+
+	// A deployment driven by a leader, tmux-style, which is the case the
+	// whole feature exists for.
+	s := &httpServer{config: Config{
+		MobilePrefix: MobilePrefix{Key: "b", Code: "KeyB", Ctrl: true},
+		MobileRows: []MobileRow{
+			{
+				Label:       "Windows",
+				Collapsible: true,
+				Keys: []MobileKey{
+					{Label: "pfx", Title: "Prefix", Prefix: true},
+					{Label: "new", Key: "c", Code: "KeyC", Prefixed: true},
+				},
+			},
+			{Keys: []MobileKey{{Label: "esc", Key: "Escape"}}},
+		},
+	}}
+	got := string(s.renderIndex([]byte(page)))
+	for _, want := range []string{
+		`"mobilePrefix":{"key":"b","code":"KeyB","ctrl":true}`,
+		`"mobileRows"`,
+		`"label":"Windows"`,
+		`"collapsible":true`,
+		`{"label":"pfx","title":"Prefix","prefix":true}`,
+		`{"label":"new","key":"c","code":"KeyC","prefixed":true}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered index missing %s:\n%s", want, got)
+		}
+	}
+
+	// No prefix is the zero value and the state every existing deployment
+	// is in. It must not reach the page at all, or the client would build a
+	// prefix button that arms a chord it can never send.
+	none := &httpServer{config: Config{MobileKeys: []MobileKey{{Label: "esc", Key: "Escape"}}}}
+	if got := string(none.renderIndex([]byte(page))); strings.Contains(got, "mobilePrefix") {
+		t.Fatalf("an unset prefix reached the page: %s", got)
+	}
+}

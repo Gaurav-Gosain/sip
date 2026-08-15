@@ -360,6 +360,12 @@ body.sip-kb-open #sip-keybar {
 #sip-keybar button.fold {
   font-size: 16px;
 }
+/* Folded, the pin lies down. Left stacked it would hold the bar at its
+   two-row height and the fold would give no space back, which is the whole
+   reason to fold. */
+#sip-keybar.folded #sip-keybar-pin {
+  flex-direction: row;
+}
 #sip-keybar button.active {
   background: #45475a;
   color: #f9e2af;
@@ -542,6 +548,19 @@ body.sip-kb-open #sip-keybar {
 
         ready() {
             return typeof this.host.isReady === 'function' ? !!this.host.isReady() : true;
+        }
+
+        /**
+         * Whether transformInput has anything to do.
+         *
+         * A host that decodes its outbound bytes to call transformInput needs
+         * a way to skip that on the common path, and this is it. It lives here
+         * rather than in the host because the list of things the bar might be
+         * holding is the bar's to know: the host that re-derived it missed the
+         * leader latch when that was added, and swallowed it silently.
+         */
+        get pending() {
+            return this.mods.ctrl > 0 || this.mods.alt > 0 || this.prefixPending;
         }
 
         focusEl() {
@@ -1421,6 +1440,7 @@ body.sip-kb-open #sip-keybar {
         enabled: false,
         mods: { ctrl: 0, alt: 0 },
         prefixPending: false,
+        pending: false,
         transformInput: (t) => t,
         wrapKey: (e) => e,
         setState() {},
