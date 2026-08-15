@@ -388,6 +388,30 @@ type MobilePrefix struct {
 // IsZero reports whether no prefix chord is configured.
 func (p MobilePrefix) IsZero() bool { return p.Key == "" }
 
+// DefaultMobileKeys returns the key bar's built-in typing row: the keys a phone
+// keyboard does not have, or hides two layers deep, in priority order because
+// whatever comes first is what a narrow phone shows without scrolling.
+//
+// It exists for a deployment that declares MobileRows and wants its own chords
+// above this row rather than instead of it. Leaving both MobileKeys and
+// MobileRows unset gets the same set without naming it.
+func DefaultMobileKeys() []MobileKey {
+	return []MobileKey{
+		{Label: "esc", Title: "Escape", Key: "Escape", Code: "Escape"},
+		{Label: "tab", Title: "Tab", Key: "Tab", Code: "Tab"},
+		{Label: "ctrl", Title: "Ctrl (tap to arm, tap again to lock)", Mod: "ctrl"},
+		{Label: "alt", Title: "Alt (tap to arm, tap again to lock)", Mod: "alt"},
+		{Label: "←", Title: "Left", Key: "ArrowLeft", Code: "ArrowLeft", Narrow: true},
+		{Label: "↓", Title: "Down", Key: "ArrowDown", Code: "ArrowDown", Narrow: true},
+		{Label: "↑", Title: "Up", Key: "ArrowUp", Code: "ArrowUp", Narrow: true},
+		{Label: "→", Title: "Right", Key: "ArrowRight", Code: "ArrowRight", Narrow: true},
+		{Label: "/", Title: "Slash", Key: "/", Code: "Slash", Narrow: true},
+		{Label: "-", Title: "Minus", Key: "-", Code: "Minus", Narrow: true},
+		{Label: "|", Title: "Pipe", Key: "|", Code: "Backslash", Shift: true, Narrow: true},
+		{Label: ":", Title: "Colon", Key: ":", Code: "Semicolon", Shift: true, Narrow: true},
+	}
+}
+
 // DefaultConfig returns sensible default configuration.
 func DefaultConfig() Config {
 	return Config{

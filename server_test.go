@@ -127,3 +127,45 @@ func TestRenderIndexMobileRowsAndPrefix(t *testing.T) {
 		t.Fatalf("an unset prefix reached the page: %s", got)
 	}
 }
+
+// TestDefaultMobileKeysMatchTheClient guards the one duplicated table in the
+// project. The client has its own DEFAULT_KEYS because mobile.js is standalone
+// and installable on a page sip never rendered; the Go copy exists so a
+// deployment declaring MobileRows can put its own chords above the default
+// typing row rather than instead of it. Two copies drift, and the drift is
+// invisible: both halves keep working and quietly disagree about what the bar
+// says.
+func TestDefaultMobileKeysMatchTheClient(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/mobile.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "const DEFAULT_KEYS = [")
+	if start < 0 {
+		t.Fatal("DEFAULT_KEYS is gone from static/mobile.js")
+	}
+	end := strings.Index(body[start:], "];")
+	if end < 0 {
+		t.Fatal("DEFAULT_KEYS is not terminated")
+	}
+	table := body[start : start+end]
+
+	keys := DefaultMobileKeys()
+	if got, want := strings.Count(table, "{ label:"), len(keys); got != want {
+		t.Fatalf("the client table has %d keys, DefaultMobileKeys has %d", got, want)
+	}
+	for _, k := range keys {
+		for _, want := range []string{
+			"label: '" + k.Label + "'",
+			"title: '" + k.Title + "'",
+		} {
+			if !strings.Contains(table, want) {
+				t.Errorf("client DEFAULT_KEYS is missing %s", want)
+			}
+		}
+		if k.Code != "" && !strings.Contains(table, "code: '"+k.Code+"'") {
+			t.Errorf("client DEFAULT_KEYS is missing code: '%s'", k.Code)
+		}
+	}
+}

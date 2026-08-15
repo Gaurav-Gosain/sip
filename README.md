@@ -138,6 +138,8 @@ own flags are never read as sip's.
 | --- | --- |
 | `-H, --host`, `-p, --port` | bind address and HTTP port; WebTransport uses port+1 |
 | `--cert`, `--key` | TLS certificate and key |
+| `--auto-tls` | serve HTTPS from a self-signed certificate sip generates and keeps |
+| `--cert-dir`, `--cert-host`, `--cert-days` | where that certificate lives, what else it signs for, how long it lasts |
 | `--allow-insecure-no-tls` | permit a non-loopback bind, or basic auth, without TLS |
 | `--origin` | browser origin allowlist, a `path.Match` glob, repeatable |
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth; `$SIP_PASSWORD` is also read |
@@ -184,8 +186,10 @@ type Session interface {
 
 `Config` covers the rest: `Host`, `Port`, `ReadOnly`, `MaxConnections`,
 `IdleTimeout`, `AllowOrigins` and `OriginPatterns`, `TLSCert` and `TLSKey`,
-`BasicUsername` and `BasicPassword`, `MaxPasteBytes`, `ResizeThrottle`,
-`MaxWindowDims`, `FontPath` and `FontFamily`, and the three middleware slices.
+`AutoTLS` and its `CertDir`, `CertHosts` and `CertValidity`, `BasicUsername` and
+`BasicPassword`, `MaxPasteBytes`, `ResizeThrottle`, `MaxWindowDims`, `FontPath`
+and `FontFamily`, the touch key bar's `MobileKeys`, `MobileRows` and
+`MobilePrefix`, and the three middleware slices.
 Every field has a working default; `sip.DefaultConfig()` is a complete
 configuration.
 
@@ -227,10 +231,107 @@ button a sticky modifier instead, and `DisableMobileKeyBar` leaves the strip out
 for a program that draws touch controls of its own while keeping the
 keyboard-aware layout.
 
+### Leader chords
+
+tmux, screen, zellij and emacs are all driven by a leader: press Ctrl+B, let go,
+then press a letter. A touch screen cannot hold a modifier while pressing
+another key, so on a phone every one of those bindings is unreachable, which for
+those programs is most of what they can do.
+
+Declare the leader and the chords are buttons:
+
+```go
+sip.Config{
+    MobilePrefix: sip.MobilePrefix{Key: "b", Code: "KeyB", Ctrl: true},
+
+    MobileRows: []sip.MobileRow{{
+        Label:       "tmux",
+        Collapsible: true,
+        Keys: []sip.MobileKey{
+            {Label: "pfx", Title: "Prefix, then a key", Prefix: true},
+            {Label: "new", Title: "New window", Key: "c", Prefixed: true},
+            {Label: "next", Title: "Next window", Key: "n", Prefixed: true},
+            {Label: "split", Title: "Split", Key: "%", Prefixed: true},
+            {Label: "zoom", Title: "Zoom the pane", Key: "z", Prefixed: true},
+            {Label: "detach", Title: "Detach", Key: "d", Prefixed: true},
+        },
+    }, {
+        Label: "keys",
+        Keys:  sip.DefaultMobileKeys(),
+    }},
+}
+```
+
+`MobilePrefix` is whatever your leader is: `Ctrl+A` for a rebound tmux, `Ctrl+X`
+for emacs. A `Prefixed` key is one tap for the whole chord: the leader goes out,
+then the key on its own, with any sticky modifier cleared rather than folded in,
+because Ctrl+B Ctrl+C is a different chord from Ctrl+B C and the user pressed one
+button. The `Prefix` button is for everything you did not give a button to: tap
+it and it lights up, then type the second half on the software keyboard.
+
+Rows are drawn top to bottom and the typing row goes last, nearest the thumb
+that is already on the keyboard. A `Collapsible` row can be folded away by a
+control pinned to the right of the bar, which gives its height back to the
+terminal, and the choice is remembered.
+
+A button is a keystroke and nothing more. If the program has no binding for the
+key, tapping it does exactly what typing that key does, which for an unbound
+chord is nothing at all: sip cannot know your keymap, so it never reports a
+success it did not have. The one case it will not fake is a `Prefix` button with
+no `MobilePrefix` set, which would light up and arm a chord that is never sent;
+that button is left out of the bar, and a `Prefixed` key with no prefix sends
+itself bare.
+
 The floating settings gear is draggable on a desktop and remembers where it was
 left, because it floats over whatever the program is drawing and there is no
 corner that is free of every program. On a phone it is not a floating control at
 all: it moves into the key bar.
+
+## TLS
+
+sip refuses a non-loopback bind without TLS. Binding a LAN address is exactly
+what you do to reach a terminal from your phone, so that refusal is in the
+common path, and until it had an answer the answer people found was
+`--allow-insecure-no-tls`, permanently.
+
+```bash
+sip --host 0.0.0.0 --auto-tls -- bash
+```
+
+That generates a keypair on first use, keeps it in your user config directory,
+and reuses it afterwards. Run it at a terminal without `--auto-tls` and sip
+asks first; run it from a script, a container or a systemd unit and it does not
+ask, because there is nobody to answer, so what those get is the same refusal
+with a message naming the flag. Nothing here turns the requirement off.
+
+```bash
+sip cert            # where it is, what it covers, when it expires, its fingerprint
+sip cert new        # generate or replace one
+sip cert rm         # delete it
+sip cert path       # just the path, for a unit file (--key for the key's)
+```
+
+The certificate signs for itself, so **the first visit from any browser shows a
+warning**: "Your connection is not private", `NET::ERR_CERT_AUTHORITY_INVALID`,
+or "Potential Security Risk Ahead". That is expected. Choose Advanced, then
+Proceed. The connection is encrypted either way; what the browser cannot do is
+vouch for who is on the other end. To stop seeing it, copy the `.crt` to the
+device and install it as a trusted certificate: on Android under Settings,
+Encryption & credentials, Install a certificate, CA certificate; on iOS open the
+file, install the profile, then enable it under About, Certificate Trust
+Settings. `sip cert` prints all of this with the fingerprint to compare against.
+
+It signs for localhost, this machine's hostname and `hostname.local`, and every
+non-loopback address on every interface, so the LAN address you actually type
+works. `--cert-host` adds names only your router's DNS knows. A certificate that
+stops covering the address being bound, which is what a moved DHCP lease looks
+like, is regenerated rather than served into a name mismatch the browser will
+not let you click through.
+
+The private key is written `0600` inside a `0700` directory, and its path is
+printed by `sip cert path --key` and nowhere else. Everywhere else it could
+appear is a terminal that may be shared or recorded, which is the thing sip is
+for.
 
 ## Clipboard
 

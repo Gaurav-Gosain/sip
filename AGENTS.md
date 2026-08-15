@@ -37,6 +37,10 @@ Listener / TLS:
   -p, --port string           Port to listen (default "7681")
       --cert string           TLS cert (PEM)
       --key string            TLS key  (PEM)
+      --auto-tls              Serve HTTPS from sip's own managed self-signed cert
+      --cert-dir string       Where that cert lives (default: user config dir/sip)
+      --cert-host strings     Extra DNS name / IP in its SAN (repeatable)
+      --cert-days int         Its validity (0 = 365)
       --allow-insecure-no-tls Allow non-loopback bind / basic auth without TLS
       --origin strings        Browser origin allowlist (path.Match glob, repeatable)
 
@@ -65,6 +69,7 @@ Misc:
   -h, --help                  Show help
 
 Commands:
+  cert                        Manage the self-signed TLS cert (info/new/rm/path)
   completion                  Generate shell completion scripts
 ```
 
@@ -93,7 +98,8 @@ sip/
 ├── config_context.go       # Defaults + ConfigFromContext helper
 ├── resize_throttle.go      # Coalescing inbound resize messages
 ├── kittygfx.go             # Server-side kitty graphics PNG/JPEG/GIF → RGBA transcoder
-├── cert.go                 # Self-signed cert + cert wrapping for WebTransport
+├── cert.go                 # Ephemeral self-signed cert (WebTransport, loopback)
+├── certstore.go            # The managed on-disk keypair: create/load/remove, SAN discovery
 ├── run_native.go / run_js.go  # Polymorphic NewBrowserProgram/RunBrowser (native or wasm)
 ├── wasm/wasm.go            # //go:build js && wasm — JS bridge (bubbletea_read/write/resize)
 ├── middleware/
@@ -279,14 +285,29 @@ and `?mobile=0` for testing). `terminal.js` wires it up in `setupMobile`.
 
 Three parts:
 
-- **The key bar.** A scrolling strip of the keys a phone keyboard does not have.
-  The key set is the caller's: `installKeyBar(host, { keys, actions })`, with
-  `Config.MobileKeys` and `Config.DisableMobileKeyBar` as the Go-side route into
-  it through `window.__sipConfig`. The default set is Escape, Tab, sticky Ctrl
-  and Alt, the arrows and some punctuation, and it deliberately assumes nothing
-  about what is running: sip serves arbitrary programs and has no business
-  guessing at their keymap. An application with chords worth a button supplies
-  them.
+- **The key bar.** One or more scrolling strips of the keys a phone keyboard
+  does not have. The key set is the caller's: `installKeyBar(host, { keys,
+  rows, actions, prefix })`, with `Config.MobileKeys`, `Config.MobileRows`,
+  `Config.MobilePrefix` and `Config.DisableMobileKeyBar` as the Go-side route
+  into it through `window.__sipConfig`. The default set is Escape, Tab, sticky
+  Ctrl and Alt, the arrows and some punctuation, and it deliberately assumes
+  nothing about what is running: sip serves arbitrary programs and has no
+  business guessing at their keymap. An application with chords worth a button
+  supplies them.
+
+  **The leader chord is why the rows exist.** tmux, screen, zellij and emacs are
+  each driven by one, and a touch screen cannot hold a modifier while pressing
+  a key, so without `MobilePrefix` every binding in such a program is out of
+  reach from a phone. `MobileKey.Prefixed` sends the leader and a key in one
+  tap; `MobileKey.Prefix` arms it and lights up so the second half can be typed
+  on the software keyboard. The latch is cleared by every keystroke that goes
+  out, through `pressKey`, `wrapKey` and `transformInput`, which is what lets a
+  chord button skip a leader the user already sent without the two states ever
+  drifting apart.
+
+  A host that gates `transformInput` on its own idea of what the bar is holding
+  will drop the latch: ask `bar.pending` instead. `terminal.js` did exactly that
+  and swallowed the leader silently, which is what `mobile.spec.mjs` now pins.
 - **The keyboard's share of the window.** `--sip-kb-inset` and `--sip-keybar-h`
   are published on the document element and `terminal.css` pads
   `#terminal-container` with them, which makes webterm's own ResizeObserver
@@ -462,7 +483,11 @@ type Config struct {
     MaxWindowDims                              WindowSize     // default 4096×4096
     InitialResizeTimeout                       time.Duration  // default 10s
     FontPath, FontFamily                       string         // custom font upload
-    MobileKeys                                 []MobileKey    // touch key bar key set
+    AutoTLS                                    bool           // serve from sip's managed cert
+    CertDir, CertHosts, CertValidity                          // where / what for / how long
+    MobileKeys                                 []MobileKey    // touch key bar, one row
+    MobileRows                                 []MobileRow    // touch key bar, many rows
+    MobilePrefix                               MobilePrefix   // the deployment's leader chord
     DisableMobileKeyBar                        bool
     ConnectMiddleware                          []ConnectMiddleware
     SessionMiddleware                          []SessionMiddleware
@@ -544,7 +569,7 @@ the same outbound path a keystroke does.
 
 ### TLS / auth gating
 - Self-signed cert auto-generated for loopback hosts (10-day validity for Chrome's `serverCertificateHashes`)
-- Non-loopback bind requires `--cert`/`--key` OR explicit `--allow-insecure-no-tls`
+- Non-loopback bind requires `--cert`/`--key`, `--auto-tls`, OR explicit `--allow-insecure-no-tls`
 - Basic Auth requires TLS unless `--allow-insecure-no-tls` is set; static assets are auth-gated too
 - Logs a loud warning when running insecure (cleartext credentials, unencrypted PTY traffic)
 
