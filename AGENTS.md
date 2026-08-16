@@ -300,8 +300,12 @@ Four parts:
   each driven by one, and a touch screen cannot hold a modifier while pressing
   a key, so without `MobilePrefix` every binding in such a program is out of
   reach from a phone. `MobileKey.Prefixed` sends the leader and a key in one
-  tap; `MobileKey.Prefix` arms it and lights up so the second half can be typed
-  on the software keyboard. The latch is cleared by every keystroke that goes
+  tap, with the key's own `Ctrl`/`Alt`/`Shift`, because half of what such a
+  program binds is a chord whose second half is itself modified; the bar's
+  sticky modifiers are still cleared rather than folded in, and conflating
+  those two is what made `Prefixed` send a bare key for a release.
+  `MobileKey.Prefix` arms the chord and lights up so the second half can be
+  typed on the software keyboard. The latch is cleared by every keystroke that goes
   out, through `pressKey`, `wrapKey` and `transformInput`, which is what lets a
   chord button skip a leader the user already sent without the two states ever
   drifting apart.
