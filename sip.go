@@ -342,10 +342,16 @@ type MobileKey struct {
 	// arming a chord that would never be sent.
 	Prefix bool `json:"prefix,omitempty"`
 
-	// Prefixed sends Config.MobilePrefix and then this key, bare, in one
-	// tap. Sticky modifiers are cleared rather than folded in: a chord is
-	// a fixed sequence and the user pressed one button. With no prefix
-	// configured it sends the key on its own.
+	// Prefixed sends Config.MobilePrefix and then this key in one tap,
+	// with the Ctrl, Alt and Shift this button declares, so a chord whose
+	// second half is itself modified is still one button:
+	//
+	//	{Label: "prev", Key: "o", Ctrl: true, Prefixed: true}  tmux Ctrl+B Ctrl+O
+	//
+	// The bar's own sticky modifiers are cleared rather than folded in: a
+	// chord is a fixed sequence and the user pressed one button, so a
+	// latched Ctrl must not turn this into a different chord. With no
+	// prefix configured it sends the key on its own.
 	Prefixed bool `json:"prefixed,omitempty"`
 
 	// Narrow gives the button less horizontal padding, for a

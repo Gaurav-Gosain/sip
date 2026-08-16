@@ -62,9 +62,12 @@
 //                                    be typed on the software keyboard. Left
 //                                    out of the bar when no prefix is set.
 //               { prefixed: true, key: 'c' }
-//                                    one tap sends the leader and then a bare
-//                                    'c'. With no prefix set it sends the key
-//                                    on its own.
+//                                    one tap sends the leader and then 'c',
+//                                    with whatever ctrl, alt and shift the
+//                                    entry declares, so a chord whose second
+//                                    half is itself modified is one button.
+//                                    With no prefix set it sends the key on
+//                                    its own.
 //   keyboardKey  false to leave out the pinned show/hide keyboard key.
 //   keyBar    false to leave the strip out altogether and keep only the
 //             keyboard-aware layout and the sticky modifiers, for a page that
@@ -1231,16 +1234,25 @@ body.sip-kb-open #sip-keybar {
          * With no prefix configured this sends the bare key, which is the
          * honest degradation: the button still means what its label says for a
          * program that binds the key directly.
+         *
+         * The modifiers the button declares are its own, and are sent with it.
+         * The bar's armed ones are not: a chord is a fixed sequence and the
+         * user pressed one button, so tmux's Ctrl+B then Ctrl+O has to be
+         * reachable as {key: 'o', ctrl: true} and must not become Ctrl+B then
+         * Ctrl+Ctrl+O because Ctrl happened to be latched. Those are two
+         * different things and only the first is what the button says.
          */
         pressChord(spec) {
             if (!this.ready()) return;
             this.clearMods();
             if (!this.prefixPending) this.sendPrefix();
             this.setPrefixPending(false);
-            const bytes = this.encode(
-                { key: spec.key, code: spec.code, shift: !!spec.shift },
-                { ctrl: false, alt: false, shift: !!spec.shift },
-            );
+            const mods = {
+                ctrl: !!spec.ctrl,
+                alt: !!spec.alt,
+                shift: !!spec.shift,
+            };
+            const bytes = this.encode({ key: spec.key, code: spec.code, ...mods }, mods);
             if (bytes) this.host.send(bytes);
         }
 
