@@ -252,6 +252,11 @@ type Config struct {
 	// keyboard's share of the window is still measured and reserved.
 	DisableMobileKeyBar bool
 
+	// MobileMouse tunes what a finger on the terminal does. The zero
+	// value is the working default; see MobileMouse for what it means and
+	// for the two switches that turn parts of it off.
+	MobileMouse MobileMouse
+
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
 	// + connection-limit middleware are appended after the user chain
 	// so they run innermost (last).
@@ -387,6 +392,69 @@ type MobilePrefix struct {
 
 // IsZero reports whether no prefix chord is configured.
 func (p MobilePrefix) IsZero() bool { return p.Key == "" }
+
+// MobileMouse is what a finger on the terminal does.
+//
+// A touch device has no mouse, and xterm.js's own touch handling stops at
+// turning a pan into wheel reports: a tap, a long press and a press-hold-drag
+// all reach the program as nothing at all. The client fills that in by
+// synthesizing the mouse events the browser would have synthesized, so
+// whatever mouse mode and encoding the program asked for is what it gets:
+//
+//	tap                 press and release button 1, which is how a program
+//	                    is clicked and how the cursor is placed
+//	long press          press and release button 3, the right click
+//	press, hold, drag   press at the origin, motion, release, which is how a
+//	                    split is pulled or a region selected
+//	pan                 wheel reports, as before
+//
+// With the program in no mouse mode at all the same gestures drive xterm's
+// selection instead, so a finger selects text.
+//
+// The zero value is all of it, on, with the defaults below. It costs a desktop
+// nothing: none of it installs without a touch screen.
+type MobileMouse struct {
+	// Disable turns the whole thing off: a finger sends no mouse reports
+	// and the terminal behaves as it did before this existed. For a
+	// program that reads a click as something destructive, or that means
+	// to handle touch itself from a page script.
+	Disable bool
+
+	// DisableTap keeps the drag but stops a tap becoming a click and a
+	// long press becoming a right click.
+	DisableTap bool
+
+	// DisableDrag keeps the tap but stops a press-hold-then-move becoming
+	// a drag, leaving that gesture as a pan.
+	DisableDrag bool
+
+	// LongPressMs is how long a finger must sit still before moving it
+	// off becomes a drag rather than a pan. 0 means the default, 450.
+	LongPressMs int
+
+	// SlopPx is how far a finger may wander in CSS pixels and still count
+	// as sitting still. 0 means the default, 10.
+	SlopPx int
+}
+
+// clientOptions is the browser-side option object, carrying only what differs
+// from the default so that a deployment that configures nothing ships nothing.
+func (m MobileMouse) clientOptions() map[string]any {
+	o := map[string]any{}
+	if m.Disable || m.DisableTap {
+		o["tap"] = false
+	}
+	if m.Disable || m.DisableDrag {
+		o["drag"] = false
+	}
+	if m.LongPressMs > 0 {
+		o["longPressMs"] = m.LongPressMs
+	}
+	if m.SlopPx > 0 {
+		o["slopPx"] = m.SlopPx
+	}
+	return o
+}
 
 // DefaultMobileKeys returns the key bar's built-in typing row: the keys a phone
 // keyboard does not have, or hides two layers deep, in priority order because

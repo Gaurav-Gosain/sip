@@ -121,4 +121,198 @@ test.describe('touch on the terminal', () => {
     expect(nan.length).toBe(0);
     expect(text).not.toContain('NaN');
   });
+
+  test('a tap is a click, and it raises the software keyboard', async ({ page }) => {
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    await cdp.send('Input.synthesizeTapGesture', {
+      x: c.x, y: c.y, duration: 60, tapCount: 1, gestureSourceType: 'touch',
+    });
+    await page.waitForTimeout(200);
+
+    const reports = sgrReports(await wireText(page));
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatchObject({ button: 0, release: false });
+    expect(reports[1]).toMatchObject({ button: 0, release: true });
+    // Press and release at the same cell: that is what a click is.
+    expect(reports[1].col).toBe(reports[0].col);
+    expect(reports[1].row).toBe(reports[0].row);
+
+    // And the tap put the keyboard up, which means focus on xterm's textarea.
+    const focused = await page.evaluate(() =>
+      document.activeElement === window.sipTerm.webterm.xterm.textarea);
+    expect(focused).toBe(true);
+  });
+
+  test('a tap reports the cell it landed on', async ({ page }) => {
+    await boot(page);
+    await enableMouse(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    // Two taps a known number of cells apart must differ by that many cells.
+    const geom = await page.evaluate(() => {
+      const el = document.querySelector('.xterm-screen');
+      const r = el.getBoundingClientRect();
+      const t = window.sipTerm.webterm.xterm;
+      return { left: r.left, top: r.top, w: r.width / t.cols, h: r.height / t.rows };
+    });
+    const at = (col, row) => ({
+      x: Math.round(geom.left + (col + 0.5) * geom.w),
+      y: Math.round(geom.top + (row + 0.5) * geom.h),
+    });
+
+    await clearWire(page);
+    const a = at(3, 2);
+    await cdp.send('Input.synthesizeTapGesture', { ...a, duration: 60, gestureSourceType: 'touch' });
+    await page.waitForTimeout(150);
+    const b = at(9, 7);
+    await cdp.send('Input.synthesizeTapGesture', { ...b, duration: 60, gestureSourceType: 'touch' });
+    await page.waitForTimeout(150);
+
+    const reports = sgrReports(await wireText(page));
+    expect(reports).toHaveLength(4);
+    // SGR coordinates are 1-based, so the first tap is column 4, row 3.
+    expect(reports[0]).toMatchObject({ col: '4', row: '3' });
+    expect(reports[2]).toMatchObject({ col: '10', row: '8' });
+  });
+
+  test('a long press is a right click', async ({ page }) => {
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    // Past the recognizer's 700ms hold delay, and without moving, which is
+    // what tells a long press from the drag below.
+    await cdp.send('Input.synthesizeTapGesture', {
+      x: c.x, y: c.y, duration: 900, gestureSourceType: 'touch',
+    });
+    await page.waitForTimeout(200);
+
+    const reports = sgrReports(await wireText(page));
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatchObject({ button: 2, release: false });
+    expect(reports[1]).toMatchObject({ button: 2, release: true });
+  });
+
+  test('press, hold and drag is a press, motion and release', async ({ page }) => {
+    await boot(page);
+    await enableMouse(page);
+    const cdp = await page.context().newCDPSession(page);
+    const c = await screenCentre(page);
+
+    const touch = (type, x, y) => cdp.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }],
+    });
+
+    await clearWire(page);
+    await touch('touchStart', c.x, c.y);
+    // Sit still long enough for the hold to land. A move before this is a pan.
+    await page.waitForTimeout(600);
+    for (let i = 1; i <= 6; i++) await touch('touchMove', c.x, c.y + i * 12);
+    await touch('touchEnd', c.x, c.y + 72);
+    await page.waitForTimeout(300);
+
+    const reports = sgrReports(await wireText(page));
+    const press = reports[0];
+    const release = reports[reports.length - 1];
+    expect(press).toMatchObject({ button: 0, release: false });
+    expect(release).toMatchObject({ button: 0, release: true });
+
+    // Everything between is motion with button 1 held: 32 is the motion bit.
+    const motion = reports.slice(1, -1);
+    expect(motion.length).toBeGreaterThan(0);
+    expect(motion.every((r) => r.button === 32 && !r.release)).toBe(true);
+
+    // The drag walked down the screen, and no two reports name the same cell:
+    // xterm drops a motion report that repeats the previous one.
+    expect(Number(release.row)).toBeGreaterThan(Number(press.row));
+    const cells = motion.map((r) => `${r.col},${r.row}`);
+    expect(new Set(cells).size).toBe(cells.length);
+
+    // A drag is not also a scroll. Wheel reports (64 up, 65 down) would mean
+    // xterm's own pan handler ran underneath the finger at the same time.
+    expect(reports.some((r) => r.button === 64 || r.button === 65)).toBe(false);
+    // Nor is the touch that ended the drag also a tap.
+    expect(reports.filter((r) => r.button === 0).length).toBe(2);
+  });
+
+  test('a pan is still a scroll', async ({ page }) => {
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    await cdp.send('Input.synthesizeScrollGesture', {
+      x: c.x, y: c.y, xDistance: 0, yDistance: -120,
+      speed: 800, gestureSourceType: 'touch', preventFling: true,
+    });
+    await page.waitForTimeout(300);
+
+    const reports = sgrReports(await wireText(page));
+    expect(reports.length).toBeGreaterThan(0);
+    // Wheel and nothing else: no press, no release, no motion.
+    expect(reports.every((r) => r.button === 64 || r.button === 65)).toBe(true);
+  });
+
+  test('with no mouse mode a hold and drag selects text', async ({ page }) => {
+    await boot(page);
+    // Something to select, and no mouse mode: this is the plain shell case.
+    await page.evaluate(() => window.sipTerm.webterm.xterm.write(
+      '\r\nalpha beta gamma delta epsilon zeta\r\n'));
+    await page.waitForTimeout(150);
+
+    // Find the row the text actually landed on rather than assuming one: the
+    // shell owns the cursor and the prompt is not this test's business.
+    const geom = await page.evaluate(() => {
+      const el = document.querySelector('.xterm-screen');
+      const r = el.getBoundingClientRect();
+      const t = window.sipTerm.webterm.xterm;
+      const buf = t.buffer.active;
+      let row = -1;
+      for (let i = 0; i < t.rows; i++) {
+        const line = buf.getLine(buf.viewportY + i);
+        if (line && line.translateToString(true).includes('alpha')) { row = i; break; }
+      }
+      return { left: r.left, top: r.top, w: r.width / t.cols, h: r.height / t.rows, row };
+    });
+    expect(geom.row).toBeGreaterThanOrEqual(0);
+    const cdp = await page.context().newCDPSession(page);
+    const y = Math.round(geom.top + (geom.row + 0.5) * geom.h);
+    const x0 = Math.round(geom.left + 0.5 * geom.w);
+
+    await clearWire(page);
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart', touchPoints: [{ x: x0, y, id: 1 }],
+    });
+    await page.waitForTimeout(600);
+    for (let i = 1; i <= 10; i++) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove', touchPoints: [{ x: Math.round(x0 + i * geom.w), y, id: 1 }],
+      });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(200);
+
+    const selection = await page.evaluate(() => window.sipTerm.webterm.xterm.getSelection());
+    expect(selection.trim().length).toBeGreaterThan(0);
+    expect('alpha beta gamma delta epsilon zeta').toContain(selection.trim());
+    // And a program that asked for no mouse reports got none.
+    expect(await wireText(page)).toBe('');
+  });
 });
+
+test.describe('touch on the terminal (no touch screen)', () => {
+  test('installs nothing on a desktop', async ({ page }) => {
+    await boot(page);
+    expect(await page.evaluate(() => window.sipTerm.touchMouse.enabled)).toBe(false);
+  });
+});
+

@@ -920,6 +920,35 @@
             if (!this.mobile.enabled) {
                 SipMobile.installDraggable(toggle, { storageKey: 'sip-web-gear-pos', margin: 8 });
             }
+
+            this.setupTouchMouse();
+        }
+
+        /**
+         * What a finger on the terminal itself does.
+         *
+         * Separate from the key bar, and installed even when the bar is turned
+         * off, because the two answer different questions: the bar is the keys
+         * a phone keyboard is missing, this is the mouse a phone does not have.
+         * A deployment that wants neither says so twice.
+         *
+         * The screen element is looked up from the DOM rather than from
+         * xterm's internals. .xterm-screen is the element xterm pointed its own
+         * gesture recognizer at and the element its mouse handlers measure
+         * against, and it is part of xterm's documented DOM, which _core is
+         * not.
+         */
+        setupTouchMouse() {
+            const el = this.webterm && this.webterm.xterm.element;
+            const screen = el ? el.querySelector('.xterm-screen') : null;
+            const opts = sipConfig.mobileMouse || {};
+            this.touchMouse = SipMobile.installTouchMouse({
+                screen,
+                // A tap means the user wants to type here, so the software
+                // keyboard comes up with it. The bar owns that: it knows what
+                // is holding the keyboard and what it is waiting on.
+                onTap: () => this.mobile.focusInput(),
+            }, opts);
         }
 
         /**

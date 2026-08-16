@@ -433,6 +433,9 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	if s.config.DisableMobileKeyBar {
 		cfg["mobileKeyBar"] = false
 	}
+	if mouse := s.config.MobileMouse.clientOptions(); len(mouse) > 0 {
+		cfg["mobileMouse"] = mouse
+	}
 	if len(cfg) > 0 {
 		blob, _ := json.Marshal(cfg)
 		extra.WriteString("<script>window.__sipConfig=")
