@@ -294,6 +294,7 @@ test.describe('leader chords and rows (touch viewport)', () => {
           { label: 'pfx', title: 'Prefix, then a key', prefix: true },
           { label: 'new', title: 'New window', key: 'c', code: 'KeyC', prefixed: true },
           { label: 'next', title: 'Next window', key: 'n', code: 'KeyN', prefixed: true },
+          { label: 'prev', title: 'Last pane', key: 'o', code: 'KeyO', ctrl: true, prefixed: true },
         ],
       },
       {
@@ -318,6 +319,17 @@ test.describe('leader chords and rows (touch viewport)', () => {
     await clearWire(page);
     await tapKey(page, 'next');
     expect(await wire(page)).toEqual([0x02, 0x6e]);
+  });
+
+  test('a chord button carries the modifiers it declares', async ({ page }) => {
+    await withConfig(page, TMUX);
+    await boot(page);
+    await clearWire(page);
+    await tapKey(page, 'prev');
+    // Ctrl+B, then Ctrl+O. A chord whose second half is itself modified is
+    // half of what a leader-driven program binds, and a button that dropped
+    // the Ctrl would send Ctrl+B O, which is a different binding or none.
+    expect(await wire(page)).toEqual([0x02, 0x0f]);
   });
 
   test('the prefix button arms the chord for the software keyboard', async ({ page }) => {

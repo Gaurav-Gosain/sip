@@ -62,9 +62,12 @@
 //                                    be typed on the software keyboard. Left
 //                                    out of the bar when no prefix is set.
 //               { prefixed: true, key: 'c' }
-//                                    one tap sends the leader and then a bare
-//                                    'c'. With no prefix set it sends the key
-//                                    on its own.
+//                                    one tap sends the leader and then 'c',
+//                                    with whatever ctrl, alt and shift the
+//                                    entry declares, so a chord whose second
+//                                    half is itself modified is one button.
+//                                    With no prefix set it sends the key on
+//                                    its own.
 //   keyboardKey  false to leave out the pinned show/hide keyboard key.
 //   keyBar    false to leave the strip out altogether and keep only the
 //             keyboard-aware layout and the sticky modifiers, for a page that
@@ -106,6 +109,40 @@
 //
 // Body classes for page styling: sip-touch while the bar is up, sip-kb-open
 // while the software keyboard is open.
+//
+// ---------------------------------------------------------------------------
+// installTouchMouse(host, options)
+// ---------------------------------------------------------------------------
+//
+// The other half of touch: what a finger on the terminal itself does. See the
+// long comment above the TouchMouse class for why none of it works out of the
+// box and why this is the layer that fixes it.
+//
+// host provides:
+//
+//   screen        the element the terminal is drawn on. For xterm.js that is
+//                 .xterm-screen, which is the element its gesture recognizer
+//                 was pointed at and the element its mouse handlers measure
+//                 against. Without one nothing installs.
+//   onTap()       optional. Called inside the tap gesture, before the click
+//                 goes out, for a page that wants to raise the software
+//                 keyboard when the terminal is tapped.
+//
+// options:
+//
+//   tap       false to stop a tap becoming a click and a long press becoming
+//             a right click. Default true.
+//   drag      false to stop press-hold-then-move becoming a mouse drag.
+//             Default true.
+//   longPressMs  how long a finger must sit still before a move off it is a
+//             drag rather than a pan. Default 450.
+//   slopPx    how far a finger may wander and still count as still. Default
+//             10 CSS pixels.
+//
+// It returns a controller with:
+//
+//   .enabled      whether it installed at all (touch devices only).
+//   .destroy()
 (function () {
     'use strict';
 
@@ -141,6 +178,23 @@
     // Small enough that moving it feels immediate, large enough that a click
     // with an unsteady hand is still a click.
     const DRAG_SLOP_PX = 4;
+
+    // How long a finger has to sit still on the terminal before moving it off
+    // becomes a mouse drag rather than a pan. Long enough that a swipe started
+    // from a standstill still scrolls, short enough that holding for a drag
+    // does not feel like waiting.
+    const TOUCH_HOLD_MS = 450;
+
+    // And how far it may wander while doing it. A finger is not a mouse: some
+    // travel is unavoidable and none of it is meant.
+    const TOUCH_SLOP_PX = 10;
+
+    // The events xterm.js's gesture recognizer dispatches on its screen
+    // element. They are non-bubbling CustomEvents, so the only way for anyone
+    // else on the page to see one is an ancestor's capture listener.
+    const GESTURE_CHANGE = '-xterm-gesturechange';
+    const GESTURE_TAP = '-xterm-gesturetap';
+    const GESTURE_CONTEXT_MENU = '-xterm-gesturecontextmenu';
 
     // Keys that carry no input of their own, so pressing one must not consume
     // an armed one-shot modifier.
@@ -1180,16 +1234,25 @@ body.sip-kb-open #sip-keybar {
          * With no prefix configured this sends the bare key, which is the
          * honest degradation: the button still means what its label says for a
          * program that binds the key directly.
+         *
+         * The modifiers the button declares are its own, and are sent with it.
+         * The bar's armed ones are not: a chord is a fixed sequence and the
+         * user pressed one button, so tmux's Ctrl+B then Ctrl+O has to be
+         * reachable as {key: 'o', ctrl: true} and must not become Ctrl+B then
+         * Ctrl+Ctrl+O because Ctrl happened to be latched. Those are two
+         * different things and only the first is what the button says.
          */
         pressChord(spec) {
             if (!this.ready()) return;
             this.clearMods();
             if (!this.prefixPending) this.sendPrefix();
             this.setPrefixPending(false);
-            const bytes = this.encode(
-                { key: spec.key, code: spec.code, shift: !!spec.shift },
-                { ctrl: false, alt: false, shift: !!spec.shift },
-            );
+            const mods = {
+                ctrl: !!spec.ctrl,
+                alt: !!spec.alt,
+                shift: !!spec.shift,
+            };
+            const bytes = this.encode({ key: spec.key, code: spec.code, ...mods }, mods);
             if (bytes) this.host.send(bytes);
         }
 
@@ -1440,6 +1503,315 @@ body.sip-kb-open #sip-keybar {
     }
 
     /** The no-op returned on a desktop, so the caller needs no null checks. */
+    // --- a finger on the terminal ---------------------------------------------
+
+    /**
+     * Make a finger on the terminal act like a mouse.
+     *
+     * Out of the box it does not, and the reason is worth writing down because
+     * nothing about it is visible from the outside.
+     *
+     * xterm.js recognizes touch with a Gesture class inherited from VS Code.
+     * It registers touchstart and touchmove on the *document* with
+     * {passive:false} and ends every handler with preventDefault() followed by
+     * stopPropagation(). The first half means the browser never synthesizes
+     * the compatibility mousedown / mouseup / click a tap normally produces;
+     * the second means the touch events themselves never reach the window's
+     * bubble phase. So a page sitting on top of xterm sees nothing at all: tap
+     * to focus, tap to place the cursor, drag to select, long press and any
+     * press-motion-release gesture are all dead, and a program in mouse mode
+     * gets zero bytes for any of them.
+     *
+     * What the recognizer does produce is five CustomEvents on the screen
+     * element, and xterm subscribes to two of them: gesturestart and
+     * gesturechange, which is how a pan becomes wheel reports. gesturetap and
+     * gesturecontextmenu are dispatched to the same element and dropped on the
+     * floor. That is most of the fix, and it needs no new gesture recognition:
+     * a tap is a click and a long press is a right click.
+     *
+     * The rest is one gesture the recognizer has no event for, because a
+     * press, a hold, and then a move is a pan as far as it is concerned. It is
+     * how a finger drags a scrollbar, pulls a split, moves a window or selects
+     * a region, and nothing else on a phone can do it, so it is recognized
+     * here: hold still for TOUCH_HOLD_MS and the pan you would have got
+     * becomes a press at the origin, motion, and a release.
+     *
+     * Everything is expressed as a MouseEvent dispatched at the screen
+     * element, never as bytes. That is deliberate. xterm already owns the
+     * encoding, and there is more of it than a touch layer has any business
+     * reimplementing: which of X10, VT200, urxvt, SGR and SGR-pixels the
+     * program asked for, whether it wants motion at all, whether the report is
+     * suppressed because the user is holding the modifier that forces
+     * selection, and the per-cell deduplication of motion. Synthesizing the
+     * event a mouse would have produced gets all of it, and gets the right
+     * behaviour for a program in no mouse mode at all for free: the same
+     * press-hold-drag runs xterm's selection service instead, which is how a
+     * finger selects text.
+     *
+     * The listeners go on the window in the capture phase. The gesture events
+     * are dispatched *at* the screen element, and at the target itself capture
+     * and bubble listeners run in registration order, so a capture listener
+     * added to the screen element would still run after xterm's own, which
+     * consumes the event with stopPropagation. An ancestor's capture listener
+     * runs before the target's whatever the order of registration, and the
+     * events do not bubble, so capture is also the only phase in which they
+     * are visible from outside at all.
+     */
+    class TouchMouse {
+        constructor(host, options) {
+            const o = options || {};
+            this.host = host;
+            this.screen = host.screen;
+            this.tap = o.tap !== false;
+            this.drag = o.drag !== false;
+            this.holdMs = positive(o.longPressMs, TOUCH_HOLD_MS);
+            this.slop = positive(o.slopPx, TOUCH_SLOP_PX);
+            this.off = [];
+            this.timer = 0;
+            // The last place a finger was actually seen, in viewport pixels.
+            this.anchor = null;
+            // The touch being tracked, or null.
+            this.press = null;
+            // Set once a touch has become a drag, and cleared by the next
+            // touchstart: everything the recognizer says about that touch
+            // afterwards, including the tap it thinks ended it and the inertia
+            // it thinks follows it, belongs to the drag and is not repeated.
+            this.claimed = false;
+        }
+
+        on(target, type, fn, opts) {
+            target.addEventListener(type, fn, opts);
+            this.off.push(() => target.removeEventListener(type, fn, opts));
+        }
+
+        install() {
+            this.on(window, GESTURE_CHANGE, (e) => this.onChange(e), true);
+            if (this.tap) {
+                this.on(window, GESTURE_TAP, (e) => this.onTap(e, 0), true);
+                this.on(window, GESTURE_CONTEXT_MENU, (e) => this.onTap(e, 2), true);
+            }
+            if (this.drag) {
+                const opts = { capture: true, passive: true };
+                this.on(this.screen, 'touchstart', (e) => this.onTouchStart(e), opts);
+                this.on(this.screen, 'touchmove', (e) => this.onTouchMove(e), opts);
+                this.on(this.screen, 'touchend', (e) => this.onTouchEnd(e), opts);
+                this.on(this.screen, 'touchcancel', (e) => this.onTouchEnd(e), opts);
+            }
+            this.enabled = true;
+            return this;
+        }
+
+        destroy() {
+            this.clearTimer();
+            this.off.forEach((fn) => fn());
+            this.off = [];
+            this.enabled = false;
+        }
+
+        /** Whether an event landed on the terminal this instance is watching. */
+        owns(e) {
+            const t = e.target;
+            return t === this.screen || (t instanceof Node && this.screen.contains(t));
+        }
+
+        // --- the coordinates an inertial scroll forgets -----------------------
+
+        /**
+         * Repair a gesturechange that carries no coordinates, and drop it if
+         * the drag already spoke for this touch.
+         *
+         * This is a live data-corruption bug in xterm.js, not a nicety.
+         * Gesture._inertia builds its CHANGE events out of translationX and
+         * translationY alone; unlike the ones touchmove builds, they carry no
+         * pageX/pageY and no clientX/clientY. xterm's own handler passes them
+         * to getMouseReportCoords, which subtracts the element's rect from an
+         * undefined clientX and returns {col: NaN, row: NaN} — an object, so
+         * truthy, so the encoder ships it. In mouse mode every flick therefore
+         * types `\x1b[<65;NaN;NaNM` into the program: measured at 489 of 534
+         * reports over three flings, which fills a shell with NaN;NaNMaN;NaNM.
+         *
+         * The last place a finger was actually seen is the honest answer for
+         * where the scroll it threw is happening, so that is what is filled
+         * in. With no such place — which should not happen, since inertia only
+         * follows a real touch — the event is dropped rather than guessed at.
+         * The assignment is checked rather than assumed, because a future
+         * bundle that dispatched a real MouseEvent here would have read-only
+         * coordinates and this file is strict-mode.
+         */
+        onChange(e) {
+            if (!this.owns(e)) return;
+            if (this.claimed || (this.press && this.press.held)) {
+                // The finger is dragging, not panning. Scrolling underneath it
+                // as well would move the thing being dragged out from under it.
+                e.stopImmediatePropagation();
+                return;
+            }
+            if (isFiniteNum(e.clientX) && isFiniteNum(e.clientY)) {
+                this.anchor = { x: e.clientX, y: e.clientY };
+                return;
+            }
+            if (!this.anchor || !fillCoords(e, this.anchor)) e.stopImmediatePropagation();
+        }
+
+        // --- tap, long press --------------------------------------------------
+
+        /** A recognized tap or long press, as a press and release of button. */
+        onTap(e, button) {
+            if (!this.owns(e) || this.claimed) return;
+            const p = this.pointOf(e);
+            if (!p) return;
+            this.mouse('mousedown', p, button, button === 2 ? 2 : 1);
+            this.mouse('mouseup', p, button, 0);
+            // A tap on a terminal means "I want to type here". The recognizer
+            // dispatches this from its touchend handler, so this call is still
+            // inside the user gesture a software keyboard needs.
+            if (button === 0 && this.host.onTap) this.host.onTap();
+        }
+
+        /** Where a gesture event happened, in viewport pixels. */
+        pointOf(e) {
+            if (!isFiniteNum(e.pageX) || !isFiniteNum(e.pageY)) return this.anchor;
+            return {
+                x: e.pageX - (window.scrollX || 0),
+                y: e.pageY - (window.scrollY || 0),
+            };
+        }
+
+        // --- press, hold, drag ------------------------------------------------
+
+        onTouchStart(e) {
+            // A second finger arriving mid-drag ends it rather than leaving the
+            // program holding a button down forever.
+            this.release();
+            this.claimed = false;
+            this.clearTimer();
+            this.press = null;
+            const t = e.touches.length === 1 ? e.touches[0] : null;
+            if (!t) return;
+            this.anchor = { x: t.clientX, y: t.clientY };
+            this.press = {
+                id: t.identifier,
+                x: t.clientX,
+                y: t.clientY,
+                held: false,
+                dragging: false,
+            };
+            this.timer = setTimeout(() => {
+                this.timer = 0;
+                if (this.press) this.press.held = true;
+            }, this.holdMs);
+        }
+
+        onTouchMove(e) {
+            const p = this.press;
+            const t = touchById(e.touches, p);
+            if (!t) return;
+            const at = { x: t.clientX, y: t.clientY };
+            this.anchor = at;
+            const far = Math.hypot(at.x - p.x, at.y - p.y) > this.slop;
+            if (p.dragging) {
+                this.mouse('mousemove', at, 0, 1);
+                return;
+            }
+            if (!p.held) {
+                // Moved before the hold landed, so this is a pan and xterm's
+                // own handler is what turns it into scrollback.
+                if (far) {
+                    this.clearTimer();
+                    this.press = null;
+                }
+                return;
+            }
+            if (!far) return;
+            p.dragging = true;
+            this.claimed = true;
+            // The press belongs where the finger went down, not where it had
+            // got to by the time the move crossed the slop: that is the cell
+            // the user aimed at.
+            this.mouse('mousedown', { x: p.x, y: p.y }, 0, 1);
+            this.mouse('mousemove', at, 0, 1);
+        }
+
+        onTouchEnd(e) {
+            const p = this.press;
+            // Another finger lifting says nothing about the one being tracked.
+            const t = touchById(e.changedTouches, p);
+            if (!t) return;
+            this.clearTimer();
+            this.anchor = { x: t.clientX, y: t.clientY };
+            this.release();
+        }
+
+        /** End a drag in progress, if there is one. */
+        release() {
+            const p = this.press;
+            this.press = null;
+            if (!p || !p.dragging || !this.anchor) return;
+            this.mouse('mouseup', this.anchor, 0, 0);
+        }
+
+        clearTimer() {
+            if (!this.timer) return;
+            clearTimeout(this.timer);
+            this.timer = 0;
+        }
+
+        mouse(type, p, button, buttons) {
+            this.screen.dispatchEvent(new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                detail: 1,
+                clientX: p.x,
+                clientY: p.y,
+                screenX: p.x,
+                screenY: p.y,
+                button,
+                buttons,
+            }));
+        }
+    }
+
+    function isFiniteNum(v) {
+        return typeof v === 'number' && isFinite(v);
+    }
+
+    function positive(v, fallback) {
+        return typeof v === 'number' && isFinite(v) && v > 0 ? v : fallback;
+    }
+
+    /** The tracked touch in a TouchList, or null. */
+    function touchById(list, press) {
+        if (!press || !list) return null;
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].identifier === press.id) return list[i];
+        }
+        return null;
+    }
+
+    /** Give an event a position it was dispatched without. Reports success. */
+    function fillCoords(e, at) {
+        try {
+            e.clientX = at.x;
+            e.clientY = at.y;
+            e.pageX = at.x + (window.scrollX || 0);
+            e.pageY = at.y + (window.scrollY || 0);
+        } catch (err) {
+            return false;
+        }
+        return e.clientX === at.x && e.clientY === at.y;
+    }
+
+    const INERT_TOUCH = {
+        enabled: false,
+        destroy() {},
+    };
+
+    function installTouchMouse(host, options) {
+        if (!host || !host.screen || !detectTouch()) return INERT_TOUCH;
+        return new TouchMouse(host, options).install();
+    }
+
     const INERT = {
         enabled: false,
         mods: { ctrl: 0, alt: 0 },
@@ -1612,6 +1984,7 @@ body.sip-kb-open #sip-keybar {
         encodeKeySpec,
         installDraggable,
         installKeyBar,
+        installTouchMouse,
         pickFontSize,
     };
 })();

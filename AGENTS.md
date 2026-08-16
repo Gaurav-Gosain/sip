@@ -113,7 +113,8 @@ sip/
 │   ├── index.html          # Loads webterm.js + mobile.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
 │   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal (settings, status)
 │   ├── mobile.js           # Classic script: the touch key bar, the keyboard-aware
-│   │                       # layout and installDraggable. Publishes window.SipMobile
+│   │                       # layout, the touch mouse layer and installDraggable.
+│   │                       # Publishes window.SipMobile
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
 │   ├── webterm.js          # Vendored webterm standalone (~835 KB): xterm.js, its addons,
 │   │                       # the kitty overlay, the clipboard layer and the width overrides
@@ -283,7 +284,7 @@ It imports nothing, injects its own styles and builds its own DOM, and it is
 installed only on a touch device (`detectTouch`, overridable with `?mobile=1`
 and `?mobile=0` for testing). `terminal.js` wires it up in `setupMobile`.
 
-Three parts:
+Four parts:
 
 - **The key bar.** One or more scrolling strips of the keys a phone keyboard
   does not have. The key set is the caller's: `installKeyBar(host, { keys,
@@ -299,8 +300,12 @@ Three parts:
   each driven by one, and a touch screen cannot hold a modifier while pressing
   a key, so without `MobilePrefix` every binding in such a program is out of
   reach from a phone. `MobileKey.Prefixed` sends the leader and a key in one
-  tap; `MobileKey.Prefix` arms it and lights up so the second half can be typed
-  on the software keyboard. The latch is cleared by every keystroke that goes
+  tap, with the key's own `Ctrl`/`Alt`/`Shift`, because half of what such a
+  program binds is a chord whose second half is itself modified; the bar's
+  sticky modifiers are still cleared rather than folded in, and conflating
+  those two is what made `Prefixed` send a bare key for a release.
+  `MobileKey.Prefix` arms the chord and lights up so the second half can be
+  typed on the software keyboard. The latch is cleared by every keystroke that goes
   out, through `pressKey`, `wrapKey` and `transformInput`, which is what lets a
   chord button skip a leader the user already sent without the two states ever
   drifting apart.
@@ -315,9 +320,82 @@ Three parts:
   API (Chromium on Android) and the visualViewport difference (Safari on iOS),
   because no one browser has both and a browser that resized the layout itself
   reports zero on both. A bad measurement costs space, never layout.
+- **The mouse a phone does not have.** `installTouchMouse(host, options)`, wired
+  up in `setupTouchMouse`, with `Config.MobileMouse` as the Go-side route in.
+  Its own section below, because none of it is obvious.
 - **`installDraggable(el, opts)`.** Independent of the rest. It makes one
   fixed-position control draggable and remembers where it was left. sip uses it
   for the settings gear, which floats over whatever the program is drawing.
+
+#### A finger on the terminal
+
+xterm.js recognizes touch with a `Gesture` class inherited from VS Code, and
+that class is why nothing works. It registers `touchstart` and `touchmove` on
+the **document** with `{passive:false}` and ends every handler with
+`preventDefault()` then `stopPropagation()`. The first half means the browser
+synthesizes no compatibility `mousedown`/`mouseup`/`click`; the second means
+the touch never reaches the window's bubble phase. A page sitting on top of
+xterm sees a finger not at all. Before this landed, tap to focus, tap to place
+the cursor, drag to select, long press and every press-motion-release gesture
+put **zero bytes** on the wire. Only a pan worked, as wheel reports, because
+xterm subscribes to two of the recognizer's five events itself.
+
+What it does dispatch, on the screen element, is `-xterm-gesturestart`,
+`-xterm-gesturechange`, `-xterm-gesturesend`, `-xterm-gesturetap` and
+`-xterm-gesturecontextmenu`. `bindMouse` listens for the first two. The last
+two are dispatched to the same element and dropped on the floor.
+
+`installTouchMouse` picks them up and adds the one gesture the recognizer has
+no event for:
+
+| gesture | what goes out |
+|---------|---------------|
+| tap | press + release, button 1 |
+| long press (recognizer's 700ms, no movement) | press + release, button 3 |
+| press, hold `longPressMs`, then move | press at the origin, motion, release |
+| pan | wheel reports, unchanged, xterm's own |
+
+**Everything is a synthesized `MouseEvent` at the screen element, never bytes.**
+That is the whole design and it is worth defending. xterm already owns the
+encoding, and there is far more of it than a touch layer should reimplement:
+which of X10, VT200, urxvt, SGR and SGR-pixels the program asked for, whether
+it wants motion at all, whether the report is suppressed for a modifier that
+forces selection, and the per-cell deduplication of motion. Dispatching the
+event a mouse would have produced gets all of it, and gets the no-mouse-mode
+case for free: the same press-hold-drag runs xterm's selection service, so a
+finger selects text. An encoder of our own would have shipped SGR at a program
+that asked for X10 and would have needed a `cellAtPixel` of its own to do it.
+
+**The listeners go on the `window` in the capture phase, and that is load
+bearing.** The gesture events are dispatched *at* the screen element, and at
+the target itself capture and bubble listeners run in registration order, so a
+capture listener added to the screen element would still run after xterm's own
+— which consumes the event with `stopPropagation`. An ancestor's capture
+listener runs first whatever the registration order. The events are also
+`bubbles: false`, so capture is the only phase in which they are visible from
+outside at all.
+
+**The inertial fling was corrupting the shell.** `Gesture._inertia` builds its
+CHANGE events out of `translationX`/`translationY` alone, with none of the
+coordinates the ones from `touchmove` carry. `_handleTouchScrollAsWheel` passes
+them to `getMouseReportCoords`, which subtracts the element rect from an
+undefined `clientX`; the `{col: NaN, row: NaN}` that comes back is an object,
+so the `if (coords)` guard passes and the encoder ships it. Measured: three
+flings put 534 mouse reports on the wire and **489 were `\x1b[<65;NaN;NaNM`**,
+filling the pane with `NaN;NaNMaN;NaNM…`. The layer fills the coordinates from
+the last place a finger was actually seen, and drops the event if there is no
+such place rather than guessing. This has **no config switch**: there is no
+honest setting for "keep corrupting my shell". `docs/xterm-inertia-nan.md` is
+the upstream writeup; `clienttests/touch.spec.mjs` counts the reports.
+
+`Config.MobileMouse` is the config surface and its **zero value is all of it,
+on**. Argued rather than assumed: a terminal where tapping does nothing is
+broken, the events being consumed already exist, and none of it installs
+without a touch screen, so the desktop path pays nothing. `Disable`,
+`DisableTap` and `DisableDrag` turn parts off for a program that reads a click
+as destructive or handles touch from its own page script; `LongPressMs` and
+`SlopPx` retune the one gesture that is ours. The zero value emits nothing into
+the page at all, which `TestRenderIndexMobileMouse` pins.
 
 #### Two things in there that will be silently re-broken
 
@@ -489,6 +567,7 @@ type Config struct {
     MobileRows                                 []MobileRow    // touch key bar, many rows
     MobilePrefix                               MobilePrefix   // the deployment's leader chord
     DisableMobileKeyBar                        bool
+    MobileMouse                                MobileMouse    // what a finger on the terminal does
     ConnectMiddleware                          []ConnectMiddleware
     SessionMiddleware                          []SessionMiddleware
     HandlerMiddleware                          []Middleware
