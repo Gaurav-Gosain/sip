@@ -61,7 +61,9 @@ whole client, fonts included, into one binary.
 - Puts a key bar over the software keyboard on a phone, carrying the keys a
   phone keyboard does not have: Escape, Tab, the arrows, and Ctrl and Alt as
   sticky modifiers, because a touch screen cannot hold one key while pressing
-  another. It measures the keyboard and gives the terminal what is left.
+  another. It measures the keyboard and gives the terminal what is left, and it
+  makes a finger act like a mouse: tap to click, long press to right click, hold
+  and drag to drag or to select.
 - Refuses to bind a non-loopback address without TLS, and refuses basic auth
   without it, unless told otherwise by an explicit flag that logs what it is
   giving up. Loopback gets a self-signed certificate generated on the spot.
@@ -264,10 +266,12 @@ sip.Config{
 
 `MobilePrefix` is whatever your leader is: `Ctrl+A` for a rebound tmux, `Ctrl+X`
 for emacs. A `Prefixed` key is one tap for the whole chord: the leader goes out,
-then the key on its own, with any sticky modifier cleared rather than folded in,
-because Ctrl+B Ctrl+C is a different chord from Ctrl+B C and the user pressed one
-button. The `Prefix` button is for everything you did not give a button to: tap
-it and it lights up, then type the second half on the software keyboard.
+then the key with whatever `Ctrl`, `Alt` and `Shift` the button declares, so
+`{Key: "o", Ctrl: true, Prefixed: true}` is tmux's Ctrl+B Ctrl+O in one tap. The
+bar's own sticky modifiers are cleared rather than folded in, because Ctrl+B
+Ctrl+C is a different chord from Ctrl+B C and the user pressed one button. The
+`Prefix` button is for everything you did not give a button to: tap it and it
+lights up, then type the second half on the software keyboard.
 
 Rows are drawn top to bottom and the typing row goes last, nearest the thumb
 that is already on the keyboard. A `Collapsible` row can be folded away by a
@@ -281,6 +285,33 @@ success it did not have. The one case it will not fake is a `Prefix` button with
 no `MobilePrefix` set, which would light up and arm a chord that is never sent;
 that button is left out of the bar, and a `Prefixed` key with no prefix sends
 itself bare.
+
+### A finger is a mouse
+
+xterm.js's own touch handling stops at turning a pan into scroll, so on a phone
+a tap, a long press and a drag reach the program as nothing at all: not a click,
+not a cursor placed, not a selection. sip fills that in.
+
+| gesture | what the program gets |
+|---------|----------------------|
+| tap | a click, and the software keyboard |
+| long press | a right click |
+| press, hold, then drag | a press, motion and a release: pull a split, move a window, select a region |
+| pan | scroll, as before |
+
+It is expressed as the mouse events a browser would have synthesized, not as
+bytes, so whichever mouse mode and encoding your program asked for is what it
+gets, and a program that asked for no mouse reporting at all gets the other
+useful thing for free: the same press-hold-drag selects text.
+
+The zero value is all of it, on, and none of it installs without a touch screen.
+`Config.MobileMouse` turns parts off and retunes the hold:
+
+```go
+sip.Config{
+    MobileMouse: sip.MobileMouse{DisableTap: true, LongPressMs: 600},
+}
+```
 
 The floating settings gear is draggable on a desktop and remembers where it was
 left, because it floats over whatever the program is drawing and there is no

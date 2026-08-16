@@ -128,6 +128,60 @@ func TestRenderIndexMobileRowsAndPrefix(t *testing.T) {
 	}
 }
 
+// TestRenderIndexMobileMouse pins the touch mouse layer's config contract, and
+// with it the promise that makes the whole thing additive: the zero value has
+// to reach the page as nothing at all, because a page told nothing is a page
+// running the defaults.
+func TestRenderIndexMobileMouse(t *testing.T) {
+	const page = "<head>{{FONT_FACE_EXTRA}}</head>"
+
+	zero := &httpServer{config: Config{}}
+	if got := string(zero.renderIndex([]byte(page))); strings.Contains(got, "mobileMouse") {
+		t.Fatalf("the zero value reached the page: %s", got)
+	}
+
+	cases := []struct {
+		name string
+		cfg  MobileMouse
+		want []string
+		skip []string
+	}{
+		{
+			name: "disable turns both halves off",
+			cfg:  MobileMouse{Disable: true},
+			want: []string{`"drag":false`, `"tap":false`},
+		},
+		{
+			name: "one half at a time",
+			cfg:  MobileMouse{DisableTap: true},
+			want: []string{`"tap":false`},
+			skip: []string{`"drag"`},
+		},
+		{
+			name: "tuning without disabling",
+			cfg:  MobileMouse{LongPressMs: 600, SlopPx: 16},
+			want: []string{`"longPressMs":600`, `"slopPx":16`},
+			skip: []string{`"tap"`, `"drag"`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &httpServer{config: Config{MobileMouse: tc.cfg}}
+			got := string(s.renderIndex([]byte(page)))
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("rendered index missing %s:\n%s", want, got)
+				}
+			}
+			for _, skip := range tc.skip {
+				if strings.Contains(got, skip) {
+					t.Fatalf("rendered index carries %s it was never given:\n%s", skip, got)
+				}
+			}
+		})
+	}
+}
+
 // TestDefaultMobileKeysMatchTheClient guards the one duplicated table in the
 // project. The client has its own DEFAULT_KEYS because mobile.js is standalone
 // and installable on a page sip never rendered; the Go copy exists so a
