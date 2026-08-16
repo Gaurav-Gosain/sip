@@ -309,6 +309,77 @@ test.describe('touch on the terminal', () => {
   });
 });
 
+// The switches a deployment actually has. Config.MobileMouse reaches the page
+// as window.__sipConfig.mobileMouse and nothing else, so setting it here is
+// the same thing the server does, one step earlier.
+test.describe('turning it off', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  const withConfig = (page, cfg) =>
+    page.addInitScript((c) => { window.__sipConfig = { mobileMouse: c }; }, cfg);
+
+  test('DisableTap leaves a tap doing nothing', async ({ page }) => {
+    await withConfig(page, { tap: false });
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    await cdp.send('Input.synthesizeTapGesture', {
+      x: c.x, y: c.y, duration: 60, gestureSourceType: 'touch',
+    });
+    await page.waitForTimeout(200);
+    expect(await wireText(page)).toBe('');
+  });
+
+  test('DisableDrag leaves press-hold-drag as a pan', async ({ page }) => {
+    await withConfig(page, { drag: false });
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart', touchPoints: [{ x: c.x, y: c.y, id: 1 }],
+    });
+    await page.waitForTimeout(600);
+    for (let i = 1; i <= 6; i++) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove', touchPoints: [{ x: c.x, y: c.y + i * 12, id: 1 }],
+      });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(300);
+
+    // Wheel and nothing else: xterm's own pan handler, which is what this
+    // gesture did before the drag layer existed.
+    const reports = sgrReports(await wireText(page));
+    expect(reports.length).toBeGreaterThan(0);
+    expect(reports.every((r) => r.button === 64 || r.button === 65)).toBe(true);
+  });
+
+  test('the inertia repair has no switch', async ({ page }) => {
+    await withConfig(page, { tap: false, drag: false });
+    await boot(page);
+    await enableMouse(page);
+    const c = await screenCentre(page);
+    const cdp = await page.context().newCDPSession(page);
+
+    await clearWire(page);
+    await cdp.send('Input.synthesizeScrollGesture', {
+      x: c.x, y: c.y, xDistance: 0, yDistance: -260,
+      speed: 6000, gestureSourceType: 'touch', preventFling: false,
+    });
+    await page.waitForTimeout(700);
+
+    // Turning the touch layer off must not hand back the corruption. There is
+    // no honest setting for "keep typing NaN into my shell".
+    expect(await wireText(page)).not.toContain('NaN');
+  });
+});
+
 test.describe('touch on the terminal (no touch screen)', () => {
   test('installs nothing on a desktop', async ({ page }) => {
     await boot(page);
