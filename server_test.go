@@ -161,6 +161,12 @@ func TestRenderIndexMobileMouse(t *testing.T) {
 			name: "tuning without disabling",
 			cfg:  MobileMouse{LongPressMs: 600, SlopPx: 16},
 			want: []string{`"longPressMs":600`, `"slopPx":16`},
+			skip: []string{`"tap"`, `"drag"`, `"hint"`},
+		},
+		{
+			name: "the hint alone",
+			cfg:  MobileMouse{DisableHint: true},
+			want: []string{`"hint":false`},
 			skip: []string{`"tap"`, `"drag"`},
 		},
 	}

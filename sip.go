@@ -441,6 +441,12 @@ type MobileMouse struct {
 	// SlopPx is how far a finger may wander in CSS pixels and still count
 	// as sitting still. 0 means the default, 10.
 	SlopPx int
+
+	// DisableHint drops the two things that teach the drag: the ring drawn
+	// under a finger once it has held long enough that moving it is a
+	// drag, and the one-line hint shown the first time a finger pans the
+	// terminal instead. For a page that explains its gestures itself.
+	DisableHint bool
 }
 
 // clientOptions is the browser-side option object, carrying only what differs
@@ -458,6 +464,9 @@ func (m MobileMouse) clientOptions() map[string]any {
 	}
 	if m.SlopPx > 0 {
 		o["slopPx"] = m.SlopPx
+	}
+	if m.DisableHint {
+		o["hint"] = false
 	}
 	return o
 }
