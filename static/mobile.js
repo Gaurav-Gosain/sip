@@ -138,6 +138,9 @@
 //             drag rather than a pan. Default 450.
 //   slopPx    how far a finger may wander and still count as still. Default
 //             10 CSS pixels.
+//   hint      false to draw nothing that teaches the drag: no ring under a
+//             finger that has held long enough, no one-time line the first
+//             time a finger pans instead. Default true.
 //
 // It returns a controller with:
 //
@@ -188,6 +191,13 @@
     // And how far it may wander while doing it. A finger is not a mouse: some
     // travel is unavoidable and none of it is meant.
     const TOUCH_SLOP_PX = 10;
+
+    // How long the one-time drag hint stays up, and where it is remembered.
+    const TOUCH_HINT_MS = 4000;
+    const TOUCH_HINT_KEY = 'sip.touch.hint';
+
+    // What the hint says. One instruction, in the plainest words there are.
+    const TOUCH_HINT_TEXT = 'Hold, then drag to move or select.';
 
     // The events xterm.js's gesture recognizer dispatches on its screen
     // element. They are non-bubbling CustomEvents, so the only way for anyone
@@ -254,6 +264,14 @@
      overwrites both of these whenever it has a measurement of its own. */
   --sip-kb-inset: env(keyboard-inset-height, 0px);
   --sip-keybar-h: 0px;
+  /* The bar's own measurements. A thumb is not a mouse pointer: Android asks
+     for 48dp targets and iOS for 44pt, and the 38px keys with 3px between
+     them that this shipped with were sized for neither. The gap is what stops
+     a thumb landing across two keys, and the padding is what keeps the outer
+     keys off the screen edge, where a case or a gesture strip gets in first. */
+  --sip-keybar-pad: 6px;
+  --sip-keybar-gap: 5px;
+  --sip-keybar-key-h: 42px;
 }
 body.sip-touch {
   overscroll-behavior: none;
@@ -267,8 +285,15 @@ body.sip-touch {
   z-index: 1004;
   display: flex;
   align-items: stretch;
-  gap: 3px;
-  padding: 3px 3px calc(3px + env(safe-area-inset-bottom, 0px));
+  gap: var(--sip-keybar-gap);
+  /* The side padding grows to the safe-area inset on a phone held sideways,
+     so the first key is not under the notch and the last is not under the
+     home strip. env() is 0 everywhere that has neither. */
+  padding:
+    var(--sip-keybar-pad)
+    max(var(--sip-keybar-pad), env(safe-area-inset-right, 0px))
+    calc(var(--sip-keybar-pad) + env(safe-area-inset-bottom, 0px))
+    max(var(--sip-keybar-pad), env(safe-area-inset-left, 0px));
   background: rgba(24, 24, 37, 0.96);
   border-top: 1px solid #45475a;
   /* The bar is chrome, and none of it is the browser's to interpret: no
@@ -281,7 +306,26 @@ body.sip-touch {
   -webkit-touch-callout: none;
 }
 body.sip-kb-open #sip-keybar {
-  padding-bottom: 3px;
+  padding-bottom: var(--sip-keybar-pad);
+}
+/* Wide enough that every row fits without panning, which is a tablet and a
+   phone held sideways: the rows are centred and the pinned keys sit beside
+   them rather than at the far edge of the screen. A strip of twelve keys
+   pressed into the left corner of a 1100px window with the keyboard key alone
+   at the right is the layout this replaces. The class is set from measurement
+   (refreshScrollHints), because CSS cannot ask whether a scroller overflows,
+   and the moment a row stops fitting it goes back to a left-anchored scroller
+   so that nothing is centred out of reach. */
+#sip-keybar.fits {
+  justify-content: center;
+}
+#sip-keybar.fits #sip-keybar-rows {
+  flex: 0 1 auto;
+}
+/* Only when the whole bar fits. One row centred over another that is
+   anchored left and panning reads as a mistake, not a layout. */
+#sip-keybar.fits .sip-keybar-scroll {
+  justify-content: center;
 }
 /* The rows stack, and they stack upwards: the last row declared sits at the
    bottom, nearest the thumb, and folding a row above it leaves it where it
@@ -293,7 +337,7 @@ body.sip-kb-open #sip-keybar {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 3px;
+  gap: var(--sip-keybar-gap);
 }
 /* Each scroller is wrapped so the edge fades can be positioned against
    something that does not scroll with the buttons. */
@@ -313,7 +357,7 @@ body.sip-kb-open #sip-keybar {
 .sip-keybar-scroll {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--sip-keybar-gap);
   overflow: hidden;
   touch-action: none;
   scrollbar-width: none;
@@ -358,16 +402,16 @@ body.sip-kb-open #sip-keybar {
 }
 #sip-keybar button {
   flex: 0 0 auto;
-  min-width: 40px;
-  height: 38px;
+  min-width: 44px;
+  height: var(--sip-keybar-key-h);
   border: 1px solid #45475a;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #313244;
   color: #cdd6f4;
   font-family: 'JetBrainsMono Nerd Font Mono', ui-monospace, monospace;
   font-size: 13px;
   line-height: 1;
-  padding: 0 6px;
+  padding: 0 8px;
   cursor: pointer;
   white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
@@ -380,8 +424,8 @@ body.sip-kb-open #sip-keybar {
   -webkit-user-select: none;
 }
 #sip-keybar button.narrow {
-  min-width: 34px;
-  padding: 0 4px;
+  min-width: 38px;
+  padding: 0 5px;
 }
 /* Actions are not keys: they do not type, and one of them may well close
    something. Tinting them apart is the cheapest way to say so in a strip this
@@ -406,8 +450,8 @@ body.sip-kb-open #sip-keybar {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 3px;
-  padding-left: 4px;
+  gap: var(--sip-keybar-gap);
+  padding-left: var(--sip-keybar-gap);
   border-left: 1px solid #45475a;
   touch-action: none;
 }
@@ -437,6 +481,53 @@ body.sip-kb-open #sip-keybar {
   background: #f9e2af;
   color: #1e1e2e;
   border-color: #f9e2af;
+}
+`;
+
+    // The touch layer's own styles: the ring that says a hold has landed and
+    // the one line that says what to do with it. Injected by installTouchMouse,
+    // which can run without the key bar and so cannot ride on STYLE above.
+    const TOUCH_STYLE = `
+#sip-touch-ring {
+  position: fixed;
+  z-index: 1003;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  border: 2px solid rgba(249, 226, 175, 0.95);
+  box-shadow: 0 0 0 5px rgba(249, 226, 175, 0.22);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1.5);
+  transition: opacity 120ms ease, transform 160ms ease;
+}
+#sip-touch-ring.on {
+  opacity: 1;
+  transform: scale(1);
+}
+#sip-touch-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--sip-kb-inset, 0px) + var(--sip-keybar-h, 0px) + 12px);
+  transform: translateX(-50%);
+  z-index: 1003;
+  max-width: calc(100vw - 32px);
+  padding: 8px 14px;
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  background: rgba(24, 24, 37, 0.96);
+  color: #cdd6f4;
+  font-family: 'JetBrainsMono Nerd Font Mono', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+#sip-touch-hint.on {
+  opacity: 1;
 }
 `;
 
@@ -558,6 +649,11 @@ body.sip-kb-open #sip-keybar {
             this.prefix = this.options.prefix || null;
             this.prefixPending = false;
             this.inset = 0;
+            // Whether the software keyboard is believed to be up. See
+            // markKeyboard for who gets to say.
+            this.kbOpen = false;
+            this.vk = null;
+            this.vv = null;
             this.listeners = [];
             this.buttons = new Map(); // id -> button
             // The bar's rows, top first, each { el, scroll, collapsible }.
@@ -1078,13 +1174,29 @@ body.sip-kb-open #sip-keybar {
             this.glideFrame = 0;
         }
 
-        /** Light each row's edge fade on whichever side has buttons off screen. */
+        /**
+         * Light each row's edge fade on whichever side has buttons off
+         * screen, and say whether the rows fit at all.
+         *
+         * A row that fits is centred and a bar whose rows all fit pulls the
+         * pinned keys in beside them; see the .fits rules in STYLE. That is
+         * decided here rather than in CSS because overflow is not something a
+         * selector can ask about, and it is re-asked on every resize of the
+         * bar or a row, so a rotation that stops a row fitting hands it back
+         * to the left-anchored scroller before anything is centred out of
+         * reach. A folded row has no width and counts as fitting.
+         */
         refreshScrollHints() {
+            let all = true;
             for (const { el, scroll } of this.rows) {
                 const max = scroll.scrollWidth - scroll.clientWidth;
+                const fits = max <= 2;
                 el.classList.toggle('more-left', scroll.scrollLeft > 2);
-                el.classList.toggle('more-right', max > 2 && scroll.scrollLeft < max - 2);
+                el.classList.toggle('more-right', !fits && scroll.scrollLeft < max - 2);
+                el.classList.toggle('fits', fits);
+                if (!fits) all = false;
             }
+            if (this.bar) this.bar.classList.toggle('fits', all);
         }
 
         // --- folding ----------------------------------------------------------
@@ -1280,9 +1392,27 @@ body.sip-kb-open #sip-keybar {
 
         // --- the software keyboard -------------------------------------------
 
+        /**
+         * Raise the software keyboard. Must be called inside a user gesture.
+         *
+         * Asking an element that already holds focus to focus is a no-op, and
+         * no browser raises a keyboard for a no-op. That is the state a tap
+         * on the terminal finds after the page loads: the terminal took focus
+         * on its own, which is not a gesture, so the keyboard never came up,
+         * and it is the state the Android back button leaves behind, which
+         * takes the keyboard away and leaves focus where it was. In both the
+         * only way to ask again is to leave and come back, so when the bar
+         * believes the keyboard is down that is what this does. When it
+         * believes the keyboard is up the plain focus is kept, because a
+         * blur would take the keyboard down for a tap that meant to place
+         * the cursor.
+         */
         focusInput() {
             const el = this.focusEl();
             if (!el) return;
+            if (document.activeElement === el && !this.inset && !this.kbOpen) {
+                el.blur();
+            }
             try {
                 el.focus({ preventScroll: true });
             } catch (e) {
@@ -1305,14 +1435,14 @@ body.sip-kb-open #sip-keybar {
                 this.setKeyboardOpen(true);
                 return;
             }
-            // Focused with nothing covering the window is the state the page
-            // loads in: the terminal took focus on its own, which is not a
-            // gesture, and no browser raises a keyboard for that. Asking an
-            // already focused element to focus is a no-op, so the way to ask
-            // for the keyboard from here is to leave and come back. Without
-            // this the first tap on this key would only spend itself dropping
-            // focus the user could not see.
-            if (!this.inset) {
+            // Focused with the keyboard down is the state the page loads in:
+            // the terminal took focus on its own, which is not a gesture, and
+            // no browser raises a keyboard for that. Asking an already
+            // focused element to focus is a no-op, so the way to ask for the
+            // keyboard from here is to leave and come back. Without this the
+            // first tap on this key would only spend itself dropping focus
+            // the user could not see.
+            if (!this.kbOpen) {
                 el.blur();
                 this.focusInput();
                 this.setKeyboardOpen(true);
@@ -1326,12 +1456,7 @@ body.sip-kb-open #sip-keybar {
         }
 
         setKeyboardOpen(open) {
-            document.body.classList.toggle('sip-kb-open', open);
-            const btn = this.keyboardBtn;
-            if (btn) {
-                btn.classList.toggle('active', open);
-                btn.textContent = open ? 'hide' : 'abc';
-            }
+            this.markKeyboard(open);
             // A keyboard that closes takes its inset with it, and not every
             // browser says so: iOS fires a visualViewport resize, but a blur
             // triggered from JS sometimes does not. Zero it here and let the
@@ -1342,6 +1467,27 @@ body.sip-kb-open #sip-keybar {
                 this.applyInset();
             }
             this.measureBar();
+        }
+
+        /**
+         * Record whether the keyboard is up: the body class and the label on
+         * the keyboard key. Nothing else. The class is what the page styles
+         * by and the label is what the user reads, so both have to say what
+         * is true, and what is true is decided in two places: focus gained
+         * inside a gesture (the browser is about to raise the keyboard) and
+         * the inset (the keyboard is measurably there, or measurably gone).
+         * Focus alone is not enough. The page focuses the terminal on load,
+         * which raises nothing, and the Android back button dismisses the
+         * keyboard and leaves focus where it was.
+         */
+        markKeyboard(open) {
+            this.kbOpen = !!open;
+            document.body.classList.toggle('sip-kb-open', this.kbOpen);
+            const btn = this.keyboardBtn;
+            if (btn) {
+                btn.classList.toggle('active', this.kbOpen);
+                btn.textContent = this.kbOpen ? 'hide' : 'abc';
+            }
         }
 
         /**
@@ -1369,23 +1515,27 @@ body.sip-kb-open #sip-keybar {
             this.rescueUntil = performance.now() + KB_RESCUE_MS;
         }
 
-        /** The inset just went to zero. Was it ours to lose? */
+        /**
+         * The inset just went to zero. Was it ours to lose? Reports whether
+         * the keyboard was asked for again.
+         */
         maybeRescueKeyboard() {
-            if (!this.rescueUntil || performance.now() > this.rescueUntil) return;
+            if (!this.rescueUntil || performance.now() > this.rescueUntil) return false;
             this.rescueUntil = 0;
             const el = this.focusEl();
-            if (!el) return;
+            if (!el) return false;
             if (document.activeElement !== el) {
                 // A blur that arrived after the gesture ended, too late for the
                 // touchend to have caught it.
                 this.focusInput();
-                return;
+                return true;
             }
             // Focus never moved, so the keyboard went without it. The only way
             // to ask for one on an already focused element is to leave and come
             // back.
             el.blur();
             this.focusInput();
+            return true;
         }
 
         /**
@@ -1434,9 +1584,9 @@ body.sip-kb-open #sip-keybar {
 
             const vv = window.visualViewport;
             if (vv) {
+                this.vv = vv;
                 const onChange = () => {
-                    this.vvInset = window.innerHeight - vv.height - vv.offsetTop;
-                    this.applyInset();
+                    this.measureViewport();
                     // iOS scrolls the layout viewport to reveal the focused
                     // element when the keyboard opens. The page is a fixed
                     // layout, so that only pushes the terminal off the top.
@@ -1446,17 +1596,62 @@ body.sip-kb-open #sip-keybar {
                 this.on(vv, 'scroll', onChange);
             }
 
+            // The layout viewport changing size is the one event neither API
+            // above delivers, and it is what a browser that resizes the layout
+            // for the keyboard itself fires when the keyboard goes: Firefox on
+            // Android, and Chromium honouring interactive-widget. The visual
+            // viewport difference measured a moment earlier can then name a
+            // keyboard that is no longer there, so everything is measured
+            // again from the current numbers. Idempotent, so a browser that
+            // fires both costs nothing.
+            this.on(window, 'resize', () => this.remeasure());
+
             // Rotating the phone changes everything at once and neither API is
             // guaranteed to fire, so remeasure after the orientation settles.
             this.on(window, 'orientationchange', () => {
-                setTimeout(() => this.measureBar(), 250);
+                setTimeout(() => this.remeasure(), 250);
             });
 
             const el = this.focusEl();
             if (el) {
-                this.on(el, 'focus', () => this.setKeyboardOpen(true));
+                // Focus gained inside a gesture is a keyboard about to be
+                // raised. Focus gained any other way, which is the page
+                // focusing the terminal on load, raises nothing, and a bar
+                // that said "hide" next to a keyboard that was never there
+                // is what this used to do. A browser without userActivation
+                // keeps the old reading.
+                this.on(el, 'focus', () => {
+                    const ua = navigator.userActivation;
+                    if (ua && !ua.isActive) return;
+                    this.markKeyboard(true);
+                });
                 this.on(el, 'blur', () => this.setKeyboardOpen(false));
             }
+        }
+
+        /** Read the visual viewport's share of the window. */
+        measureViewport() {
+            const vv = this.vv;
+            if (!vv) return;
+            this.vvInset = window.innerHeight - vv.height - vv.offsetTop;
+            this.applyInset();
+        }
+
+        /**
+         * Measure everything again from the numbers as they stand now: both
+         * keyboard readings, the bar and whether its rows fit.
+         */
+        remeasure() {
+            if (this.vk) {
+                const r = this.vk.boundingRect;
+                this.vkInset = r ? r.height : 0;
+            }
+            if (this.vv) {
+                this.vvInset = window.innerHeight - this.vv.height - this.vv.offsetTop;
+            }
+            this.applyInset();
+            this.measureBar();
+            this.refreshScrollHints();
         }
 
         applyInset() {
@@ -1470,10 +1665,18 @@ body.sip-kb-open #sip-keybar {
             if (v > max) v = Math.round(max);
             if (v === this.inset) return;
             // A keyboard that was there and is not any more. If a bar gesture
-            // has just ended, it did not go of its own accord.
+            // has just ended, it did not go of its own accord. Otherwise it
+            // was dismissed, by the back button or the keyboard's own key,
+            // and focus is still where it was: the only sign is this one, so
+            // this is where the bar learns the keyboard is down. A keyboard
+            // that is measurably there is up whatever focus said.
             const lost = this.inset > 0 && v === 0;
             this.inset = v;
-            if (lost) this.maybeRescueKeyboard();
+            if (v > 0) {
+                this.markKeyboard(true);
+            } else if (lost && !this.maybeRescueKeyboard()) {
+                this.markKeyboard(false);
+            }
             if (this.insetPending) return;
             this.insetPending = true;
             requestAnimationFrame(() => {
@@ -1566,8 +1769,13 @@ body.sip-kb-open #sip-keybar {
             this.drag = o.drag !== false;
             this.holdMs = positive(o.longPressMs, TOUCH_HOLD_MS);
             this.slop = positive(o.slopPx, TOUCH_SLOP_PX);
+            this.hint = o.hint !== false;
             this.off = [];
             this.timer = 0;
+            this.hintTimer = 0;
+            this.ring = null;
+            this.hintEl = null;
+            this.styleEl = null;
             // The last place a finger was actually seen, in viewport pixels.
             this.anchor = null;
             // The touch being tracked, or null.
@@ -1596,6 +1804,12 @@ body.sip-kb-open #sip-keybar {
                 this.on(this.screen, 'touchmove', (e) => this.onTouchMove(e), opts);
                 this.on(this.screen, 'touchend', (e) => this.onTouchEnd(e), opts);
                 this.on(this.screen, 'touchcancel', (e) => this.onTouchEnd(e), opts);
+                if (this.hint) {
+                    this.styleEl = document.createElement('style');
+                    this.styleEl.id = 'sip-touch-style';
+                    this.styleEl.textContent = TOUCH_STYLE;
+                    document.head.appendChild(this.styleEl);
+                }
             }
             this.enabled = true;
             return this;
@@ -1603,9 +1817,103 @@ body.sip-kb-open #sip-keybar {
 
         destroy() {
             this.clearTimer();
+            this.hideRing();
+            this.hideHint();
+            if (this.styleEl) this.styleEl.remove();
+            this.styleEl = null;
             this.off.forEach((fn) => fn());
             this.off = [];
             this.enabled = false;
+        }
+
+        // --- what teaches the drag ------------------------------------------
+
+        /**
+         * The ring under the finger, drawn the moment a hold has landed.
+         *
+         * The drag is a gesture nothing on the screen announces: a finger
+         * that moves at once pans, and the only way to learn that holding it
+         * first makes it a drag is to be told. The ring is that telling, and
+         * it is timed to the fact rather than to a guess: it appears exactly
+         * when TOUCH_HOLD_MS has elapsed, which is exactly when moving the
+         * finger would start a drag, and it follows the finger for as long
+         * as the drag lasts. It is the same signal in every mouse mode, since
+         * a hold-and-drag on a plain shell is how a finger selects. A short
+         * vibration goes with it where the platform has one, so the hold can
+         * be felt without looking.
+         */
+        showRing(p) {
+            if (!this.hint) return;
+            if (!this.ring) {
+                this.ring = document.createElement('div');
+                this.ring.id = 'sip-touch-ring';
+                this.ring.setAttribute('aria-hidden', 'true');
+                document.body.appendChild(this.ring);
+                // Let the initial transform land before the transition to it.
+                this.ring.getBoundingClientRect();
+            }
+            this.moveRing(p);
+            this.ring.classList.add('on');
+            try {
+                if (navigator.vibrate) navigator.vibrate(8);
+            } catch (e) {
+                /* not a phone, or not allowed */
+            }
+        }
+
+        moveRing(p) {
+            if (!this.ring || !p) return;
+            this.ring.style.left = `${Math.round(p.x)}px`;
+            this.ring.style.top = `${Math.round(p.y)}px`;
+        }
+
+        hideRing() {
+            if (this.ring) this.ring.classList.remove('on');
+        }
+
+        /**
+         * The one line, shown once.
+         *
+         * A finger that moved before the hold landed panned, which is what a
+         * user who wanted to move something tries first, and nothing on the
+         * screen tells them why it did not work. This is the one time the
+         * page speaks up: the first pan ever, one sentence, gone after a few
+         * seconds, never again. It is remembered in localStorage, so a
+         * private window sees it once per session, which is the honest
+         * fallback.
+         */
+        maybeHint() {
+            if (!this.hint) return;
+            let seen = false;
+            try {
+                seen = localStorage.getItem(TOUCH_HINT_KEY) === '1';
+            } catch (e) {
+                seen = this.hintShown === true;
+            }
+            if (seen) return;
+            this.hintShown = true;
+            try {
+                localStorage.setItem(TOUCH_HINT_KEY, '1');
+            } catch (e) {
+                /* private mode */
+            }
+            if (!this.hintEl) {
+                this.hintEl = document.createElement('div');
+                this.hintEl.id = 'sip-touch-hint';
+                this.hintEl.setAttribute('role', 'status');
+                this.hintEl.textContent = TOUCH_HINT_TEXT;
+                document.body.appendChild(this.hintEl);
+                this.hintEl.getBoundingClientRect();
+            }
+            this.hintEl.classList.add('on');
+            clearTimeout(this.hintTimer);
+            this.hintTimer = setTimeout(() => this.hideHint(), TOUCH_HINT_MS);
+        }
+
+        hideHint() {
+            clearTimeout(this.hintTimer);
+            this.hintTimer = 0;
+            if (this.hintEl) this.hintEl.classList.remove('on');
         }
 
         /** Whether an event landed on the terminal this instance is watching. */
@@ -1698,7 +2006,9 @@ body.sip-kb-open #sip-keybar {
             };
             this.timer = setTimeout(() => {
                 this.timer = 0;
-                if (this.press) this.press.held = true;
+                if (!this.press) return;
+                this.press.held = true;
+                this.showRing(this.anchor);
             }, this.holdMs);
         }
 
@@ -1710,15 +2020,19 @@ body.sip-kb-open #sip-keybar {
             this.anchor = at;
             const far = Math.hypot(at.x - p.x, at.y - p.y) > this.slop;
             if (p.dragging) {
+                this.moveRing(at);
                 this.mouse('mousemove', at, 0, 1);
                 return;
             }
             if (!p.held) {
                 // Moved before the hold landed, so this is a pan and xterm's
-                // own handler is what turns it into scrollback.
+                // own handler is what turns it into scrollback. The first
+                // time that happens the page says what a hold would have
+                // done, once.
                 if (far) {
                     this.clearTimer();
                     this.press = null;
+                    this.maybeHint();
                 }
                 return;
             }
@@ -1746,6 +2060,7 @@ body.sip-kb-open #sip-keybar {
         release() {
             const p = this.press;
             this.press = null;
+            this.hideRing();
             if (!p || !p.dragging || !this.anchor) return;
             this.mouse('mouseup', this.anchor, 0, 0);
         }

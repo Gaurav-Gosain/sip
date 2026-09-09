@@ -332,6 +332,17 @@ html, body {
 
 /* Touch layout. body.sip-touch is set by mobile.js while the key bar is up. */
 
+/* A thumb's width of breathing room around the grid. On a desktop the window
+   frame is the margin; on a phone the glass edge is, and text drawn to the
+   first pixel of it is text under a case lip or a gesture strip. The sides
+   grow to the safe-area inset on a notched phone held sideways. The bottom is
+   left to the key bar, which pads itself. */
+body.sip-touch #terminal-container {
+    padding-top: 4px;
+    padding-left: max(4px, env(safe-area-inset-left, 0px));
+    padding-right: max(4px, env(safe-area-inset-right, 0px));
+}
+
 /* No floating gear on a phone: floating it means floating it over whatever the
    program is drawing, on a screen with no room to spare. It moves into the key
    bar instead, which terminal.js passes as an action. */

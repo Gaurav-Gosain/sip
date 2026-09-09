@@ -313,6 +313,15 @@ Four parts:
   A host that gates `transformInput` on its own idea of what the bar is holding
   will drop the latch: ask `bar.pending` instead. `terminal.js` did exactly that
   and swallowed the leader silently, which is what `mobile.spec.mjs` now pins.
+  **The bar's shape follows its width.** Keys are 42px tall with 5px between
+  them and 6px of padding, which is what a thumb needs and what the earlier
+  38px/3px bar was not. On a screen wide enough that every row fits (a
+  tablet, a phone held sideways) the rows are centred and the pinned keys
+  sit beside them; the `fits` class that does it is set from measurement in
+  `refreshScrollHints`, because CSS cannot ask whether a scroller overflows,
+  and a row that stops fitting goes back to a left-anchored scroller so that
+  nothing is centred out of reach. `clienttests/tablet.spec.mjs` pins both
+  shapes.
 - **The keyboard's share of the window.** `--sip-kb-inset` and `--sip-keybar-h`
   are published on the document element and `terminal.css` pads
   `#terminal-container` with them, which makes webterm's own ResizeObserver
@@ -320,6 +329,20 @@ Four parts:
   API (Chromium on Android) and the visualViewport difference (Safari on iOS),
   because no one browser has both and a browser that resized the layout itself
   reports zero on both. A bad measurement costs space, never layout.
+  `window.resize` re-reads both, because a browser that resizes the layout
+  viewport for the keyboard itself fires only that, and a visual viewport
+  difference measured a beat earlier would otherwise name a keyboard that is
+  no longer there.
+
+  **Whether the keyboard is up is measured, not inferred from focus.**
+  `body.sip-kb-open` and the `abc`/`hide` label are set by focus gained
+  inside a user gesture (`navigator.userActivation`) and by the inset, and
+  cleared by blur or by the inset going to zero. Focus alone lies twice: the
+  page focuses the terminal on load, which raises no keyboard, and the
+  Android back button dismisses the keyboard and leaves focus where it was.
+  The same state decides whether `focusInput` has to blur and refocus to get
+  a keyboard raised, which is the only way to ask for one on an element that
+  already holds focus.
 - **The mouse a phone does not have.** `installTouchMouse(host, options)`, wired
   up in `setupTouchMouse`, with `Config.MobileMouse` as the Go-side route in.
   Its own section below, because none of it is obvious.
@@ -388,14 +411,28 @@ such place rather than guessing. This has **no config switch**: there is no
 honest setting for "keep corrupting my shell". `docs/xterm-inertia-nan.md` is
 the upstream writeup; `clienttests/touch.spec.mjs` counts the reports.
 
+**The drag is taught, because nothing on screen announces it.** A finger that
+moves at once pans, and a user who wants to move a window tries exactly that
+and gets a scroll. Two quiet things, both in `TouchMouse`: a ring drawn under
+the finger the moment the hold has landed (`showRing`, with an 8ms vibration
+where there is one), timed to the fact that moving now is a drag and following
+the finger for as long as it lasts; and one line, shown once ever on the first
+pan and remembered in `localStorage['sip.touch.hint']`: "Hold, then drag to
+move or select." `Config.MobileMouse.DisableHint` drops both. Measured with a
+real tuios on the far side: hold 450ms or longer then move, and a floating
+window moves and its border resizes, in both orientations of a Galaxy Tab S4
+profile; move within 450ms and it is a pan. A tiled window does not move by
+drag for a mouse either, which is tuios's layout and not this layer's.
+
 `Config.MobileMouse` is the config surface and its **zero value is all of it,
 on**. Argued rather than assumed: a terminal where tapping does nothing is
 broken, the events being consumed already exist, and none of it installs
 without a touch screen, so the desktop path pays nothing. `Disable`,
 `DisableTap` and `DisableDrag` turn parts off for a program that reads a click
 as destructive or handles touch from its own page script; `LongPressMs` and
-`SlopPx` retune the one gesture that is ours. The zero value emits nothing into
-the page at all, which `TestRenderIndexMobileMouse` pins.
+`SlopPx` retune the one gesture that is ours; `DisableHint` is above. The
+zero value emits nothing into the page at all, which `TestRenderIndexMobileMouse`
+pins.
 
 #### Two things in there that will be silently re-broken
 
