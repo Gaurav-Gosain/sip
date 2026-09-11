@@ -99,9 +99,14 @@ html, body {
     overflow-y: auto !important;
 }
 
+/* Three answers in priority order: the shape the program asked for through
+   OSC 22, then the deployment's Appearance.MouseCursor, then the built-in
+   text bar. --sip-pointer-shape is set only while a program has a shape on
+   the stack, so an unset property is not a missing cursor, it is the one
+   below it. */
 .xterm,
 .xterm .xterm-screen {
-    cursor: var(--sip-mouse-cursor, text);
+    cursor: var(--sip-pointer-shape, var(--sip-mouse-cursor, text));
 }
 
 /* While a program is reading the mouse, xterm swaps the text bar for an
@@ -110,7 +115,16 @@ html, body {
    clicking through reads as a glitch. */
 .xterm.enable-mouse-events,
 .xterm.enable-mouse-events .xterm-screen {
-    cursor: var(--sip-mouse-cursor, default);
+    cursor: var(--sip-pointer-shape, var(--sip-mouse-cursor, default));
+}
+
+/* A hyperlink outranks all three. The pointer shapes specification allows a
+   terminal to keep its own cursor over a hyperlink, and sip does: a link that
+   can be clicked has to say so, and a program that put `wait` over the whole
+   screen must not be able to hide it. xterm adds this class to the screen
+   element while the pointer is over a link its web-links addon found. */
+.xterm .xterm-screen.xterm-cursor-pointer {
+    cursor: pointer;
 }
 
 /* Scrollbar styling */

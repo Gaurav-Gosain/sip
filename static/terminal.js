@@ -152,6 +152,261 @@
         }
     }
 
+    // --- Pointer shapes, the kitty OSC 22 protocol -----------------------
+    //
+    // A program running in the terminal names the shape the mouse pointer
+    // takes: `wait` while it is busy, `ew-resize` over a pane divider,
+    // `pointer` over a button. The specification is at
+    // https://sw.kovidgoyal.net/kitty/pointer-shapes/.
+    //
+    //     OSC 22 ; [= | > | < | ?] name[,name...] ST
+    //
+    // `=` or no prefix sets the shape, `>` pushes a list, `<` pops, and `?`
+    // queries. The thirty names are CSS cursor keywords, which is the whole
+    // reason this is cheap here: a native terminal maps each one onto a
+    // platform cursor, and the browser already has all thirty.
+    //
+    // It is parsed here rather than in Go because everything the
+    // specification ties the protocol to already lives in this process.
+    // Separate stacks for the main and the alternate screen need to know
+    // which screen is live; emptying both on a terminal reset needs to see
+    // RIS and DECSTR; and the pointer itself is a CSS property on an element
+    // in this document. xterm's parser hands all of that over for free, and
+    // it is the only parser here that already knows a real OSC 22 from the
+    // same bytes inside a kitty graphics payload.
+
+    /**
+     * The thirty shape names the specification requires, and the whole of what
+     * sip accepts from a program.
+     *
+     * This list is the security boundary. A name arrives from the PTY, which
+     * is output from whatever program the user is running, and it ends up in a
+     * CSS `cursor` property. `url(https://example.com/x.png), pointer` is a
+     * perfectly valid cursor value, so a name passed through because it looked
+     * plausible would let a program in a pane point the browser at any URL it
+     * likes. Membership of this set is the only way a string reaches the DOM.
+     *
+     * pointershapes.go carries the same list and TestClientAndGoAgreeOnTheShapes
+     * fails when the two differ.
+     */
+    const POINTER_SHAPES = new Set([
+        'alias', 'cell', 'copy', 'crosshair', 'default',
+        'e-resize', 'ew-resize', 'grab', 'grabbing', 'help',
+        'move', 'n-resize', 'ne-resize', 'nesw-resize', 'no-drop',
+        'not-allowed', 'ns-resize', 'nw-resize', 'nwse-resize', 'pointer',
+        'progress', 's-resize', 'se-resize', 'sw-resize', 'text',
+        'vertical-text', 'w-resize', 'wait', 'zoom-in', 'zoom-out',
+    ]);
+
+    // The bounds. A program that pushes a million shapes must cost nothing, so
+    // every one of these is a hard cap rather than a warning.
+    //
+    // POINTER_STACK_MAX is the specification's own minimum of 16, which is
+    // also its maximum here: nothing legitimate nests pointer shapes deeper
+    // than that, and the specification says the bottom entry is evicted when
+    // the stack is full.
+    const POINTER_STACK_MAX = 16;
+    // One sequence longer than this is dropped whole rather than truncated. A
+    // truncated name would silently become a different name.
+    const POINTER_MAX_PAYLOAD = 1024;
+    // Names parsed out of one push or one query. The stack is 16 deep, so a
+    // longer push is already pointless; this bounds the reply to a query too.
+    const POINTER_MAX_NAMES = 64;
+
+    // What ?__grabbed__ answers. sip's terminal grid never grabs, but the
+    // question has to have an answer from the table, and `grabbing` is the one
+    // sip does use for its own drag, on the settings gear.
+    const POINTER_GRABBED = 'grabbing';
+
+    /**
+     * The one gate. Returns the name if sip supports it, null otherwise.
+     *
+     * Null is a real stack entry rather than a dropped one, so a push and the
+     * pop that follows it stay balanced. See PointerShapes.push.
+     */
+    function pointerShapeOrNull(name) {
+        return POINTER_SHAPES.has(name) ? name : null;
+    }
+
+    /**
+     * The shape the terminal falls back to when the stack holds nothing.
+     *
+     * It reads the same two things static/terminal.css does, in the same
+     * order, so the answer to `?__default__` and the pixel on the screen
+     * cannot disagree: the deployment's Appearance.MouseCursor if it named
+     * one, otherwise `text`, or `default` while a program is reading the
+     * mouse and there is nothing to select.
+     *
+     * A deployment cursor outside the thirty, `none` for instance, has no
+     * name in the table to report, so the query answers `default`.
+     */
+    function defaultPointerShape(appearance, term) {
+        const configured = appearance && appearance.mouseCursor;
+        if (configured) return POINTER_SHAPES.has(configured) ? configured : 'default';
+        const el = term && term.element;
+        return el && el.classList.contains('enable-mouse-events') ? 'default' : 'text';
+    }
+
+    class PointerShapes {
+        /**
+         * @param term the xterm Terminal, for its parser and its buffers
+         * @param sendReply called with the escape sequence answering a query
+         * @param defaultShape called for the name ?__default__ reports
+         */
+        constructor(term, sendReply, defaultShape) {
+            this.term = term;
+            this.sendReply = sendReply;
+            this.defaultShape = defaultShape;
+            // One stack per screen, which the specification requires: a full
+            // screen program that drops back to the shell must not have to
+            // save and restore the pointer around it.
+            this.stacks = { normal: [], alternate: [] };
+
+            term.parser.registerOscHandler(22, (data) => this.handle(data));
+            // RIS empties both stacks, which is what the specification means
+            // by resetting the terminal. The handler returns false, so xterm
+            // still does the reset itself; this only listens.
+            //
+            // DECSTR is deliberately not in here. A soft reset is what a
+            // curses program sends on the way in, and clearing the stacks on
+            // it would take the shape away from the program that had just
+            // asked for one.
+            term.parser.registerEscHandler({ final: 'c' }, () => { this.reset(); return false; });
+            // The shape follows the screen. Switching to the alternate screen
+            // shows that screen's shape, and switching back restores the
+            // main screen's.
+            term.buffer.onBufferChange(() => this.apply());
+        }
+
+        /** The stack belonging to the screen that is live now. */
+        stack() {
+            const b = this.term.buffer;
+            return b && b.active && b.active.type === 'alternate' ? this.stacks.alternate : this.stacks.normal;
+        }
+
+        /** The top of the live stack, or null when nothing is set. */
+        current() {
+            const st = this.stack();
+            return st.length ? st[st.length - 1] : null;
+        }
+
+        /** Empty both stacks and put the pointer back to the default. */
+        reset() {
+            this.stacks.normal.length = 0;
+            this.stacks.alternate.length = 0;
+            this.apply();
+        }
+
+        /**
+         * Put the current shape on the page.
+         *
+         * It is a custom property rather than an inline cursor so the cascade
+         * still decides. static/terminal.css reads it ahead of
+         * --sip-mouse-cursor and ahead of the built-in default, and the one
+         * rule that outranks it is sip's own pointer over a hyperlink.
+         */
+        apply() {
+            const shape = this.current();
+            const root = document.documentElement;
+            if (shape) root.style.setProperty('--sip-pointer-shape', shape);
+            else root.style.removeProperty('--sip-pointer-shape');
+        }
+
+        /** OSC 22's payload: everything after `22;` and before the terminator. */
+        handle(data) {
+            // Consumed either way. Returning false would hand the sequence to
+            // xterm's fallback handler, which logs it as unrecognised.
+            if (typeof data !== 'string' || data.length > POINTER_MAX_PAYLOAD) return true;
+            const first = data.charAt(0);
+            const rest = (first === '=' || first === '>' || first === '<' || first === '?')
+                ? data.slice(1) : data;
+            switch (first) {
+                case '>': this.push(rest); break;
+                case '<': this.pop(); break;
+                case '?': this.query(rest); break;
+                default: this.set(rest); break;
+            }
+            return true;
+        }
+
+        /** The comma separated list, capped. */
+        names(rest) {
+            if (rest === '') return [];
+            return rest.split(',', POINTER_MAX_NAMES);
+        }
+
+        /**
+         * Set the current shape, which replaces the top of the stack rather
+         * than growing it. An empty name is the specification's "reset the
+         * pointer to default" and puts a null there.
+         *
+         * A set takes one name. The whole payload is that name, commas and
+         * all, because the specification says "follow the first char with the
+         * name of the shape", singular. Reading it as a list instead would
+         * make `=url(...),pointer` two names, and the first half of a valid
+         * CSS cursor is exactly what must not get through.
+         */
+        set(name) {
+            const shape = name === '' ? null : pointerShapeOrNull(name);
+            // An unsupported name is a no-op. The program can ask first, with
+            // `?name`, and gets an honest 0.
+            if (name !== '' && shape === null) return;
+            const st = this.stack();
+            if (st.length === 0) st.push(shape);
+            else st[st.length - 1] = shape;
+            this.apply();
+        }
+
+        /**
+         * Push a list, the last name becoming current.
+         *
+         * An unsupported name still takes a slot, as null, so the pointer goes
+         * back to the default for it. Skipping it outright would leave the
+         * program's idea of the stack depth one ahead of sip's, and the pop
+         * after that restores the wrong shape for the rest of the session.
+         * A wrong shape now is cheaper than a stack that never lines up again.
+         */
+        push(rest) {
+            const st = this.stack();
+            for (const name of this.names(rest)) {
+                st.push(pointerShapeOrNull(name));
+                // The specification: the bottom entry is evicted when the
+                // stack is full.
+                if (st.length > POINTER_STACK_MAX) st.shift();
+            }
+            this.apply();
+        }
+
+        /** Pop the top. A pop past the bottom does nothing, as specified. */
+        pop() {
+            const st = this.stack();
+            if (st.length) st.pop();
+            this.apply();
+        }
+
+        /**
+         * Answer a query with an OSC 22 of sip's own.
+         *
+         * The reply carries only sip's own constants and the digits 0 and 1.
+         * The queried name is never echoed back, so nothing a program sent can
+         * reach the PTY through this path.
+         */
+        query(rest) {
+            const out = [];
+            for (const name of this.names(rest)) {
+                switch (name) {
+                    // `0` when the stack is empty, i.e. no shape is set.
+                    case '__current__': out.push(this.current() || '0'); break;
+                    case '__default__': out.push(this.defaultShape()); break;
+                    case '__grabbed__': out.push(POINTER_GRABBED); break;
+                    default: out.push(POINTER_SHAPES.has(name) ? '1' : '0'); break;
+                }
+            }
+            if (out.length === 0) return;
+            this.sendReply('\x1b]22;' + out.join(',') + '\x1b\\');
+        }
+    }
+
     // --- window.sip, the page API ---------------------------------------
     //
     // This is what a deployment's own script may rely on, and the whole of it.
@@ -516,6 +771,9 @@
             this.connection = null;
             this.connected = false;
             this.readOnly = false;
+            // The OSC 22 pointer shape state. Built once the terminal exists,
+            // because it hangs off xterm's parser and its buffers.
+            this.pointer = null;
 
             this.reconnectAttempts = 0;
             this.maxReconnectAttempts = 5;
@@ -720,6 +978,17 @@
 
             this.webterm = new WebTerm(this.webtermOptions());
             await this.webterm.open(host);
+
+            // The pointer shape protocol. The reply to a query takes
+            // sendInput, which is the path a keystroke takes, because a reply
+            // is input as far as the program is concerned. That also gets the
+            // read-only case right for free: a session that sends no
+            // keystrokes sends no replies either.
+            this.pointer = new PointerShapes(
+                this.term,
+                (reply) => { this.sendInput(reply).catch(() => {}); },
+                () => defaultPointerShape(this.appearance, this.term),
+            );
 
             // Input, mouse reports and kitty protocol replies leave through the
             // attached transport on their own. What is wired here is the part
@@ -934,6 +1203,12 @@
                         const options = JSON.parse(this.decoder.decode(data.subarray(1)));
                         this.readOnly = options.readOnly || false;
                         this.applyAppearance(options.appearance);
+                        // Options arrive once per session, so this is where a
+                        // reconnect starts over. A browser that comes back to
+                        // a new PTY must not keep the shape the old one set:
+                        // the program that set it is gone and nothing will
+                        // ever pop it.
+                        if (this.pointer) this.pointer.reset();
                         // Read-only is enforced inside webterm, so keystrokes,
                         // mouse reports and kitty protocol replies alike stop
                         // at the source rather than being filtered per path.
