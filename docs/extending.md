@@ -1,8 +1,8 @@
 # Changing sip's page without forking it
 
 Everything the browser runs is baked into sip's binary by `go:embed`. Until
-these five options existed, changing one CSS rule meant vendoring seven files
-and maintaining them forever.
+these options existed, changing one CSS rule meant vendoring seven files and
+maintaining them forever.
 
 `examples/hackable` is all of it in one file. Run it and read it beside this
 page:
@@ -22,6 +22,7 @@ file.
 | Different colours, cursors or a font size | `Config.Appearance` — see [Colours](../README.md#colours) |
 | A few CSS rules | `Config.ExtraCSS` |
 | A small script on the page | `Config.ExtraJS` and `window.sip` |
+| To decide what that script may do | `Config.PageAPI` |
 | A logo, a font, an image | `Config.StaticFS`, under a name sip does not use |
 | A URL of your own: a manifest, an icon file, a page | `Config.Routes` |
 | To replace one of sip's client files | `Config.StaticFS`, under that file's name |
@@ -62,14 +63,19 @@ it runs after sip's client and before the terminal opens.
 
 ```go
 cfg.ExtraJS = `
-sip.on('ready',      (e) => console.log('grid', e.cols, e.rows));
-sip.on('connect',    (e) => banner.textContent = 'on ' + e.transport);
-sip.on('disconnect', (e) => banner.textContent = 'off: ' + e.reason);
-document.getElementById('restart').onclick = () => sip.send('\x03exec bash\n');
+const api = sip.claim();
+
+api.on('ready',      (e) => console.log('grid', e.cols, e.rows));
+api.on('connect',    (e) => banner.textContent = 'on ' + e.transport);
+api.on('disconnect', (e) => banner.textContent = 'off: ' + e.reason);
+document.getElementById('restart').onclick = () => api.send('\x03exec bash\n');
 `
 ```
 
-`window.sip` is what sip promises to keep. It is four calls and five events.
+`window.sip` is what sip promises to keep. Four calls and five events sit on it
+directly. Everything else arrives through `sip.claim()`, and what `claim`
+answers is the deployment's own choice. See
+[Config.PageAPI](#configpageapi-what-the-page-may-do) below.
 
 | Call | Does |
 |---|---|
@@ -77,6 +83,8 @@ document.getElementById('restart').onclick = () => sip.send('\x03exec bash\n');
 | `sip.off(name, fn)` | Stop listening. |
 | `sip.send(data)` | Send input, as if it had been typed. Returns a promise. |
 | `sip.size()` | `{cols, rows}`, or `null` before `ready`. |
+| `sip.capabilities()` | The capability names this deployment granted. |
+| `sip.claim()` | The rest of the API. It answers once. |
 
 | Event | Detail | When |
 |---|---|---|
@@ -92,12 +100,263 @@ script never has to race the terminal.
 A listener that throws is reported to the console and the rest still run. One
 bad line in your script must not take the terminal with it.
 
+## Config.PageAPI: what the page may do
+
+A page script can do more than watch and type. It can repaint the terminal,
+search the scrollback, read the selection, copy it and restart the session.
+Every one of those is off unless you turn it on.
+
+```go
+cfg.PageAPI = sip.PageAPI{
+    Grant:  []sip.Capability{sip.CapAppearance, sip.CapRead},
+    Revoke: []sip.Capability{sip.CapInput},
+}
+```
+
+`Grant` adds to the default set. `Revoke` runs after `Grant` and takes away, so
+a capability in both lists is refused. Neither field needs a "none" value:
+revoke everything and the page gets nothing.
+
+### The capabilities
+
+| Capability | The page may | Default |
+|---|---|---|
+| `CapObserve` | Listen for the events, read the grid size and the status. | on |
+| `CapInput` | Type into the shell, and paste into it. | on |
+| `CapAppearance` | Repaint the palette, the font, the cursors and the tab. | off |
+| `CapView` | Scroll the viewport, clear the scrollback, focus the grid. | off |
+| `CapRead` | Read the selection, and search what the program printed. | off |
+| `CapClipboard` | Copy the selection to the system clipboard. | off |
+| `CapConnection` | End the session and start a new one. | off |
+
+**The default is `CapObserve` and `CapInput`, and it is exactly what
+`window.sip` granted before this option existed.** A deployment that upgrades
+sip gains no call it did not already have.
+
+**Reach for `CapAppearance` on its own** when the page wants a theme switcher,
+a font size control or a tab icon. It repaints and it reads nothing.
+
+**Do not reach for `sip.AllCapabilities()`** unless you write and ship every
+script on the page. A grant is a promise about the document, not about the line
+you are writing. The next section says why.
+
+**`CapInput` is the strongest one.** Anything that can call `sip.send` can run
+a command in the user's shell. A page that only restyles the terminal should
+revoke it.
+
+**`CapRead` is program output.** The selection is what the program printed.
+Search is the same thing one answer at a time, so the two travel together: a
+page that can ask "is this string on the screen" can learn the screen.
+
+**`CapConnection` is destructive.** A reconnect ends the running session and
+starts a new one, and the program the user was running dies with it. The client
+already reconnects on its own when a transport drops, so this is a button, not
+a recovery path.
+
+A capability name sip does not know is refused at startup, and the refusal
+lists the names it does know. A misspelled grant is silent otherwise, and
+silence reads exactly like sip ignoring the option.
+
+### A call the page does not have
+
+It throws, at the call, every time:
+
+```
+SipCapabilityError: sip: this page does not grant the appearance capability.
+Add it to Config.PageAPI.Grant in Go.
+```
+
+The error carries the capability on `error.capability`. Nothing happens before
+it throws, so a refused call cannot half apply. Ask `sip.capabilities()` first
+if you would rather look than catch.
+
+### sip.claim
+
+`sip.claim()` hands over the API object once. The first caller gets it and
+every caller after that gets an error.
+
+```js
+const api = sip.claim();   // the first line of your own script
+```
+
+Call it early, from your own script. An API that nobody has claimed is there
+for whatever runs next.
+
+What this buys is written out plainly below. It is not isolation.
+
+## Who you are defending against
+
+Three things can reach the page, and they are not the same.
+
+### 1. The program in the terminal
+
+The terminal renders bytes from whatever the user is running. Treat every one
+of those bytes as hostile, because a program can print anything a program
+likes.
+
+**No byte from the program calls anything on this page.** Program output
+reaches the grid and stops there. It sets no capability, no CSS property, no
+tab icon and no page script running. The browser suite proves it by putting the
+escape sequences a program would use into a real shell and asserting that
+nothing moved.
+
+Two consequences for your own script:
+
+- **The `title` event carries a string the program chose.** It is the one
+  place program output reaches the default API, and sip cannot help that: the
+  point of the event is that the program renamed the tab. Put it in
+  `textContent`. Never put it in `innerHTML`, in a URL or in a CSS value.
+- **`sip.appearance.get()` reports what sip was told to paint.** A program that
+  changes a colour with an escape sequence changes the terminal and not this,
+  because a value the program chose is not a value your page asked for.
+
+Every value your script hands to `sip.appearance.set()` is checked before it
+reaches the browser: a colour must be hex, a cursor must be a keyword sip
+knows, a tab icon must not be a `javascript:` URL, and a field sip does not
+know is refused rather than passed on. That check is there for the day your
+own script reads a theme name out of a query string.
+
+### 2. Another script on the page
+
+If your page loads analytics, a widget or anything else you did not write, that
+code shares one JavaScript context with sip's client. It can call anything that
+context can reach.
+
+`sip.claim()` raises the bar. The API object is handed over instead of parked
+on `window`, so a script that arrives later cannot reach the powerful half of
+it unless your own code hands it over.
+
+**It is not a boundary, and this is the honest part.** Inside one JavaScript
+context you cannot keep a capability away from another script in that context.
+A script that runs before sip's client can replace `window.sip`, patch the
+functions the client is built from, or set the config the client reads. A
+token, a private symbol or a closure would change none of that.
+
+So:
+
+- **`sip.claim()` reduces accidental exposure.** It is worth using, and it is
+  the reason to call it on your first line.
+- **The claimed object holds its own handles.** `window.sip` is a plain object
+  and a later script can replace a call on it. That does not change what your
+  claimed object does, so replacing `window.sip.send` does not put anyone
+  between your page and its terminal.
+- **The capability list bounds sip's supported API.** It does not bound the
+  document. `window.sipTerm` is still on the page for sip's own browser tests,
+  and a script that wants the terminal's buffer can take it from there.
+- **An operator who needs a real boundary must use an iframe.** Serve sip on
+  its own origin, put it in an iframe, and talk to it with `postMessage`. A
+  separate context is the only thing that is actually a wall.
+
+### 3. Your own config
+
+`Config.PageAPI` is a promise about every script in the document. Grant the
+capability the page needs and no more. Revoke `CapInput` from a page that has
+no business typing.
+
+Every capability sip added after the first four calls is off by default, so
+silence is safe. The cost of an unsure answer is one line in Go.
+
+## The rest of the API
+
+Everything below comes from `sip.claim()`. Each call names the capability it
+needs. `api.version` is the shape of the object, and it goes up when a call
+changes meaning.
+
+### status, observe
+
+```js
+api.status()   // {connected, transport, readOnly, renderer, cols, rows} or null
+```
+
+### input
+
+```js
+api.input.send(data)    // as if typed
+api.input.paste(text)   // as a paste, so bracketed paste mode sees it
+```
+
+### appearance
+
+```js
+api.appearance.get()          // what sip is painting
+api.appearance.set(patch)     // repaint
+api.appearance.reset()        // back to the deployment's own appearance
+```
+
+The patch takes any of `theme`, `pageBackground`, `fontSize`, `fontFamily`,
+`scrollback`, `cursorStyle`, `cursorInactiveStyle`, `cursorBlink`,
+`mouseCursor`, `title` and `favicon`. They are the fields of
+[`Appearance`](../README.md#colours) and they mean the same thing here.
+
+```js
+api.appearance.set({ theme: { background: '#282828', foreground: '#ebdbb2' } });
+```
+
+A theme is a patch, the way it is in Go: three colours change three colours.
+
+`mouseCursor` takes the same keywords `Appearance.MouseCursor` does. A program
+that names its own pointer shape through the kitty protocol wins while it holds
+one, which is the same order sip already follows.
+
+The chrome follows the palette, so the settings panel and the status line
+repaint with the terminal.
+
+It works before the terminal opens, which is where a page that reads a theme
+out of local storage wants it. The first paint is then already the right one.
+
+A reconnect re-sends the deployment's own appearance. What your page set goes
+back on top of it, so a live theme survives.
+
+### view
+
+```js
+api.view.scrollToTop()
+api.view.scrollToBottom()
+api.view.scrollLines(count)   // negative scrolls back
+api.view.clear()              // throws the scrollback away
+api.view.focus()
+api.view.blur()
+```
+
+### selection and search, both CapRead
+
+```js
+api.selection.has()        // boolean
+api.selection.get()        // the selected text
+api.selection.clear()
+api.selection.selectAll()
+
+api.search.find(query, { caseSensitive, backwards })   // {row, col, length} or null
+api.search.findNext()
+api.search.findPrevious()
+api.search.clear()
+```
+
+`find` selects the match and scrolls to it. The query is plain text and never a
+pattern: a regular expression from a page script is your own runtime to lose.
+Wrapped lines are searched as the line they wrapped from, which is most of what
+is on a terminal screen.
+
+### clipboard
+
+```js
+api.clipboard.copySelection()   // promise for whether it landed
+```
+
+The text does not pass through your script, which is why this is not `CapRead`.
+
+### connection
+
+```js
+api.connection.reconnect()   // ends the session and starts a new one
+```
+
 ### What is deliberately not in it
 
 **The terminal object.** There is no `sip.term` in the promise, and that is the
 whole design. Sip renders with xterm.js today and has two renderer branches in
 flight. A handle to xterm's `Terminal` would be a promise sip plans to break,
-and a broken promise reads as sip's bug in your users' eyes. Everything above
+and a broken promise reads as sip's bug in your users' eyes. Every call above
 is answerable whatever renders the grid.
 
 If you need something xterm-specific, open an issue and ask for a `Config`
@@ -106,6 +365,17 @@ field. That is the route sip maintains.
 **The output stream.** No event carries what the program printed. It is a
 firehose, it would tie sip to the exact shape of its output path, and a page
 script that logs a terminal's output is a privacy hazard by accident.
+`CapRead` is the bounded answer: the user selects, or your script searches for
+something it already knows.
+
+**Reading the clipboard.** `navigator.clipboard.readText()` is the browser's
+own API, it asks the user, and it works on any page. Sip has nothing to add to
+it but a second door.
+
+**A capability that changes while the page runs.** The list is decided when the
+page is rendered and never again. The session handshake does not carry it. A
+capability that could widen after your script has already run is a capability
+whose check is a race.
 
 **The connection, the settings object and the DOM.** `window.sipTerm`,
 `window.sip.term`, `window.sip.settings`, the element ids and the CSS class

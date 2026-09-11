@@ -100,6 +100,7 @@ sip/
 ├── resize_throttle.go      # Coalescing inbound resize messages
 ├── assets.go               # StaticFS/ExtraCSS/ExtraJS/Routes: the asset pipeline and
 │                           # the traversal gate; Assets/AssetNames/AssetDigest
+├── pageapi.go              # Config.PageAPI: Capability, the default set, Grant/Revoke
 ├── kittygfx.go             # Server-side kitty graphics PNG/JPEG/GIF → RGBA transcoder
 ├── cert.go                 # Ephemeral self-signed cert (WebTransport, loopback)
 ├── certstore.go            # The managed on-disk keypair: create/load/remove, SAN discovery
@@ -114,7 +115,9 @@ sip/
 │   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
 ├── static/
 │   ├── index.html          # Loads webterm.js + mobile.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
-│   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal (settings, status)
+│   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal
+│   │                       # (settings, status) + window.sip, the page API and its
+│   │                       # capability check
 │   ├── mobile.js           # Classic script: the touch key bar, the keyboard-aware
 │   │                       # layout, the touch mouse layer and installDraggable.
 │   │                       # Publishes window.SipMobile
@@ -126,8 +129,8 @@ sip/
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 ├── examples/simple/        # Counter example (Bubble Tea mode)
 ├── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
-└── examples/hackable/      # ExtraCSS/ExtraJS/StaticFS/Routes in one file; extend.spec.mjs
-                            # drives it
+└── examples/hackable/      # ExtraCSS/ExtraJS/StaticFS/Routes/PageAPI in one file;
+                            # extend.spec.mjs and pageapi.spec.mjs drive it
 ```
 
 ## Architecture
@@ -487,6 +490,13 @@ one has to stay unconfigured. The third is `examples/hackable`, on
 out of it and reads the first server for the other half of the claim, that a
 deployment configuring nothing pays nothing.
 
+`pageapi.spec.mjs` needs all three at once, and that is why the capability
+grants are spread across them rather than gathered in a fourth. The default
+server proves the default grant and every denied call. `examples/hackable`
+grants every capability and proves each one works. `examples/appearance`
+grants appearance and revokes input, which is the split the design turns on,
+so it proves a page can repaint the terminal and still be refused a keystroke.
+
 Firefox is not optional decoration: it is the only engine here that reaches
 **WebTransport** against a loopback server (Chromium falls back to WebSocket), so
 it is the only coverage of that transport. Two consequences for anyone writing a
@@ -615,6 +625,7 @@ type Config struct {
     FontPath, FontFamily                       string         // custom font upload
     Appearance                                 Appearance     // palette, cursors, chrome
     ExtraCSS, ExtraJS                          string         // added to the page, upgrade-safe
+    PageAPI                                    PageAPI        // what window.sip lets a page script do
     StaticFS                                   fs.FS          // replaces client files, name by name
     Routes                                     []Route        // the deployment's own URLs
     AutoTLS                                    bool           // serve from sip's managed cert
@@ -881,6 +892,65 @@ push and a query sent on one line ran as three commands, the push became
 suite sends Ctrl-U before every line because of it. This is not a sip bug —
 every terminal does it, and a program that queries is expected to read its own
 reply — but it will mislead anyone debugging by hand.
+### The page API and its capabilities
+
+`pageapi.go` is the Go half and the `window.sip` block in `static/terminal.js`
+is the other. `docs/extending.md` argues the surface and carries the threat
+model; this says how it is wired and what will break if it is touched.
+
+**The default set is the old surface, exactly.** `defaultCapabilities` is
+`observe` and `input`, which is `on`, `off`, `send` and `size`. A deployment
+that sets no `PageAPI` gains nothing by upgrading, and `clientOptions` returns
+nil for it so `renderIndex` emits no blob at all. `TestDefaultPageUnchanged`
+still pins the rendered page, and `TestPageAPIZeroGrantsWhatSipAlreadyGranted`
+pins the set.
+
+**The list travels once, and that is deliberate.** It is seeded into
+`window.__sipConfig.pageAPI` at index render and the handshake does not carry
+it. `Appearance` travels twice on purpose, and that redundancy is what defeated
+six of its negative controls; here a second route would be worse than
+redundant. A capability that could widen after the deployment's script has run
+is a capability whose check is a race, and `MsgOptions` is the input closest to
+the program being served. One producer means a broken producer fails a test.
+
+**The client snapshots the list while `terminal.js` parses.** A script that
+loads later cannot widen it by assigning to `__sipConfig`. A script that runs
+*earlier* still can, and that is written down in `docs/extending.md` rather
+than papered over: one JavaScript context holds no boundary.
+
+**The check is per call, not per handoff.** A denied method exists and throws
+`SipCapabilityError` naming the capability and the Go field. A missing method
+reads as sip being broken, which is the wrong bug report. It costs one set
+lookup.
+
+**`sip.claim()` answers once.** It hands the powerful half of the API to the
+first caller instead of parking it on `window`, which keeps it from a script
+appended at runtime. It is not isolation and the docs say so in those words.
+
+**Every value the page hands in is checked before it reaches the browser**, on
+the same allowlists Go uses: hex colours, the cursor keyword set, the favicon
+scheme, and a refusal for any field name sip does not know. That last one is
+what keeps a page out of `chrome`, the derived map of raw CSS custom property
+values. `clienttests/pageapi.spec.mjs` drives each of those as an attack.
+
+**The chrome derivation exists twice, and one test pins the pair.**
+`Appearance.chrome` derives the panel colours in Go for what the deployment
+configured; `deriveChrome` in `terminal.js` does it for what a page script
+sets, because there is no server to ask at that moment. The browser test feeds
+the client the palette the server already derived and compares the two maps
+property by property. Change the mix in one and that test names the other.
+
+**A page patch outranks the deployment's blob.** `MsgOptions` re-applies the
+deployment's appearance on every connect, so `applyPagePatch` puts what the
+page set back on top afterwards. Without it a live theme reverts on the first
+reconnect, which is the same precedence rule the settings panel already
+follows: a deployment picks a starting point, a user picks an answer.
+
+**Search is sip's, not xterm's.** The vendored bundle carries no search addon.
+`terminal.js` joins the buffer rows back into the logical lines they wrapped
+from, finds the match there, and measures the column back out of the row it
+started in, because a wide character is one character in two columns. A match
+is a row, a column and a length, so no renderer object escapes.
 
 ### Custom fonts
 

@@ -117,6 +117,9 @@
         return Object.assign({}, THEME, (a && a.theme) || {});
     }
 
+    /** The chrome properties applyPageAppearance last wrote, so it can undo them. */
+    let appliedChrome = [];
+
     /**
      * Paint the page around the terminal: the chrome colours, the mouse
      * cursor, the tab title and its icon.
@@ -128,6 +131,7 @@
     function applyPageAppearance(a) {
         const root = document.documentElement;
         const chrome = (a && a.chrome) || {};
+        const applied = [];
         for (const prop of Object.keys(chrome)) {
             // Two namespaces and no others, so the blob cannot reach a
             // property the page did not mean to expose. --webterm-* is the
@@ -135,8 +139,19 @@
             // the scrollbar, which sip's properties do not reach.
             if (prop.startsWith('--sip-') || prop.startsWith('--webterm-')) {
                 root.style.setProperty(prop, chrome[prop]);
+                applied.push(prop);
             }
         }
+        // A colour this palette does not name goes back to the stylesheet's
+        // own default, which is what makes appearance.reset a reset rather
+        // than a partial one. Only the properties this function set are
+        // removed: static/mobile.js publishes --sip-kb-inset and
+        // --sip-keybar-h on the same element, and taking those away would
+        // hand the software keyboard's share of the window back to nobody.
+        for (const prop of appliedChrome) {
+            if (applied.indexOf(prop) < 0) root.style.removeProperty(prop);
+        }
+        appliedChrome = applied;
         if (a && a.mouseCursor) root.style.setProperty('--sip-mouse-cursor', a.mouseCursor);
         else root.style.removeProperty('--sip-mouse-cursor');
 
@@ -414,16 +429,462 @@
     // ids, the settings object and the webterm instance all move without
     // notice, and a script that reads them breaks on an upgrade.
     //
-    // Four calls and five events, and each one was picked because sip can
-    // still answer it after the renderer underneath changes. There is no
-    // handle to the xterm.js Terminal here for exactly that reason: sip has
-    // two renderer branches in flight, and a promise it plans to break is
-    // worse than no promise. Ask for a Config field instead, which is the
-    // route sip maintains.
+    // Every call was picked because sip can still answer it after the renderer
+    // underneath changes. There is no handle to the xterm.js Terminal here for
+    // exactly that reason: sip has two renderer branches in flight, and a
+    // promise it plans to break is worse than no promise. Nothing here returns
+    // a renderer object, and nothing here takes one.
     //
     // It is published while this script parses, before the terminal exists,
     // so a deferred script can subscribe and still catch the ready event. The
     // ready event is sticky: a listener added afterwards is called anyway.
+    //
+    // What the page may do is the deployment's answer, not sip's. Config.PageAPI
+    // in Go names the capabilities, the list arrives in __sipConfig, and every
+    // call checks it. See docs/extending.md for the threat model, including
+    // what this check does not buy.
+
+    /** Every capability sip defines. An unknown name from a newer server is ignored. */
+    const CAP_ALL = ['observe', 'input', 'appearance', 'view', 'read', 'clipboard', 'connection'];
+
+    /**
+     * What a deployment that configures nothing grants: the events, the grid
+     * size and send. It is what window.sip answered before capabilities
+     * existed, and Go's defaultCapabilities is the other half of this pair.
+     */
+    const CAP_DEFAULT = ['observe', 'input'];
+
+    // Read while this script parses, so a script that loads later cannot widen
+    // it by assigning to __sipConfig. A script that runs *earlier* still can:
+    // one JavaScript context holds no boundary, and docs/extending.md says so
+    // rather than pretending otherwise.
+    const grantedCaps = Object.freeze(
+        (Array.isArray(sipConfig.pageAPI) ? sipConfig.pageAPI : CAP_DEFAULT)
+            .filter((c) => CAP_ALL.indexOf(c) >= 0),
+    );
+    const grants = new Set(grantedCaps);
+
+    /** Thrown by a call the deployment did not grant. */
+    class SipCapabilityError extends Error {
+        constructor(cap) {
+            super(`sip: this page does not grant the ${cap} capability. `
+                + `Add it to Config.PageAPI.Grant in Go.`);
+            this.name = 'SipCapabilityError';
+            this.capability = cap;
+        }
+    }
+
+    /**
+     * Refuse a call the deployment did not grant.
+     *
+     * Checked per call rather than once at handoff, because a method that
+     * exists and throws tells the developer which capability to grant, and a
+     * method that is simply missing reads as sip being broken. It costs one
+     * set lookup, and no reference taken earlier can outlive the check.
+     */
+    function need(cap) {
+        if (!grants.has(cap)) throw new SipCapabilityError(cap);
+    }
+
+    // --- Values the page hands in ----------------------------------------
+    //
+    // Everything below refuses a value it does not understand rather than
+    // passing it to the browser. Two reasons, and the second is the one that
+    // matters: a browser drops a colour or a cursor keyword it cannot parse
+    // and silently keeps the old one, so a typo reads as sip ignoring the
+    // call; and a value that reaches a CSS property or a link href is a place
+    // where a string someone else chose can point the browser somewhere. The
+    // page script is the deployment's own code, but what it feeds these calls
+    // may not be, and sip is the last thing between the two.
+
+    const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+    // The CSS cursor keywords Appearance.MouseCursor accepts, which is what a
+    // page may set too: the protocol's thirty shapes plus the four that are a
+    // deployment's to choose and a program's to do without. An allowlist and
+    // never a free string, because url(...) is a valid cursor value.
+    //
+    // Built from POINTER_SHAPES rather than written out again, so the two
+    // cannot drift. pointershapes.go holds the same two lists in Go and
+    // MOUSE_CURSORS_EXTRA is pinned against it by TestClientMouseCursorsMatchGo.
+    const MOUSE_CURSORS_EXTRA = ['none', 'auto', 'context-menu', 'all-scroll'];
+    const MOUSE_CURSORS = new Set([...POINTER_SHAPES, ...MOUSE_CURSORS_EXTRA]);
+    const CURSOR_STYLES = new Set(['block', 'bar', 'underline']);
+    const CURSOR_INACTIVE_STYLES = new Set(['outline', 'block', 'bar', 'underline', 'none']);
+
+    // The theme's field names, which are xterm's own and Go's Theme JSON tags.
+    const THEME_KEYS = new Set([
+        'foreground', 'background', 'cursor', 'cursorAccent',
+        'selectionBackground', 'selectionForeground', 'selectionInactiveBackground',
+        'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+        'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
+        'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
+    ]);
+
+    function checkColor(name, v) {
+        const s = String(v);
+        if (!HEX_RE.test(s)) {
+            throw new TypeError(`sip: ${name} "${s}" is not a hex colour. Write it as #rgb or #rrggbb.`);
+        }
+        return s;
+    }
+
+    function checkKeyword(name, v, allowed) {
+        const s = String(v);
+        if (!allowed.has(s)) {
+            throw new TypeError(`sip: ${name} "${s}" is not one of ${Array.from(allowed).join(', ')}.`);
+        }
+        return s;
+    }
+
+    function checkInt(name, v, lo, hi) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || Math.floor(n) !== n || n < lo || n > hi) {
+            throw new TypeError(`sip: ${name} must be a whole number from ${lo} to ${hi}.`);
+        }
+        return n;
+    }
+
+    /**
+     * A CSS font-family list, with the characters that end a declaration
+     * removed from the alphabet. The family still has to be one the page has
+     * loaded, so this is a syntax gate and not a promise that the font exists.
+     */
+    function checkFontFamily(v) {
+        const s = String(v);
+        if (!s || s.length > 200 || /[<>(){};\\]/.test(s) || /[\x00-\x1f\x7f]/.test(s)) {
+            throw new TypeError('sip: fontFamily must be a plain CSS font-family list under 200 characters.');
+        }
+        return s;
+    }
+
+    function checkText(name, v, max) {
+        const s = String(v).replace(/[\x00-\x1f\x7f]/g, '');
+        if (s.length > max) {
+            throw new TypeError(`sip: ${name} must be under ${max} characters.`);
+        }
+        return s;
+    }
+
+    /**
+     * A URL the page may put in the tab icon's href.
+     *
+     * Allowlisted by scheme and closed by default, which is what makes a
+     * control character or a mixed-case "JavaScript:" a refusal rather than a
+     * bypass. The value is assigned as a property and never written into
+     * markup, so the risk here is the scheme and only the scheme.
+     */
+    function checkIconURL(v) {
+        const s = String(v).replace(/[\x00-\x20\x7f]/g, '');
+        const colon = s.indexOf(':');
+        const slash = s.search(/[/?#]/);
+        if (colon >= 0 && (slash < 0 || colon < slash)) {
+            const scheme = s.slice(0, colon).toLowerCase();
+            if (scheme !== 'http' && scheme !== 'https' && scheme !== 'data') {
+                throw new TypeError(`sip: favicon "${s}" uses the ${scheme} scheme. Use a relative path or an http, https or data URL.`);
+            }
+        }
+        return s;
+    }
+
+    function checkTheme(v) {
+        if (!v || typeof v !== 'object') throw new TypeError('sip: theme must be an object of colours.');
+        const out = {};
+        for (const key of Object.keys(v)) {
+            if (!THEME_KEYS.has(key)) {
+                throw new TypeError(`sip: theme has no "${key}" colour. See Theme in the Go package for the names.`);
+            }
+            out[key] = checkColor('theme.' + key, v[key]);
+        }
+        return out;
+    }
+
+    /**
+     * Check an appearance patch, field by field, and return the checked copy.
+     *
+     * An unknown field is refused rather than dropped. That is what keeps the
+     * page out of `chrome`, the derived map of CSS custom properties: those
+     * carry raw CSS values, sip derives them from a palette it has already
+     * checked, and a page that could write them directly would be writing CSS
+     * rather than naming a colour.
+     */
+    function checkAppearance(patch) {
+        if (!patch || typeof patch !== 'object') {
+            throw new TypeError('sip: appearance.set needs an object.');
+        }
+        const out = {};
+        for (const key of Object.keys(patch)) {
+            const v = patch[key];
+            switch (key) {
+                case 'theme': out.theme = checkTheme(v); break;
+                case 'pageBackground': out.pageBackground = checkColor('pageBackground', v); break;
+                case 'fontSize': out.fontSize = checkInt('fontSize', v, 1, 200); break;
+                case 'fontFamily': out.fontFamily = checkFontFamily(v); break;
+                case 'scrollback': out.scrollback = checkInt('scrollback', v, 0, 1000000); break;
+                case 'cursorStyle': out.cursorStyle = checkKeyword('cursorStyle', v, CURSOR_STYLES); break;
+                case 'cursorInactiveStyle':
+                    out.cursorInactiveStyle = checkKeyword('cursorInactiveStyle', v, CURSOR_INACTIVE_STYLES);
+                    break;
+                case 'cursorBlink': out.cursorBlink = !!v; break;
+                case 'mouseCursor': out.mouseCursor = checkKeyword('mouseCursor', v, MOUSE_CURSORS); break;
+                case 'title': out.title = checkText('title', v, 512); break;
+                case 'favicon': out.favicon = checkIconURL(v); break;
+                default:
+                    throw new TypeError(`sip: appearance.set has no "${key}" setting. See Appearance in the Go package.`);
+            }
+        }
+        return out;
+    }
+
+    // --- The chrome the page repaints ------------------------------------
+
+    /** A hex colour's three channels, or null. Alpha is dropped, as in Go. */
+    function hexRGB(c) {
+        if (!c || !HEX_RE.test(c)) return null;
+        let d = c.slice(1);
+        if (d.length === 3 || d.length === 4) d = d[0] + d[0] + d[1] + d[1] + d[2] + d[2];
+        const n = parseInt(d.slice(0, 6), 16);
+        return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+    }
+
+    /** Blend two hex colours, taking frac of b. The same mix Color.mix does. */
+    function mixColor(a, b, frac) {
+        const x = hexRGB(a);
+        const y = hexRGB(b);
+        if (!x || !y) return '';
+        const ch = (i) => {
+            const v = Math.floor(x[i] * (1 - frac) + y[i] * frac + 0.5);
+            return Math.min(Math.max(v, 0), 255).toString(16).padStart(2, '0');
+        };
+        return '#' + ch(0) + ch(1) + ch(2);
+    }
+
+    /**
+     * The page's own colours, derived from the palette.
+     *
+     * Appearance.chrome in Go does this for what the deployment configured,
+     * and the server sends the result. A page that repaints the palette has no
+     * such producer, so the same derivation lives here, and
+     * pageapi.spec.mjs pins the two against each other by feeding this the
+     * palette the server already derived and comparing the maps.
+     */
+    function deriveChrome(theme, pageBackground) {
+        const t = theme || {};
+        const bg = pageBackground || t.background || '';
+        const out = {};
+        const set = (prop, c) => { if (c) out[prop] = c; };
+        set('--sip-bg', bg);
+        set('--webterm-background', bg);
+        set('--webterm-scrollbar', t.brightBlack);
+        set('--sip-fg', t.foreground);
+        set('--sip-border', t.black);
+        set('--sip-border-strong', t.brightBlack);
+        set('--sip-muted', t.brightWhite);
+        set('--sip-accent', t.blue);
+        set('--sip-accent-strong', t.brightBlue);
+        set('--sip-ok', t.green);
+        set('--sip-warn', t.yellow);
+        set('--sip-error', t.red);
+        set('--sip-cursor', t.cursor);
+        set('--sip-surface', mixColor(bg, t.foreground, 0.12));
+        const rgb = hexRGB(bg);
+        if (rgb) {
+            out['--sip-bg-rgb'] = rgb.join(', ');
+            const bar = hexRGB(mixColor(bg, '#000000', 0.10));
+            if (bar) out['--sip-bar-bg-rgb'] = bar.join(', ');
+        }
+        return out;
+    }
+
+    // --- The appearance the page is painted with -------------------------
+    //
+    // Three layers, in this order: sip's built-in constants, the deployment's
+    // Appearance, and the patch a page script made with appearance.set. The
+    // page's patch is an answer and outranks the deployment's default, the
+    // same rule the settings panel already follows, so a reconnect re-applying
+    // the deployment's blob must not pull a live theme back.
+
+    /** What the page was rendered with, until the client is constructed. */
+    let seededAppearance = sipConfig.appearance || {};
+
+    /** What appearance.set has asked for, kept so a reconnect can re-apply it. */
+    const pagePatch = {};
+
+    /** The deployment appearance under the patch, merged. */
+    function mergeAppearance(base, patch) {
+        const out = Object.assign({}, base, patch);
+        if (base.theme || patch.theme) {
+            out.theme = Object.assign({}, base.theme, patch.theme);
+        }
+        // The server's chrome map was derived from the deployment's palette
+        // alone, so a patch that moves a colour has to derive it again.
+        if (patch.theme || patch.pageBackground) {
+            out.chrome = deriveChrome(out.theme, out.pageBackground);
+        }
+        return out;
+    }
+
+    /** The appearance in force: the deployment's, with the page's patch over it. */
+    function currentAppearance() {
+        return sipClient ? sipClient.appearance : seededAppearance;
+    }
+
+    /**
+     * Put the page's patch back on top of the deployment's appearance.
+     *
+     * Called when the patch changes, when the terminal opens and after every
+     * handshake, because MsgOptions carries the deployment's blob and would
+     * otherwise undo a live theme on the first reconnect.
+     */
+    function applyPagePatch() {
+        if (Object.keys(pagePatch).length === 0) return;
+        const base = sipClient ? sipClient.appearance : seededAppearance;
+        const eff = mergeAppearance(base, pagePatch);
+        if (sipClient) sipClient.appearance = eff;
+        else seededAppearance = eff;
+
+        applyPageAppearance(eff);
+        if (pagePatch.title !== undefined) document.title = pagePatch.title;
+
+        if (!sipClient || !sipClient.webterm) return;
+        const opts = {};
+        if (pagePatch.theme !== undefined) opts.theme = mergeTheme(eff);
+        if (pagePatch.fontSize !== undefined) opts.fontSize = pagePatch.fontSize;
+        if (pagePatch.fontFamily !== undefined) opts.fontFamily = pagePatch.fontFamily;
+        if (pagePatch.cursorBlink !== undefined) opts.cursorBlink = pagePatch.cursorBlink;
+        if (pagePatch.cursorStyle !== undefined) opts.cursorStyle = pagePatch.cursorStyle;
+        if (pagePatch.scrollback !== undefined) opts.scrollback = pagePatch.scrollback;
+        if (pagePatch.cursorInactiveStyle !== undefined) {
+            opts.xterm = { cursorInactiveStyle: pagePatch.cursorInactiveStyle };
+        }
+        if (Object.keys(opts).length) sipClient.webterm.setOptions(opts);
+    }
+
+    // --- Search over the grid --------------------------------------------
+    //
+    // No renderer object escapes, and none is promised: a match is a row, a
+    // column and a length, which any renderer that owns a grid can answer.
+    //
+    // A terminal wraps constantly, so a search that stopped at the row
+    // boundary would miss most of what is on the screen. Rows are joined into
+    // the logical line they came from, the match is found there, and the
+    // column is measured back out of the row it started in. A wide character
+    // is one character in two columns, which is why that last step is a
+    // measurement and not an index.
+
+    const MAX_QUERY = 256;
+
+    /** The buffer rows, joined into the logical lines they wrapped from. */
+    function logicalLines(buf) {
+        const lines = [];
+        for (let i = 0; i < buf.length; i++) {
+            const row = buf.getLine(i);
+            if (!row) continue;
+            const text = row.translateToString(false);
+            const last = lines[lines.length - 1];
+            if (row.isWrapped && last) {
+                last.text += text;
+                last.segments.push({ row: i, length: text.length });
+                continue;
+            }
+            lines.push({ row: i, text, segments: [{ row: i, length: text.length }] });
+        }
+        return lines;
+    }
+
+    /** The column a character index sits at, measured through the row's cells. */
+    function columnAt(row, charIndex) {
+        if (charIndex <= 0) return 0;
+        let lo = 0;
+        let hi = row.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (row.translateToString(false, 0, mid).length < charIndex) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    /** Where a character index inside a logical line lands in the buffer. */
+    function bufferPosition(buf, line, index) {
+        let left = index;
+        for (const seg of line.segments) {
+            if (left < seg.length) {
+                return { row: seg.row, col: columnAt(buf.getLine(seg.row), left) };
+            }
+            left -= seg.length;
+        }
+        return { row: line.row, col: 0 };
+    }
+
+    /** The terminal's search, over the buffer rather than over the renderer. */
+    const search = {
+        query: '',
+        caseSensitive: false,
+        match: null,
+
+        run(query, opts) {
+            const term = sipClient && sipClient.term;
+            if (!term) return null;
+            const q = String(query);
+            if (!q || q.length > MAX_QUERY) return null;
+            const o = opts || {};
+            const caseSensitive = !!o.caseSensitive;
+            const backwards = !!o.backwards;
+            this.query = q;
+            this.caseSensitive = caseSensitive;
+
+            const buf = term.buffer.active;
+            const lines = logicalLines(buf);
+            const needle = caseSensitive ? q : q.toLowerCase();
+
+            // Start where the last match was, so next and previous walk.
+            const from = this.match ? this.match.row : buf.viewportY;
+            let startLine = 0;
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].row <= from) startLine = i;
+                else break;
+            }
+
+            for (let n = 0; n <= lines.length; n++) {
+                const i = backwards
+                    ? (startLine - n + lines.length * 2) % lines.length
+                    : (startLine + n) % lines.length;
+                const line = lines[i];
+                const hay = caseSensitive ? line.text : line.text.toLowerCase();
+                // Skip the match the caller is already sitting on, so a
+                // second call moves instead of answering the same row.
+                let index = -1;
+                if (n === 0 && this.match && this.match.line === line.row) {
+                    index = backwards
+                        ? hay.lastIndexOf(needle, Math.max(0, this.match.index - 1))
+                        : hay.indexOf(needle, this.match.index + 1);
+                } else {
+                    index = backwards ? hay.lastIndexOf(needle) : hay.indexOf(needle);
+                }
+                if (index < 0) continue;
+
+                const at = bufferPosition(buf, line, index);
+                this.match = { line: line.row, index, row: at.row, col: at.col, length: q.length };
+                term.select(at.col, at.row, q.length);
+                if (at.row < buf.viewportY || at.row >= buf.viewportY + term.rows) {
+                    term.scrollToLine(Math.max(0, at.row - Math.floor(term.rows / 2)));
+                }
+                return { row: at.row, col: at.col, length: q.length };
+            }
+            this.match = null;
+            return null;
+        },
+
+        reset() {
+            this.query = '';
+            this.match = null;
+            const term = sipClient && sipClient.term;
+            if (term) term.clearSelection();
+        },
+    };
+
+    // --- The API objects --------------------------------------------------
 
     const sipListeners = new Map();
     let sipReadyDetail = null;
@@ -445,55 +906,299 @@
         for (const fn of Array.from(fns)) sipCall(name, fn, detail);
     }
 
+    /** The terminal, or null before the page's terminal has opened. */
+    function term() {
+        return sipClient ? sipClient.term : null;
+    }
+
+    /** Whether sip.claim has already handed the API over. */
+    let claimed = false;
+
+    // --- The four calls window.sip has always carried --------------------
+    //
+    // They are closure functions rather than properties read off window.sip,
+    // and the claimed object holds these and not the object. window.sip is a
+    // plain object the page may decorate, and a script that replaces
+    // window.sip.on must not thereby see the events a deployment's own
+    // claimed handle receives. It is the same bar sip.claim raises, held at
+    // the same place.
+
+    /**
+     * Listen for a page event. Returns a function that removes the
+     * listener, so a caller need not keep the callback to undo it.
+     *
+     *   ready      {cols, rows}   the terminal exists, before it connects
+     *   connect    {transport}    a transport is carrying the session
+     *   disconnect {reason}       'closed' if the session ended, 'lost' otherwise
+     *   resize     {cols, rows}   the grid changed shape
+     *   title      {title}        the program renamed the browser tab
+     *
+     * A listener that throws is reported to the console and the rest still
+     * run: a deployment's script must not be able to stop the terminal.
+     */
+    function apiOn(name, fn) {
+        need('observe');
+        if (typeof fn !== 'function') throw new TypeError('sip.on needs a function');
+        let fns = sipListeners.get(name);
+        if (!fns) sipListeners.set(name, (fns = new Set()));
+        fns.add(fn);
+        if (name === 'ready' && sipReadyDetail) {
+            queueMicrotask(() => {
+                if (fns.has(fn)) sipCall(name, fn, sipReadyDetail);
+            });
+        }
+        return () => apiOff(name, fn);
+    }
+
+    /** Stop listening. Safe to call with a function that never listened. */
+    function apiOff(name, fn) {
+        need('observe');
+        const fns = sipListeners.get(name);
+        if (fns) fns.delete(fn);
+    }
+
+    /**
+     * Send terminal input, as if it had been typed. Returns a promise that
+     * settles once the bytes have left. A read-only session and a page whose
+     * terminal has not opened both accept the call and send nothing.
+     */
+    function apiSend(data) {
+        need('input');
+        if (!sipClient) return Promise.resolve();
+        return sipClient.sendInput(String(data));
+    }
+
+    /** The grid's shape, or null before the ready event. */
+    function apiSize() {
+        need('observe');
+        const t = term();
+        return t ? { cols: t.cols, rows: t.rows } : null;
+    }
+
     const sipApi = {
+        on: apiOn,
+        off: apiOff,
+        send: apiSend,
+        size: apiSize,
+
+        /** The capabilities this deployment granted, as names. */
+        capabilities() {
+            return grantedCaps;
+        },
+
         /**
-         * Listen for a page event. Returns a function that removes the
-         * listener, so a caller need not keep the callback to undo it.
+         * Take the page API, once.
          *
-         *   ready      {cols, rows}   the terminal exists, before it connects
-         *   connect    {transport}    a transport is carrying the session
-         *   disconnect {reason}       'closed' if the session ended, 'lost' otherwise
-         *   resize     {cols, rows}   the grid changed shape
-         *   title      {title}        the program renamed the browser tab
+         * The object it returns carries every granted capability. It is handed
+         * over instead of parked on window, so a script that loads after this
+         * one — an analytics tag, a widget, anything appended at runtime —
+         * cannot reach the powerful half of the API unless your own code hands
+         * it over. That raises the bar. It is not a boundary: a script that
+         * runs before sip's client can patch anything it likes, and
+         * docs/extending.md says so plainly.
          *
-         * A listener that throws is reported to the console and the rest still
-         * run: a deployment's script must not be able to stop the terminal.
+         * Call it early, from your own script. An API nobody has claimed is
+         * there for whatever runs next.
          */
-        on(name, fn) {
-            if (typeof fn !== 'function') throw new TypeError('sip.on needs a function');
-            let fns = sipListeners.get(name);
-            if (!fns) sipListeners.set(name, (fns = new Set()));
-            fns.add(fn);
-            if (name === 'ready' && sipReadyDetail) {
-                queueMicrotask(() => {
-                    if (fns.has(fn)) sipCall(name, fn, sipReadyDetail);
-                });
+        claim() {
+            if (claimed) {
+                throw new Error('sip: the page API is claimed already. sip.claim() answers once. '
+                    + 'Keep the object your own script took and pass it on from there.');
             }
-            return () => sipApi.off(name, fn);
-        },
-
-        /** Stop listening. Safe to call with a function that never listened. */
-        off(name, fn) {
-            const fns = sipListeners.get(name);
-            if (fns) fns.delete(fn);
-        },
-
-        /**
-         * Send terminal input, as if it had been typed. Returns a promise that
-         * settles once the bytes have left. A read-only session and a page
-         * whose terminal has not opened both accept the call and send nothing.
-         */
-        async send(data) {
-            if (!sipClient) return;
-            await sipClient.sendInput(String(data));
-        },
-
-        /** The grid's shape, or null before the ready event. */
-        size() {
-            if (!sipClient || !sipClient.term) return null;
-            return { cols: sipClient.term.cols, rows: sipClient.term.rows };
+            claimed = true;
+            return claimedApi;
         },
     };
+
+    /** Reads and writes that are not on window.sip. See sip.claim. */
+    const claimedApi = Object.freeze({
+        /** The shape of this API. It goes up when a call changes meaning. */
+        version: 1,
+        capabilities: () => grantedCaps,
+
+        on: apiOn,
+        off: apiOff,
+        send: apiSend,
+        size: apiSize,
+
+        /**
+         * What the terminal is doing: whether a transport is carrying it,
+         * which one, whether the session refuses input, which renderer drew
+         * the grid and how big the grid is. Null before the terminal opens.
+         */
+        status() {
+            need('observe');
+            const t = term();
+            if (!t) return null;
+            return Object.freeze({
+                connected: !!sipClient.connected,
+                transport: sipClient.currentTransport,
+                readOnly: !!sipClient.readOnly,
+                renderer: sipClient.currentRenderer,
+                cols: t.cols,
+                rows: t.rows,
+            });
+        },
+
+        input: Object.freeze({
+            /** Send input, as if it had been typed. */
+            send: apiSend,
+
+            /**
+             * Paste text, the way the browser's own paste does, so a program
+             * in bracketed paste mode sees it as a paste and not as typing.
+             */
+            paste(text) {
+                need('input');
+                if (!sipClient || !sipClient.webterm) return;
+                sipClient.webterm.paste(String(text));
+            },
+        }),
+
+        appearance: Object.freeze({
+            /**
+             * The appearance in force: the deployment's, with whatever this
+             * page has set over it.
+             *
+             * It reports what sip was told to paint. A program that changes a
+             * colour with an escape sequence changes the terminal and not
+             * this, because a value a program chose is not a value the page
+             * asked for.
+             */
+            get() {
+                need('appearance');
+                const a = currentAppearance();
+                return Object.freeze({
+                    theme: Object.freeze(mergeTheme(a)),
+                    fontSize: sipClient ? sipClient.settings.fontSize : (a.fontSize || 0),
+                    fontFamily: sipClient ? sipClient.fontFamily : (a.fontFamily || ''),
+                    cursorStyle: a.cursorStyle || 'block',
+                    cursorInactiveStyle: a.cursorInactiveStyle || 'outline',
+                    cursorBlink: sipClient ? !!sipClient.settings.cursorBlink : !!a.cursorBlink,
+                    scrollback: a.scrollback || 5000,
+                    mouseCursor: a.mouseCursor || '',
+                    title: document.title,
+                    favicon: a.favicon || '',
+                });
+            },
+
+            /**
+             * Repaint. The patch carries any of the fields get returns, and
+             * every one is checked before it reaches the browser.
+             *
+             * It works before the terminal opens, which is where a page that
+             * picks a theme from local storage wants it: the first paint is
+             * then already the right one.
+             */
+            set(patch) {
+                need('appearance');
+                const checked = checkAppearance(patch);
+                if (checked.theme) {
+                    pagePatch.theme = Object.assign({}, pagePatch.theme, checked.theme);
+                    delete checked.theme;
+                }
+                Object.assign(pagePatch, checked);
+                applyPagePatch();
+            },
+
+            /** Drop what this page set and go back to the deployment's appearance. */
+            reset() {
+                need('appearance');
+                for (const key of Object.keys(pagePatch)) delete pagePatch[key];
+                if (sipClient) {
+                    sipClient.applyAppearance(sipClient.serverAppearance || sipConfig.appearance || {});
+                }
+            },
+        }),
+
+        view: Object.freeze({
+            scrollToTop() { need('view'); const t = term(); if (t) t.scrollToTop(); },
+            scrollToBottom() { need('view'); const t = term(); if (t) t.scrollToBottom(); },
+            /** Scroll by whole lines. A negative count scrolls back. */
+            scrollLines(count) {
+                need('view');
+                const n = checkInt('scrollLines', count, -1000000, 1000000);
+                const t = term();
+                if (t) t.scrollLines(n);
+            },
+            /** Throw the scrollback away and keep the line the cursor is on. */
+            clear() { need('view'); const t = term(); if (t) t.clear(); },
+            focus() { need('view'); if (sipClient && sipClient.webterm) sipClient.webterm.focus(); },
+            blur() { need('view'); if (sipClient && sipClient.webterm) sipClient.webterm.blur(); },
+        }),
+
+        selection: Object.freeze({
+            /** Whether anything is selected. */
+            has() { need('read'); const t = term(); return t ? t.hasSelection() : false; },
+            /** The selected text. This is what the program printed. */
+            get() { need('read'); const t = term(); return t ? t.getSelection() : ''; },
+            clear() { need('read'); const t = term(); if (t) t.clearSelection(); },
+            selectAll() { need('read'); const t = term(); if (t) t.selectAll(); },
+        }),
+
+        search: Object.freeze({
+            /**
+             * Find text on the screen or in the scrollback, select it and
+             * scroll to it. Returns {row, col, length} or null.
+             *
+             * Options: caseSensitive and backwards. The query is plain text,
+             * never a pattern: a regular expression from a page script is the
+             * page's own runtime to lose.
+             */
+            find(query, opts) {
+                need('read');
+                return search.run(query, opts);
+            },
+            /** The next match for the last query. */
+            findNext() {
+                need('read');
+                return search.query ? search.run(search.query, { caseSensitive: search.caseSensitive }) : null;
+            },
+            /** The previous match for the last query. */
+            findPrevious() {
+                need('read');
+                return search.query
+                    ? search.run(search.query, { caseSensitive: search.caseSensitive, backwards: true })
+                    : null;
+            },
+            /** Forget the query and drop the selection. */
+            clear() { need('read'); search.reset(); },
+        }),
+
+        clipboard: Object.freeze({
+            /**
+             * Copy the selection to the system clipboard. Returns a promise
+             * for whether it landed.
+             *
+             * The text does not pass through the caller, which is why this is
+             * not the read capability. Reading the clipboard is not here at
+             * all: the browser's own navigator.clipboard is the API for that,
+             * it asks the user, and sip has nothing to add but a second door.
+             */
+            copySelection() {
+                need('clipboard');
+                const t = term();
+                const text = t ? t.getSelection() : '';
+                if (!text) return Promise.resolve(false);
+                return sipClient.copyText(text);
+            },
+        }),
+
+        connection: Object.freeze({
+            /**
+             * Close the session and open a new one.
+             *
+             * The program the user was running dies with the old session. This
+             * is a reconnect button, not a way to recover a dropped link: the
+             * client already reconnects on its own when a transport fails.
+             */
+            reconnect() {
+                need('connection');
+                if (!sipClient) return Promise.resolve();
+                return sipClient.reconnect();
+            },
+        }),
+    });
 
     window.sip = sipApi;
 
@@ -783,7 +1488,12 @@
             this.encoder = new TextEncoder();
             this.decoder = new TextDecoder();
 
-            this.appearance = sipConfig.appearance || {};
+            // Seeded from the deployment's blob, and already carrying
+            // whatever a page script set before the terminal was built.
+            this.appearance = seededAppearance;
+            // The deployment's own blob, kept so appearance.reset can go back
+            // to it after a page script has repainted.
+            this.serverAppearance = null;
             this.storedSettings = {};
             // Whether the program has named the tab itself. Until it does,
             // the configured title stands; after it does, a reconnect must
@@ -890,6 +1600,7 @@
         applyAppearance(a) {
             if (!a) return;
             this.appearance = a;
+            this.serverAppearance = a;
             applyPageAppearance(a);
             if (a.title && !this.sawTitle) document.title = a.title;
 
@@ -902,17 +1613,24 @@
                 this.settings.cursorBlink = true;
             }
 
-            this.webterm.setOptions({
-                theme: mergeTheme(a),
-                fontSize: this.settings.fontSize,
-                cursorBlink: this.settings.cursorBlink,
-                cursorStyle: a.cursorStyle || 'block',
-                scrollback: a.scrollback || 5000,
-                xterm: {
-                    cursorInactiveStyle: a.cursorInactiveStyle || 'outline',
-                    tabStopWidth: 8,
-                },
-            });
+            if (this.webterm) {
+                this.webterm.setOptions({
+                    theme: mergeTheme(a),
+                    fontSize: this.settings.fontSize,
+                    cursorBlink: this.settings.cursorBlink,
+                    cursorStyle: a.cursorStyle || 'block',
+                    scrollback: a.scrollback || 5000,
+                    xterm: {
+                        cursorInactiveStyle: a.cursorInactiveStyle || 'outline',
+                        tabStopWidth: 8,
+                    },
+                });
+            }
+
+            // The deployment's blob has just overwritten everything, so what
+            // a page script asked for goes back on top. Without this a
+            // reconnect pulls a live theme back to the deployment's.
+            applyPagePatch();
         }
 
         /** The webterm option groups derived from sip's stored settings. */
@@ -978,6 +1696,9 @@
 
             this.webterm = new WebTerm(this.webtermOptions());
             await this.webterm.open(host);
+            // A page script runs before the terminal is constructed, so a
+            // theme or a font size it set is waiting for this moment.
+            applyPagePatch();
 
             // The pointer shape protocol. The reply to a query takes
             // sendInput, which is the path a keystroke takes, because a reply
@@ -1074,18 +1795,17 @@
          * undefined; it needs a real selection, hence the offscreen textarea.
          */
         copyText(text) {
-            if (!text) return;
+            if (!text) return Promise.resolve(false);
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).catch(() => {
-                    if (!this.copyFallback(text)) {
-                        this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy failed');
-                    }
+                return navigator.clipboard.writeText(text).then(() => true, () => {
+                    if (this.copyFallback(text)) return true;
+                    this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy failed');
+                    return false;
                 });
-                return;
             }
-            if (!this.copyFallback(text)) {
-                this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy unavailable');
-            }
+            if (this.copyFallback(text)) return Promise.resolve(true);
+            this.updateStatus(this.connected ? 'connected' : 'disconnected', 'Copy unavailable');
+            return Promise.resolve(false);
         }
 
         /**

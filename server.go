@@ -328,6 +328,9 @@ func (s *httpServer) validateConfig() error {
 	if err := s.validateRoutes(); err != nil {
 		return err
 	}
+	if err := s.config.PageAPI.Validate(); err != nil {
+		return err
+	}
 
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
@@ -464,6 +467,15 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	// moment later, which on a light theme is a dark flash on every load.
 	if look := s.config.Appearance.clientOptions(); look != nil {
 		cfg["appearance"] = look
+	}
+	// What the page's own script may do through window.sip. It is decided
+	// here, once, and never again: the client reads it while terminal.js
+	// parses and the handshake does not carry it. A capability that could
+	// widen after the deployment's script has already run is a capability
+	// whose check is a race, and the wire is the input closest to the
+	// program being served.
+	if caps := s.config.PageAPI.clientOptions(); caps != nil {
+		cfg["pageAPI"] = caps
 	}
 
 	// The deployment's own stylesheet and script. They go last in the

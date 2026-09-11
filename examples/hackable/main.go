@@ -65,12 +65,17 @@ const brandCSS = `
 // brandJS is Config.ExtraJS: a classic script run after sip's client and
 // before the terminal opens.
 //
-// It talks to the page through window.sip, which is the only part of the page
-// sip promises to keep. Four calls and five events; docs/extending.md says
-// what each one means and what is deliberately missing from it.
+// It takes the page API with sip.claim() before anything else on the page can,
+// which is the pattern docs/extending.md argues for. What it gets back carries
+// the capabilities Config.PageAPI granted below and nothing else.
 const brandJS = `
 (function () {
     'use strict';
+
+    // First line of the deployment's own script, on purpose. The API is
+    // handed over once, so taking it here is what keeps it away from a
+    // script that loads later.
+    var api = sip.claim();
 
     var banner = document.getElementById('hack-banner');
     var seen = [];
@@ -81,17 +86,25 @@ const brandJS = `
     }
 
     // ready is sticky, so this runs even though the terminal opens later.
-    sip.on('ready', function (e) { note('ready ' + e.cols + 'x' + e.rows); });
-    sip.on('connect', function (e) { note('connect ' + e.transport); });
-    sip.on('disconnect', function (e) { note('disconnect ' + e.reason); });
-    sip.on('resize', function (e) { note('resize ' + e.cols + 'x' + e.rows); });
-    sip.on('title', function (e) { note('title ' + e.title); });
+    api.on('ready', function (e) { note('ready ' + e.cols + 'x' + e.rows); });
+    api.on('connect', function (e) { note('connect ' + e.transport); });
+    api.on('disconnect', function (e) { note('disconnect ' + e.reason); });
+    api.on('resize', function (e) { note('resize ' + e.cols + 'x' + e.rows); });
+    api.on('title', function (e) { note('title ' + e.title); });
 
-    // What a page script can do with the session: type into it.
     window.hackDemo = {
         events: seen,
-        greet: function () { return sip.send('echo hackable\n'); },
-        size: function () { return sip.size(); },
+        // A deployment keeps the claimed object in its closure, the way the
+        // wrappers below do. This one is published so sip's own browser
+        // suite can drive every capability from outside the page.
+        api: api,
+        greet: function () { return api.input.send('echo hackable\n'); },
+        size: function () { return api.size(); },
+        // A theme switcher, which is what the appearance capability is for.
+        dark: function () {
+            api.appearance.set({ theme: { background: '#101014', foreground: '#e0e0e6' } });
+        },
+        plain: function () { api.appearance.reset(); },
     };
 })();
 `
@@ -127,6 +140,12 @@ func main() {
 	// carries a URL rather than an inline copy of the image.
 	cfg.Appearance.Title = "Hackable terminal"
 	cfg.Appearance.Favicon = "static/brand.svg"
+	// What the page's own script may do through window.sip. This deployment
+	// writes and ships every script on its page, so it grants the lot; a
+	// page that loads anything it did not write grants far less. The zero
+	// value is the events, the grid size and send, which is what sip
+	// granted before Config.PageAPI existed.
+	cfg.PageAPI.Grant = sip.AllCapabilities()
 	cfg.ExtraCSS = brandCSS
 	cfg.ExtraJS = brandJS
 	cfg.StaticFS = pages
