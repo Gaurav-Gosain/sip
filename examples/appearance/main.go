@@ -53,6 +53,16 @@ func main() {
 			"%3E%3Crect width='8' height='8' fill='%23fe8019'/%3E%3C/svg%3E",
 	}
 
+	// What this deployment's page script may do. It repaints the terminal
+	// and it does not type into it, which is the split Config.PageAPI
+	// exists for: a theme switcher has no business holding a keystroke
+	// primitive. clienttests/pageapi.spec.mjs reads both halves back out
+	// of the browser.
+	cfg.PageAPI = sip.PageAPI{
+		Grant:  []sip.Capability{sip.CapAppearance},
+		Revoke: []sip.Capability{sip.CapInput},
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

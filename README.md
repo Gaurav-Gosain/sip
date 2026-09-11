@@ -257,14 +257,15 @@ which makes a typo look like sip ignoring the setting.
 ## Hacking the page
 
 Everything the browser runs is embedded in sip's binary, so until this existed
-changing one CSS rule meant forking sip. Five options change the page from Go
-instead, and a deployment that sets none of them serves exactly what it served
-before they existed.
+changing one CSS rule meant forking sip. A handful of options change the page
+from Go instead, and a deployment that sets none of them serves exactly what it
+served before they existed.
 
 ```go
 sip.Config{
     ExtraCSS: `#connection-status { border-color: #a6e3a1; }`,
     ExtraJS:  `sip.on('connect', (e) => console.log('on', e.transport));`,
+    PageAPI:  sip.PageAPI{Grant: []sip.Capability{sip.CapAppearance}},
     StaticFS: myAssets,                       // wins over sip's files, name by name
     Routes: []sip.Route{
         {Pattern: "/manifest.webmanifest", Handler: http.HandlerFunc(manifest)},
@@ -280,8 +281,15 @@ original.
 
 `window.sip` is what a page script may rely on: `on`, `off`, `send`, `size`,
 and the events `ready`, `connect`, `disconnect`, `resize` and `title`. There is
-no handle to the xterm.js terminal in it, on purpose — sip may change what
+no handle to the xterm.js terminal in it, on purpose. Sip may change what
 renders the grid, and a promise it plans to break is worse than no promise.
+
+`Config.PageAPI` decides what else that script may do. `sip.claim()` hands over
+a theme switcher, a search box, the selection, the clipboard and a reconnect
+button, one capability at a time. Every one of them is off unless you grant it,
+and the default is what `window.sip` answered before the option existed. Read
+`docs/extending.md` before granting any of them: it carries the threat model,
+including the part a capability list cannot do.
 
 `examples/hackable` is all of it in one file, and `docs/extending.md` argues
 each option and says what is deliberately missing.

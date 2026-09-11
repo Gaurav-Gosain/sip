@@ -242,10 +242,16 @@ type Config struct {
 	// ExtraJS is a classic script run after sip's client, before the
 	// terminal opens, at /static/sip-extra.js.
 	//
-	// It talks to the page through window.sip, which is sip's promise to a
-	// deployment's script: on, off, send and size. See docs/extending.md
-	// for what each one does and for what is deliberately not in it.
+	// It talks to the page through window.sip. What that page API answers
+	// is PageAPI's question, not this one. See docs/extending.md.
 	ExtraJS string
+
+	// PageAPI bounds what a page script may do through window.sip.
+	//
+	// The zero value grants what sip granted before the field existed: the
+	// events, the grid size and sip.send. Everything else is opt-in, one
+	// capability at a time. See PageAPI and docs/extending.md.
+	PageAPI PageAPI
 
 	// StaticFS replaces client files one at a time. A name in it wins over
 	// sip's own copy, and a name missing from it falls through, so

@@ -432,6 +432,15 @@ test('a hyperlink keeps sip s own pointer over a program s shape', async ({ page
   await run(page, `${osc22('wait')}; printf '\\033[2J\\033[H'; printf 'https://example.com/\\r\\n'`);
   await expectCursor(page, 'wait', 'with a shape set and the pointer off the link');
 
+  // The URL has to be on the screen before the pointer moves over it. xterm
+  // updates the class this test reads when the pointer moves, so a move that
+  // lands on a cell the URL has not reached yet is never reconsidered and the
+  // link is never found. The shape arrives from the first printf of three, so
+  // waiting for it is not waiting for the last one.
+  await expect
+    .poll(() => screenText(page), { message: 'the URL never reached the screen', timeout: 15_000 })
+    .toContain('https://example.com/');
+
   // Over the URL on row 0. xterm's web-links addon marks the screen element
   // while the pointer is over a link it found, and sip's stylesheet gives that
   // mark the last word: a link that can be clicked has to say so.
