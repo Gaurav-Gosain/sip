@@ -27,7 +27,7 @@ import (
 var defaultAssetDigests = map[string]string{
 	"/":                    "1ffe93de436e26c925d1a59b3ab872b23edcd4cb5dbb22700949462784993c07",
 	"/static/index.html":   "2a3f870fc6f650c9a3cdaa931b6b8e01661c4b9cac6a4e0a5af785e64c6d9693",
-	"/static/terminal.css": "392c985b9f20619c7a90e115f941a12e15e0c36460a6519af7c6f7773aa17337",
+	"/static/terminal.css": "3e32f10f34e88298fea71bf0697b774ce0c7dd11926630f703109bd3d21de0a7",
 	"/static/webterm.js":   "fb43389d176ef2fe2f993db0cd7b4104436927eccbda3f600c776a86e656ff27",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",

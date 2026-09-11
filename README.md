@@ -56,6 +56,10 @@ whole client, fonts included, into one binary.
   writes from programs that set the clipboard themselves. It never answers an
   OSC 52 read: a remote program cannot pull your clipboard back through the
   terminal.
+- Sets the mouse pointer from the program, through the kitty pointer shapes
+  protocol: a stack per screen, queries answered on the program's own stdin,
+  and every name checked against the thirty the specification names before it
+  reaches a CSS property.
 - Clusters graphemes to UAX 29 rather than billing per scalar, so a ZWJ family
   emoji takes the columns it draws in instead of eight.
 - Puts a key bar over the software keyboard on a phone, carrying the keys a

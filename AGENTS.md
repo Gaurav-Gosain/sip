@@ -755,6 +755,133 @@ rather than from the tree. `static/index.html` is untouched by any of this;
 everything goes through the `{{FONT_FACE_EXTRA}}` placeholder that was already
 there, with `</head>` as the fallback for a page that replaced it.
 
+### Pointer shapes, the kitty OSC 22 protocol
+
+A program running in the terminal names the shape of the mouse pointer:
+`wait` while it is busy, `ew-resize` over a pane divider, `pointer` over a
+button. The specification is at
+<https://sw.kovidgoyal.net/kitty/pointer-shapes/>.
+
+```
+OSC 22 ; [= | > | < | ?] name[,name...] ST
+```
+
+`=` or no prefix sets, `>` pushes a list with the last name becoming current,
+`<` pops, `?` queries. There are thirty required names and they are CSS cursor
+keywords, which is why sip is a good host for this: a native terminal has to
+map each name onto a platform cursor, and the browser already has all thirty.
+
+**It is parsed in the browser**, in `static/terminal.js`, not in Go on the way
+out of the PTY. Everything the specification ties the protocol to is already in
+that process. Separate stacks for the main and the alternate screen need to
+know which screen is live; emptying both on a terminal reset needs to see RIS;
+and the pointer is a CSS property on an element in that document. A Go
+parse would have needed a second, partial VT parser to track DECSET 1049 and
+RIS, and it would still have had to ship every change over the wire, with a new
+message type, a seed into the index page and a resync on reconnect — the whole
+Appearance machinery again, for a value that changes several times a second.
+xterm's parser is also the only parser here that already tells a real OSC 22
+from the same bytes inside a kitty graphics payload.
+
+The query answer is authoritative wherever the state lives, and the state lives
+in the browser, so that argument does not pull the other way.
+
+**A reply is input.** `?` answers with an OSC 22 of sip's own through
+`sendInput`, the path a keystroke takes, because that is where the program
+reads. Read-only then falls out for free: a session that sends no keystrokes
+sends no replies. The reply is built only from sip's own constants and the
+digits 0 and 1 — the queried name is never echoed — so nothing a program sent
+can reach the PTY through this path.
+
+**`POINTER_SHAPES` is the security boundary.** A name arrives from the PTY,
+which is output from whatever the user is running, and it ends up in a CSS
+`cursor` property. `url(https://example.com/x.png), pointer` is a valid cursor
+value, so a name passed through because it looked plausible would point the
+browser at that URL. Membership of that frozen set is the only way a string
+reaches the DOM, through the single function `pointerShapeOrNull`. It is one
+gate on purpose: two would each let the other's negative control pass.
+
+A set therefore takes the **whole** payload as one name, commas and all,
+because the specification says "the name of the shape", singular. Reading a set
+as a list would split `url(...),pointer` into two names, and the first half of
+a valid CSS cursor is exactly what must not get through.
+
+**The bounds.** Stack depth 16, the specification's own minimum, with the
+bottom entry evicted when it is full. One sequence over 1024 bytes is dropped
+whole rather than truncated, because a truncated name is silently a different
+name. At most 64 names are parsed out of one push or one query, which also
+bounds the reply.
+
+**An unsupported name in a push still takes a slot**, as null, so the pointer
+goes back to the default for it. Skipping it would leave the program's idea of
+the stack depth one ahead of sip's, and every pop after that would restore the
+wrong shape for the rest of the session. An unsupported name in a *set* is a
+plain no-op, because a set carries no balance obligation. `?name` answers `0`
+for both, so a program that cares can ask first.
+
+**Precedence over sip's own cursors.** `static/terminal.css` reads three
+properties in order: `--sip-pointer-shape`, then `--sip-mouse-cursor`
+(`Appearance.MouseCursor`), then the built-in `text`. One rule outranks all
+three, and it is the only one that does: sip keeps its own `pointer` over a
+hyperlink, which the specification explicitly permits, because a link that can
+be clicked has to say so and a program that put `wait` over the whole screen
+must not be able to hide it. The `grab` and `grabbing` on the settings gear and
+the `pointer` on the panel buttons never compete: those are different elements,
+and the browser uses the cursor of the element under the pointer. Sip does not
+override the shape during a text selection, which the specification also
+permits but does not require: xterm publishes no drag state to key a rule off.
+
+**The two allowlists stay separate, from one list of names.**
+`pointershapes.go` has the thirty and builds `mouseCursors` from them plus
+`none`, `auto`, `context-menu` and `all-scroll`, so `Appearance.MouseCursor`
+is a superset. They answer different questions. A deployment's resting cursor
+is chosen once, in Go, by the person running the server; the protocol's thirty
+are what an arbitrary program on the far side of a PTY may ask for. `none` is
+the clear case: a kiosk that hides the pointer is reasonable, a program that
+hides the user's pointer is a program the user cannot then click away from.
+The browser keeps its own copy of the thirty, because its safety must not
+depend on a list the server sent, and `TestClientAndGoAgreeOnTheShapes` fails
+when the two drift.
+
+**Reset, screen switch, reconnect.** RIS empties both stacks, which is what
+the specification means by resetting the terminal; the handler returns false so
+xterm still does its own reset. DECSTR is deliberately not in there: a soft
+reset is what a curses program sends on the way in, and clearing the stacks on
+it would take the shape away from the program that had just asked for one. A switch between the
+main and the alternate screen re-applies the shape from the stack that is now
+live, through `term.buffer.onBufferChange`. A reconnect clears both stacks on
+the options message, which arrives once per session: a browser that comes back
+to a new PTY must not keep a shape the old one set, because the program that
+set it is gone and nothing will ever pop it.
+
+`?__default__` reports what a pop back to an empty stack restores: the
+deployment's `Appearance.MouseCursor`, else `text`, else `default` while a
+program is reading the mouse. It reads the same two things the stylesheet does,
+in the same order, so the answer and the pixel cannot disagree. A deployment
+cursor outside the thirty has no name in the table to report, so the query
+answers `default`. `?__grabbed__` answers `grabbing`: sip's grid never grabs,
+but the question needs an answer from the table and `grabbing` is what sip uses
+for its own drag.
+
+`clienttests/pointer.spec.mjs` drives all of it by typing a `printf` into the
+shell sip is serving, so every sequence leaves a real program and travels the
+PTY, the wire and xterm's parser. It reads the pointer back with
+`getComputedStyle`, because Playwright cannot screenshot a cursor. The shape
+checks run in Chromium alone, because a computed style is a computed style in
+any engine. One test runs in both: a reply leaves through `sendInput`, so it is
+framed by whichever transport is live, and Firefox is the only engine here that
+reaches WebTransport. It declares the transport it wants and fails rather than
+accept a fallback.
+
+**A query reply lands in the shell's line buffer.** It is written to the PTY as
+input and carries no newline, so the next line typed arrives with the reply
+glued to the front of it and the shell runs a different command. Measured: a
+push and a query sent on one line ran as three commands, the push became
+`0<ESC>\printf` and never happened, and the query truthfully answered 0. The
+suite sends Ctrl-U before every line because of it. This is not a sip bug —
+every terminal does it, and a program that queries is expected to read its own
+reply — but it will mislead anyone debugging by hand.
+
 ### Custom fonts
 
 `--font /path/to/file.ttf` serves the file at `/static/fonts/custom<ext>` and injects an `@font-face` rule + `window.__sipConfig.fontFamily` into `index.html` at request time. Pair with `--font-family "My Font Name"` for the CSS family. Falls back to the bundled JetBrains Mono Nerd Font if either is unset.

@@ -66,7 +66,12 @@ export default defineConfig({
       // The appearance suite runs here for one test: the options frame is
       // written at two sites, one per transport, and Firefox is the only
       // engine that reaches WebTransport. Its pixel checks skip themselves.
-      testMatch: /(keyboard|appearance)\.spec\.mjs/,
+      //
+      // The pointer suite runs here for one test too. An OSC 22 query reply
+      // is written to the PTY through sendInput, so it is framed by whichever
+      // transport is live, and this is the only engine that proves the
+      // WebTransport half. Its computed-style checks skip themselves.
+      testMatch: /(keyboard|appearance|pointer)\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',

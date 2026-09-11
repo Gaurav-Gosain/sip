@@ -244,19 +244,6 @@ func (t Theme) Validate() error {
 	return nil
 }
 
-// mouseCursors are the CSS cursor keywords Appearance.MouseCursor accepts.
-// An allowlist rather than a free string, for the reason Color is hex-only: a
-// browser ignores a cursor value it does not know and keeps the one it had, so
-// a typo would read as the option doing nothing.
-var mouseCursors = map[string]bool{
-	"default": true, "text": true, "pointer": true, "crosshair": true,
-	"cell": true, "move": true, "none": true, "auto": true,
-	"grab": true, "grabbing": true, "copy": true, "alias": true,
-	"context-menu": true, "help": true, "progress": true, "wait": true,
-	"not-allowed": true, "no-drop": true, "all-scroll": true,
-	"vertical-text": true, "zoom-in": true, "zoom-out": true,
-}
-
 var cursorStyles = map[string]bool{"block": true, "bar": true, "underline": true}
 
 var cursorInactiveStyles = map[string]bool{
@@ -301,8 +288,16 @@ type Appearance struct {
 	// states, and a cursor that changes under a program the user is
 	// clicking through reads as a glitch.
 	//
-	// Accepts a CSS cursor keyword: "default", "pointer", "crosshair",
-	// "cell", "none" and the rest of the standard set.
+	// A program running in the terminal may name its own shape through
+	// the kitty pointer shapes protocol, and that wins while it is set.
+	// This is what a pop back to an empty stack restores, and what
+	// ?__default__ reports. See pointershapes.go.
+	//
+	// Accepts a CSS cursor keyword: the thirty the protocol names, plus
+	// "none", "auto", "context-menu" and "all-scroll". The last four are a
+	// deployment's to choose and a program's to do without: a kiosk that
+	// hides the pointer is reasonable, a program that hides the user's
+	// pointer is a program the user cannot then click away from.
 	MouseCursor string
 
 	// CursorStyle is the text cursor's shape: "block", "bar" or
