@@ -98,6 +98,8 @@ sip/
 ├── config_context.go       # Defaults + ConfigFromContext helper
 ├── appearance.go           # Config.Appearance: Color, Theme, ANSIPalette, chrome derivation
 ├── resize_throttle.go      # Coalescing inbound resize messages
+├── assets.go               # StaticFS/ExtraCSS/ExtraJS/Routes: the asset pipeline and
+│                           # the traversal gate; Assets/AssetNames/AssetDigest
 ├── kittygfx.go             # Server-side kitty graphics PNG/JPEG/GIF → RGBA transcoder
 ├── cert.go                 # Ephemeral self-signed cert (WebTransport, loopback)
 ├── certstore.go            # The managed on-disk keypair: create/load/remove, SAN discovery
@@ -123,7 +125,9 @@ sip/
 │   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
 ├── examples/simple/        # Counter example (Bubble Tea mode)
-└── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
+├── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
+└── examples/hackable/      # ExtraCSS/ExtraJS/StaticFS/Routes in one file; extend.spec.mjs
+                            # drives it
 ```
 
 ## Architecture
@@ -476,9 +480,12 @@ because the renderer and colour checks read pixels back out of a canvas under a
 pinned GL setup, which is Chromium-specific. The one appearance test that runs
 there is the options frame, which is written at two sites, one per transport.
 
-It also defines two web servers. The second is `examples/appearance`, on
+It also defines three web servers. The second is `examples/appearance`, on
 `SIP_TEST_PORT + 10`, because appearance is read once per server and the first
-one has to stay unconfigured.
+one has to stay unconfigured. The third is `examples/hackable`, on
+`SIP_TEST_PORT + 20`, for the same reason: `extend.spec.mjs` reads the effects
+out of it and reads the first server for the other half of the claim, that a
+deployment configuring nothing pays nothing.
 
 Firefox is not optional decoration: it is the only engine here that reaches
 **WebTransport** against a loopback server (Chromium falls back to WebSocket), so
@@ -607,6 +614,9 @@ type Config struct {
     InitialResizeTimeout                       time.Duration  // default 10s
     FontPath, FontFamily                       string         // custom font upload
     Appearance                                 Appearance     // palette, cursors, chrome
+    ExtraCSS, ExtraJS                          string         // added to the page, upgrade-safe
+    StaticFS                                   fs.FS          // replaces client files, name by name
+    Routes                                     []Route        // the deployment's own URLs
     AutoTLS                                    bool           // serve from sip's managed cert
     CertDir, CertHosts, CertValidity                          // where / what for / how long
     MobileKeys                                 []MobileKey    // touch key bar, one row
@@ -675,6 +685,75 @@ in the settings panel still wins, the same rule `Renderer` follows.
 `SIP_TEST_PORT + 10`. Appearance is read once per server, so proving that a
 configured deployment changes and an unconfigured one does not needs two of
 them.
+
+### The asset pipeline and the extension points
+
+`assets.go` is the whole of it. Five options, and their order in the docs is
+the order to reach for them: `Appearance` (the other agent's surface, above),
+`ExtraCSS`, `ExtraJS`, `StaticFS`, `Routes`. `docs/extending.md` argues each
+one; this says how it is wired.
+
+**Asset resolution is one function.** `readAsset(name)` tries `Config.StaticFS`
+first and falls through to the embedded copy. A missing file falls through
+quietly, because the point is that replacing one stylesheet must not mean
+vendoring the other six. Any *other* read error is logged and falls through
+too: a deployment whose asset directory lost its read permission wants a
+working terminal and a line in the log, not a blank page.
+
+**`assetName` is the only place a request picks a file, and that is the whole
+traversal surface.** It requires the `/static/` prefix, rejects `.` (which
+`fs.ValidPath` calls valid, being an FS root), rejects a backslash (ordinary to
+`fs.ValidPath`, a separator to Windows) and runs `fs.ValidPath` for the rest.
+Nothing else in the surface is request-driven: `ExtraCSS`, `ExtraJS`,
+`StaticFS` and `Routes` are read from the config before a port is bound.
+`TestTraversalIsRefusedAgainstAnOverride` drives it against an `fs.FS` that
+answers every name, so only the check can stop it.
+
+**`ExtraCSS` and `ExtraJS` are served as files, not inlined.** They get the
+ETag path for free, they show up in the browser's developer tools, and a
+deployment's `</script>` cannot close sip's tag. `/static/sip-extra.css` and
+`/static/sip-extra.js` are reserved names that only exist when configured.
+
+**The stylesheet link goes last in the placeholder.** A rule of the same
+specificity wins on cascade order alone, so a deployment never needs
+`!important`. `TestExtraCSSAndJSAreServedAndLinked` pins the order.
+
+**The script is `defer`red.** Sip's three script tags are not, so they run
+during parse and a deferred script runs after them and before
+`DOMContentLoaded` — which is when `SipTerminal.init` runs. A page script
+therefore subscribes before the terminal opens, which is what makes the events
+useful.
+
+**`window.sip` is published while `terminal.js` parses**, before the terminal
+exists, and `start()` augments it rather than replacing it. `ready` is sticky
+so a listener added afterwards still runs. Every listener call is wrapped: one
+bad line in a deployment's script must not take the terminal with it.
+
+**What is not in `window.sip` is the design.** No terminal object: sip has two
+renderer branches in flight and a handle to xterm's `Terminal` would be a
+promise it plans to break. No output event: a firehose, and a privacy hazard by
+accident. `window.sipTerm`, `sip.term` and `sip.settings` stay because the
+suites in `clienttests/` use them, and they are documented as internal.
+
+**A replaced file is a fork of that file, and sip cannot know which version was
+copied.** All it does is name the replaced files at startup
+(`warnOverriddenAssets`, the sibling of `warnStaleEmbed`) and export
+`Assets()`, `AssetNames()` and `AssetDigest()` so a consumer's own test can
+pin the original. `examples/hackable/stale_test.go` is that test, working, and
+it will fail the next time `static/index.html` changes. That is the point: fix
+the example's copy, then update the digest.
+
+**A route may not shadow sip's own paths**, and `validateRoutes` names the
+clash. `/favicon.ico` is deliberately not reserved: sip answers it with 204
+only because it has no icon. Routes are behind the same auth gate as the static
+assets, always — sip cannot tell which of a deployment's URLs is safe to
+publish.
+
+**Nothing appears in the default page.** `TestDefaultPageUnchanged` pins the
+rendered `/` and every shipped asset by SHA-256, captured from a running server
+rather than from the tree. `static/index.html` is untouched by any of this;
+everything goes through the `{{FONT_FACE_EXTRA}}` placeholder that was already
+there, with `</head>` as the fallback for a page that replaced it.
 
 ### Custom fonts
 
@@ -763,6 +842,8 @@ the same outbound path a keystroke does.
 - Assets are tagged with a content ETag and `Cache-Control: no-cache`, so the
   browser revalidates and a redeployed client actually takes effect
 - Custom font (`--font`) is served from disk, not embedded
+- `Config.StaticFS` is read ahead of the embedded copy, file by file. See
+  **The asset pipeline and the extension points** above
 
 **Editing `static/` does nothing until you rebuild.** The server never reads
 those files at runtime; `go:embed` bakes them into the binary at build time, so

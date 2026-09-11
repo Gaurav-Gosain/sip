@@ -22,6 +22,7 @@ package sip
 import (
 	"context"
 	"io"
+	"io/fs"
 	"os"
 	"time"
 
@@ -220,6 +221,56 @@ type Config struct {
 	// falls back to canvas and then the DOM. A user's saved setting and
 	// a ?renderer= query param both override this.
 	Renderer string
+
+	// ExtraCSS is appended to the page's stylesheets, after sip's own, so
+	// an ordinary rule wins on cascade order alone.
+	//
+	// Reach for this first. It survives a sip upgrade, because sip is
+	// still serving its own stylesheet underneath and only the rules named
+	// here are the deployment's. Replacing terminal.css through StaticFS
+	// does not: the copy stops at the version it was taken from.
+	//
+	// It is served as a file at /static/sip-extra.css, so it revalidates
+	// and shows up in the browser's developer tools like any other
+	// stylesheet.
+	//
+	// It is not the place for the palette or the cursors. Those are
+	// Appearance, which the terminal reads as options rather than as CSS,
+	// and which also reaches the chrome around the grid.
+	ExtraCSS string
+
+	// ExtraJS is a classic script run after sip's client, before the
+	// terminal opens, at /static/sip-extra.js.
+	//
+	// It talks to the page through window.sip, which is sip's promise to a
+	// deployment's script: on, off, send and size. See docs/extending.md
+	// for what each one does and for what is deliberately not in it.
+	ExtraJS string
+
+	// StaticFS replaces client files one at a time. A name in it wins over
+	// sip's own copy, and a name missing from it falls through, so
+	// replacing one stylesheet does not mean vendoring the rest.
+	//
+	// Names match the URLs under /static/: "terminal.css", "index.html",
+	// "fonts/MyFont.woff2". A file with a name sip does not ship is served
+	// too, which is how a page gets a logo or a second font.
+	//
+	// Use it when a rule cannot reach what it needs to change. A replaced
+	// file is a fork of that file: sip goes on developing the original and
+	// nothing in an upgrade tells the deployment that it moved. Pin
+	// AssetDigest in a test if you keep one.
+	//
+	// Two names are config, not files, and a file cannot claim them:
+	// sip-extra.css and sip-extra.js.
+	StaticFS fs.FS
+
+	// Routes serve a deployment's own URLs beside the terminal: a favicon,
+	// a web app manifest, a page of its own. Every route is behind the
+	// same Basic Auth as the rest of the server.
+	//
+	// A route that names one of sip's own paths is refused at startup
+	// rather than allowed to break the terminal.
+	Routes []Route
 
 	// MobileKeys replaces the client's default touch key bar with a key
 	// set of the deployment's own. Empty keeps the default, which is the

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+    <title>Sip</title>
+    <link rel="stylesheet" href="static/xterm.css">
+    <link rel="stylesheet" href="static/webterm.css">
+    <link rel="stylesheet" href="static/terminal.css">
+    <!-- Sip writes its per-deployment settings here. Keep the placeholder:
+         the font rules, the renderer choice, the touch key bar, ExtraCSS and
+         ExtraJS all arrive through it. Without it sip falls back to the
+         closing head tag and says so in the log. -->
+    {{FONT_FACE_EXTRA}}
+</head>
+<body>
+    <!-- The reason this page exists. Everything else here is sip's own. -->
+    <header id="hack-banner">hackable example</header>
+    <div id="terminal-container">
+        <div id="terminal" class="webterm"></div>
+    </div>
+    <div id="connection-status">
+        <span id="status-icon">&#x25CF;</span>
+        <span id="status-text">Loading&#8230;</span>
+    </div>
+    <!-- This page carries no settings panel. Sip skips the panel and runs the
+         terminal, which is what a page that drops an optional control should
+         get. -->
+    <script src="static/webterm.js"></script>
+    <script src="static/mobile.js"></script>
+    <script src="static/terminal.js"></script>
+</body>
+</html>

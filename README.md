@@ -250,6 +250,38 @@ which makes a typo look like sip ignoring the setting.
 
 `examples/appearance` is the whole thing in one file.
 
+## Hacking the page
+
+Everything the browser runs is embedded in sip's binary, so until this existed
+changing one CSS rule meant forking sip. Five options change the page from Go
+instead, and a deployment that sets none of them serves exactly what it served
+before they existed.
+
+```go
+sip.Config{
+    ExtraCSS: `#connection-status { border-color: #a6e3a1; }`,
+    ExtraJS:  `sip.on('connect', (e) => console.log('on', e.transport));`,
+    StaticFS: myAssets,                       // wins over sip's files, name by name
+    Routes: []sip.Route{
+        {Pattern: "/manifest.webmanifest", Handler: http.HandlerFunc(manifest)},
+    },
+}
+```
+
+Reach for them in that order. `ExtraCSS` and `ExtraJS` add to what sip serves,
+so an upgrade carries every fix to the files underneath. `StaticFS` replaces a
+file, which is a fork of that one file: sip names the replaced files at startup
+and `sip.AssetDigest` lets a test of yours fail on the upgrade that moved the
+original.
+
+`window.sip` is what a page script may rely on: `on`, `off`, `send`, `size`,
+and the events `ready`, `connect`, `disconnect`, `resize` and `title`. There is
+no handle to the xterm.js terminal in it, on purpose — sip may change what
+renders the grid, and a promise it plans to break is worse than no promise.
+
+`examples/hackable` is all of it in one file, and `docs/extending.md` argues
+each option and says what is deliberately missing.
+
 ## Phones
 
 A phone keyboard has no Escape, no Tab, no Ctrl and no arrows, which is most of
