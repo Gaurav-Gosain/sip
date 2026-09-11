@@ -190,8 +190,9 @@ type Session interface {
 `IdleTimeout`, `AllowOrigins` and `OriginPatterns`, `TLSCert` and `TLSKey`,
 `AutoTLS` and its `CertDir`, `CertHosts` and `CertValidity`, `BasicUsername` and
 `BasicPassword`, `MaxPasteBytes`, `ResizeThrottle`, `MaxWindowDims`, `FontPath`
-and `FontFamily`, the touch key bar's `MobileKeys`, `MobileRows` and
-`MobilePrefix`, and the three middleware slices.
+and `FontFamily`, `Appearance` for the palette and the cursors, the touch key
+bar's `MobileKeys`, `MobileRows` and `MobilePrefix`, and the three middleware
+slices.
 Every field has a working default; `sip.DefaultConfig()` is a complete
 configuration.
 
@@ -203,6 +204,51 @@ and end lines.
 A Bubble Tea program can also be compiled to wasm and run with no server at all:
 `go run ./cmd/sip-wasm-build -o web/app.wasm ./cmd/myapp` builds it, and the
 client connects to it through the same adapter it uses for a socket.
+
+## Colours
+
+The terminal's palette, its two cursors and the chrome around them are
+`Config.Appearance`. The zero value is sip's own Catppuccin Mocha, so a program
+that sets nothing looks exactly as it did before the field existed.
+
+```go
+sip.Config{
+    Appearance: sip.Appearance{
+        Theme: sip.Theme{
+            Foreground: "#ebdbb2",
+            Background: "#282828",
+            Cursor:     "#fe8019",
+        }.WithANSI(sip.ANSIPalette{
+            "#282828", "#cc241d", "#98971a", "#d79921",
+            "#458588", "#b16286", "#689d6a", "#a89984",
+            "#928374", "#fb4934", "#b8bb26", "#fabd2f",
+            "#83a598", "#d3869b", "#8ec07c", "#ebdbb2",
+        }),
+        MouseCursor: "crosshair",
+        CursorStyle: "bar",
+        Title:       "Gruvbox shell",
+    },
+}
+```
+
+A theme is a patch, not a replacement: an unset colour keeps sip's own, so three
+colours change three colours. `WithANSI` takes the sixteen in index order, which
+is how a palette read out of kitty, ghostty, alacritty or wezterm arrives, and
+the named fields are xterm.js's own so an imported theme reads next to the file
+it came from.
+
+The page follows the palette. The settings panel, the status pill, the
+scrollbar, the bell flash and the touch key bar are painted from the same
+colours as the terminal, so a Gruvbox terminal does not sit in a Catppuccin
+panel. `PageBackground` sets the ground behind the grid on its own, for the one
+case where the two should differ.
+
+Colours are hex: `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`. A bad colour or an
+unknown cursor keyword stops the server at startup and names the field. That is
+deliberate. A browser drops a value it cannot parse and paints the default,
+which makes a typo look like sip ignoring the setting.
+
+`examples/appearance` is the whole thing in one file.
 
 ## Phones
 

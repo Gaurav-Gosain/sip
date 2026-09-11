@@ -294,8 +294,8 @@ body.sip-touch {
     max(var(--sip-keybar-pad), env(safe-area-inset-right, 0px))
     calc(var(--sip-keybar-pad) + env(safe-area-inset-bottom, 0px))
     max(var(--sip-keybar-pad), env(safe-area-inset-left, 0px));
-  background: rgba(24, 24, 37, 0.96);
-  border-top: 1px solid #45475a;
+  background: rgba(var(--sip-bar-bg-rgb, 24, 24, 37), 0.96);
+  border-top: 1px solid var(--sip-border, #45475a);
   /* The bar is chrome, and none of it is the browser's to interpret: no
      zooming, no callouts, no page scrolling, and above all no native scrolling
      of the strip itself, which is what used to take the software keyboard down
@@ -398,16 +398,16 @@ body.sip-kb-open #sip-keybar {
   align-self: center;
   height: 24px;
   margin: 0 2px;
-  background: #585b70;
+  background: var(--sip-border-strong, #585b70);
 }
 #sip-keybar button {
   flex: 0 0 auto;
   min-width: 44px;
   height: var(--sip-keybar-key-h);
-  border: 1px solid #45475a;
+  border: 1px solid var(--sip-border, #45475a);
   border-radius: 8px;
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--sip-surface, #313244);
+  color: var(--sip-fg, #cdd6f4);
   font-family: 'JetBrainsMono Nerd Font Mono', ui-monospace, monospace;
   font-size: 13px;
   line-height: 1;
@@ -432,7 +432,7 @@ body.sip-kb-open #sip-keybar {
    small. */
 #sip-keybar button.action {
   background: #292a3d;
-  border-color: #585b70;
+  border-color: var(--sip-border-strong, #585b70);
   color: #b4befe;
 }
 /* .pressed is the touch half of :active. A touch sequence that is cancelled at
@@ -440,7 +440,7 @@ body.sip-kb-open #sip-keybar {
    browser will not draw an active state for, so the bar draws its own. */
 #sip-keybar button:active,
 #sip-keybar button.pressed {
-  background: #45475a;
+  background: var(--sip-border, #45475a);
 }
 /* Pinned, so these survive however far any row is scrolled. They stack in the
    same direction the rows do, so the keyboard key stays on the bottom line
@@ -452,7 +452,7 @@ body.sip-kb-open #sip-keybar {
   justify-content: flex-end;
   gap: var(--sip-keybar-gap);
   padding-left: var(--sip-keybar-gap);
-  border-left: 1px solid #45475a;
+  border-left: 1px solid var(--sip-border, #45475a);
   touch-action: none;
 }
 #sip-keybar button.fold {
@@ -465,22 +465,22 @@ body.sip-kb-open #sip-keybar {
   flex-direction: row;
 }
 #sip-keybar button.active {
-  background: #45475a;
-  color: #f9e2af;
-  border-color: #f9e2af;
+  background: var(--sip-border, #45475a);
+  color: var(--sip-warn, #f9e2af);
+  border-color: var(--sip-warn, #f9e2af);
 }
 /* Armed for one keystroke: outlined. Locked until tapped off: filled. The two
    have to be told apart at a glance or a locked Ctrl silently eats the rest of
    what gets typed. */
 #sip-keybar button.armed {
-  background: #313244;
-  color: #f9e2af;
-  border-color: #f9e2af;
+  background: var(--sip-surface, #313244);
+  color: var(--sip-warn, #f9e2af);
+  border-color: var(--sip-warn, #f9e2af);
 }
 #sip-keybar button.locked {
-  background: #f9e2af;
-  color: #1e1e2e;
-  border-color: #f9e2af;
+  background: var(--sip-warn, #f9e2af);
+  color: var(--sip-bg, #1e1e2e);
+  border-color: var(--sip-warn, #f9e2af);
 }
 `;
 
@@ -514,10 +514,10 @@ body.sip-kb-open #sip-keybar {
   z-index: 1003;
   max-width: calc(100vw - 32px);
   padding: 8px 14px;
-  border: 1px solid #45475a;
+  border: 1px solid var(--sip-border, #45475a);
   border-radius: 8px;
-  background: rgba(24, 24, 37, 0.96);
-  color: #cdd6f4;
+  background: rgba(var(--sip-bar-bg-rgb, 24, 24, 37), 0.96);
+  color: var(--sip-fg, #cdd6f4);
   font-family: 'JetBrainsMono Nerd Font Mono', ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.3;

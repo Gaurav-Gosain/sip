@@ -96,6 +96,7 @@ sip/
 ├── connecterror.go         # ConnectError type for graceful handshake rejection
 ├── identity.go             # Identity + RemoteAddr context plumbing
 ├── config_context.go       # Defaults + ConfigFromContext helper
+├── appearance.go           # Config.Appearance: Color, Theme, ANSIPalette, chrome derivation
 ├── resize_throttle.go      # Coalescing inbound resize messages
 ├── kittygfx.go             # Server-side kitty graphics PNG/JPEG/GIF → RGBA transcoder
 ├── cert.go                 # Ephemeral self-signed cert (WebTransport, loopback)
@@ -121,7 +122,8 @@ sip/
 │   ├── webterm.css         # webterm container + kitty overlay styles
 │   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
-└── examples/simple/        # Counter example (Bubble Tea mode)
+├── examples/simple/        # Counter example (Bubble Tea mode)
+└── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
 ```
 
 ## Architecture
@@ -469,8 +471,14 @@ left xterm's textarea, and that flicking past a button did not press it.
 ### Browser coverage
 
 `playwright.config.mjs` defines two projects. `chromium` runs everything.
-`firefox` runs only `keyboard.spec.mjs`, because the renderer checks read pixels
-back out of a canvas under a pinned GL setup, which is Chromium-specific.
+`firefox` runs `keyboard.spec.mjs` and one test out of `appearance.spec.mjs`,
+because the renderer and colour checks read pixels back out of a canvas under a
+pinned GL setup, which is Chromium-specific. The one appearance test that runs
+there is the options frame, which is written at two sites, one per transport.
+
+It also defines two web servers. The second is `examples/appearance`, on
+`SIP_TEST_PORT + 10`, because appearance is read once per server and the first
+one has to stay unconfigured.
 
 Firefox is not optional decoration: it is the only engine here that reaches
 **WebTransport** against a loopback server (Chromium falls back to WebSocket), so
@@ -526,7 +534,7 @@ MsgResize   = '2' // {cols, rows, widthPx?, heightPx?} (client → server)
 MsgPing     = '3' // Ping
 MsgPong     = '4' // Pong
 MsgTitle    = '5' // Window title (server → client)
-MsgOptions  = '6' // {readOnly} (server → client, sent on connect)
+MsgOptions  = '6' // {readOnly, appearance?} (server → client, sent on connect)
 MsgClose    = '7' // Session ended (server → client)
 MsgKittyKbd = '8' // Kitty keyboard protocol flags (bidirectional)
 ```
@@ -598,6 +606,7 @@ type Config struct {
     MaxWindowDims                              WindowSize     // default 4096×4096
     InitialResizeTimeout                       time.Duration  // default 10s
     FontPath, FontFamily                       string         // custom font upload
+    Appearance                                 Appearance     // palette, cursors, chrome
     AutoTLS                                    bool           // serve from sip's managed cert
     CertDir, CertHosts, CertValidity                          // where / what for / how long
     MobileKeys                                 []MobileKey    // touch key bar, one row
@@ -611,6 +620,61 @@ type Config struct {
     DisableKittyTranscoder                     bool
 }
 ```
+
+### Appearance
+
+`Config.Appearance` is everything about how the page looks: `Theme` (the
+sixteen ANSI colours plus foreground, background, cursor and selection),
+`MouseCursor`, `CursorStyle`, `CursorInactiveStyle`, `CursorBlink`,
+`Scrollback`, `FontSize`, `Title`, `Favicon` and `PageBackground`. All of it
+was a constant in `static/terminal.js` until a deployment asked for its own
+colours and there was no answer but a fork.
+
+**The zero value is byte for byte what sip rendered before the field existed.**
+`clientOptions` returns nil when nothing is set, so `OptionsMessage` marshals to
+the same `{"readOnly":false}` it always did and `renderIndex` injects no blob at
+all. `TestAppearanceZeroShipsNothing` pins the wire payload as a literal, and
+`clienttests/appearance.spec.mjs` reads the unconfigured page's pixels back.
+
+**A colour is a patch.** `Color` is a hex string whose zero value means "keep
+the default", so a theme with three colours changes three colours. Hex only:
+a browser drops a colour it cannot parse and silently paints the default, so
+`Appearance.Validate` refuses anything else, and `validateConfig` calls it
+before the server binds a port. Same reasoning for the cursor keyword allowlist.
+
+**It travels twice, from one producer.** `Appearance.clientOptions` builds the
+blob; `renderIndex` seeds it into `window.__sipConfig` and `optionsMessage`
+sends it on the handshake. The seed exists because the terminal is constructed
+before the session connects, so without it a light theme flashes dark on every
+load. Both transports call `optionsMessage` rather than composing the struct
+themselves: an option that reaches WebSocket and not WebTransport is a bug this
+project keeps finding, and two literals is how it kept finding it.
+
+The two routes are genuinely redundant for the terminal options. Six negative
+controls that broke only the client-side construction path did not fail a single
+test, because `applyAppearance` put the value back at the handshake. Break the
+Go producer when you want to prove one of these reaches the browser at all.
+
+**The chrome follows the palette.** `static/terminal.css` and the styles
+`static/mobile.js` injects name their colours as `var(--sip-*, <today's value>)`
+rather than declaring them on `:root`, so a property nobody set is not a missing
+colour, it is the built-in one. `Appearance.chrome` derives them in Go, where
+the mix that makes the panel surface is unit-testable, and the client sets only
+`--sip-*` and `--webterm-*` properties from the blob.
+
+`--webterm-background` is easy to forget: webterm's container paints its own
+ground behind the grid, so a palette that stops at sip's own properties leaves a
+strip of Catppuccin under the terminal wherever the rows do not divide the
+window evenly. The spec asserts both grounds.
+
+`CursorBlink` and `FontSize` are defaults, not answers: a value the user chose
+in the settings panel still wins, the same rule `Renderer` follows.
+
+`examples/appearance` is the config surface in one file, and
+`clienttests/appearance.spec.mjs` drives it as a second web server on
+`SIP_TEST_PORT + 10`. Appearance is read once per server, so proving that a
+configured deployment changes and an unconfigured one does not needs two of
+them.
 
 ### Custom fonts
 

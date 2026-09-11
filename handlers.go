@@ -81,8 +81,26 @@ type ResizeMessage struct {
 }
 
 // OptionsMessage is sent to configure the terminal.
+//
+// Appearance is a pointer and omitted when nothing is configured, so the
+// payload a deployment that predates it receives is still the two-field
+// {"readOnly":false} it has always received.
 type OptionsMessage struct {
-	ReadOnly bool `json:"readOnly"`
+	ReadOnly   bool              `json:"readOnly"`
+	Appearance *clientAppearance `json:"appearance,omitempty"`
+}
+
+// optionsMessage builds the handshake options blob.
+//
+// Both transports call this rather than composing the struct themselves.
+// An option that reaches WebSocket and not WebTransport is a bug this project
+// keeps finding, and two literals is how it keeps finding it.
+func (s *httpServer) optionsMessage() []byte {
+	data, _ := json.Marshal(OptionsMessage{
+		ReadOnly:   s.config.ReadOnly,
+		Appearance: s.config.Appearance.clientOptions(),
+	})
+	return append([]byte{MsgOptions}, data...)
 }
 
 // internalSession is the interface that both webSession and cmdSession
@@ -191,8 +209,7 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"rows", info.rows,
 	)
 
-	optionsData, _ := json.Marshal(OptionsMessage{ReadOnly: s.config.ReadOnly})
-	_ = conn.Write(ctx, websocket.MessageBinary, append([]byte{MsgOptions}, optionsData...))
+	_ = conn.Write(ctx, websocket.MessageBinary, s.optionsMessage())
 
 	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()
@@ -322,8 +339,7 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 		"rows", info.rows,
 	)
 
-	optionsData, _ := json.Marshal(OptionsMessage{ReadOnly: s.config.ReadOnly})
-	_ = writeFramed(stream, append([]byte{MsgOptions}, optionsData...))
+	_ = writeFramed(stream, s.optionsMessage())
 
 	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()

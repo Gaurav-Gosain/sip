@@ -307,6 +307,13 @@ func (s *httpServer) resolveAutoTLS() error {
 }
 
 func (s *httpServer) validateConfig() error {
+	// Appearance first, and before anything binds a port. Every setting in
+	// it fails silently in a browser, so a typo that got through would look
+	// like sip ignoring the option rather than like a bad value.
+	if err := s.config.Appearance.Validate(); err != nil {
+		return err
+	}
+
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
 		return fmt.Errorf("TLSCert and TLSKey must be provided together")
@@ -395,7 +402,7 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 // renderIndex injects per-deployment client config into the index HTML.
 // The {{FONT_FACE_EXTRA}} placeholder is replaced with an additional
 // @font-face rule + a window.__sipConfig blob carrying the custom family,
-// the renderer preference and the touch key bar's key set.
+// the renderer preference, the touch key bar's key set and the appearance.
 func (s *httpServer) renderIndex(data []byte) []byte {
 	out := bytes.NewBuffer(make([]byte, 0, len(data)+512))
 	body := string(data)
@@ -435,6 +442,13 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	}
 	if mouse := s.config.MobileMouse.clientOptions(); len(mouse) > 0 {
 		cfg["mobileMouse"] = mouse
+	}
+	// The same blob the session handshake sends over MsgOptions, seeded
+	// here because the page is built before the handshake: without it the
+	// terminal is constructed with the built-in palette and repainted a
+	// moment later, which on a light theme is a dark flash on every load.
+	if look := s.config.Appearance.clientOptions(); look != nil {
+		cfg["appearance"] = look
 	}
 	if len(cfg) > 0 {
 		blob, _ := json.Marshal(cfg)
