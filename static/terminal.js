@@ -152,6 +152,96 @@
         }
     }
 
+    // --- window.sip, the page API ---------------------------------------
+    //
+    // This is what a deployment's own script may rely on, and the whole of it.
+    // Everything else on this page is sip's own: window.sipTerm, the element
+    // ids, the settings object and the webterm instance all move without
+    // notice, and a script that reads them breaks on an upgrade.
+    //
+    // Four calls and five events, and each one was picked because sip can
+    // still answer it after the renderer underneath changes. There is no
+    // handle to the xterm.js Terminal here for exactly that reason: sip has
+    // two renderer branches in flight, and a promise it plans to break is
+    // worse than no promise. Ask for a Config field instead, which is the
+    // route sip maintains.
+    //
+    // It is published while this script parses, before the terminal exists,
+    // so a deferred script can subscribe and still catch the ready event. The
+    // ready event is sticky: a listener added afterwards is called anyway.
+
+    const sipListeners = new Map();
+    let sipReadyDetail = null;
+    let sipClient = null;
+
+    function sipCall(name, fn, detail) {
+        try {
+            fn(detail);
+        } catch (e) {
+            console.error(`sip: a ${name} listener threw`, e);
+        }
+    }
+
+    /** Tell the page's own scripts what just happened. */
+    function sipEmit(name, detail) {
+        if (name === 'ready') sipReadyDetail = detail;
+        const fns = sipListeners.get(name);
+        if (!fns) return;
+        for (const fn of Array.from(fns)) sipCall(name, fn, detail);
+    }
+
+    const sipApi = {
+        /**
+         * Listen for a page event. Returns a function that removes the
+         * listener, so a caller need not keep the callback to undo it.
+         *
+         *   ready      {cols, rows}   the terminal exists, before it connects
+         *   connect    {transport}    a transport is carrying the session
+         *   disconnect {reason}       'closed' if the session ended, 'lost' otherwise
+         *   resize     {cols, rows}   the grid changed shape
+         *   title      {title}        the program renamed the browser tab
+         *
+         * A listener that throws is reported to the console and the rest still
+         * run: a deployment's script must not be able to stop the terminal.
+         */
+        on(name, fn) {
+            if (typeof fn !== 'function') throw new TypeError('sip.on needs a function');
+            let fns = sipListeners.get(name);
+            if (!fns) sipListeners.set(name, (fns = new Set()));
+            fns.add(fn);
+            if (name === 'ready' && sipReadyDetail) {
+                queueMicrotask(() => {
+                    if (fns.has(fn)) sipCall(name, fn, sipReadyDetail);
+                });
+            }
+            return () => sipApi.off(name, fn);
+        },
+
+        /** Stop listening. Safe to call with a function that never listened. */
+        off(name, fn) {
+            const fns = sipListeners.get(name);
+            if (fns) fns.delete(fn);
+        },
+
+        /**
+         * Send terminal input, as if it had been typed. Returns a promise that
+         * settles once the bytes have left. A read-only session and a page
+         * whose terminal has not opened both accept the call and send nothing.
+         */
+        async send(data) {
+            if (!sipClient) return;
+            await sipClient.sendInput(String(data));
+        },
+
+        /** The grid's shape, or null before the ready event. */
+        size() {
+            if (!sipClient || !sipClient.term) return null;
+            return { cols: sipClient.term.cols, rows: sipClient.term.rows };
+        },
+    };
+
+    window.sip = sipApi;
+
     /**
      * Resolve sip's endpoint URLs against the document base URI, so the page
      * keeps working when the index is served at a non-root path behind a
@@ -618,18 +708,28 @@
             this.statusTextEl = document.getElementById('status-text');
             this.updateStatus('connecting', 'Initializing terminal...');
 
+            // A page sip did not write may not have the element the terminal
+            // opens into. Say so on the screen and in the console: the failure
+            // is otherwise a blank page with a thrown promise nobody sees.
+            const host = document.getElementById('terminal');
+            if (!host) {
+                console.error('sip: this page has no element with id "terminal". The terminal cannot open.');
+                this.updateStatus('disconnected', 'This page has no terminal element');
+                return;
+            }
+
             this.webterm = new WebTerm(this.webtermOptions());
-            await this.webterm.open(document.getElementById('terminal'));
+            await this.webterm.open(host);
 
             // Input, mouse reports and kitty protocol replies leave through the
             // attached transport on their own. What is wired here is the part
             // that is sip's: the resize message, the page title and the bell.
             this.webterm.on('resize', () => {
                 if (this.connected) this.sendResize();
+                sipEmit('resize', { cols: this.term.cols, rows: this.term.rows });
             });
             this.webterm.on('title', title => {
-                document.title = title || this.appearance.title || 'Sip';
-                this.sawTitle = true;
+                this.setTitle(title);
             });
             this.webterm.on('bell', () => {
                 const c = document.getElementById('terminal-container');
@@ -641,6 +741,10 @@
             this.setupCopyKeys();
             this.setupSettingsPanel();
             this.setupMobile();
+            // The page's own scripts get their handle before the connection
+            // opens, so a listener registered here still sees the first
+            // connect event.
+            sipEmit('ready', { cols: this.term.cols, rows: this.term.rows });
 
             await this.connect();
             this.webterm.focus();
@@ -802,6 +906,7 @@
             this.updateStatus(status, text);
             this.sendResize();
             this.startPing();
+            sipEmit('connect', { transport: name });
         }
 
         handleMessage(data) {
@@ -817,11 +922,11 @@
                     this.webterm.write('\r\n\x1b[33m[Session ended. Refresh to start new session.]\x1b[0m\r\n');
                     this.connected = false;
                     this.updateStatus('disconnected', 'Session ended');
+                    sipEmit('disconnect', { reason: 'closed' });
                     break;
 
                 case MSG_TITLE:
-                    document.title = this.decoder.decode(data.subarray(1)) || this.appearance.title || 'Sip';
-                    this.sawTitle = true;
+                    this.setTitle(this.decoder.decode(data.subarray(1)));
                     break;
 
                 case MSG_OPTIONS:
@@ -857,6 +962,7 @@
 
             this.currentTransport = 'disconnected';
             this.updateStatus('disconnected', 'Disconnected');
+            sipEmit('disconnect', { reason: 'lost' });
 
             if (this.reconnectAttempts < this.maxReconnectAttempts) {
                 this.reconnectAttempts++;
@@ -936,6 +1042,29 @@
             const cursorBlinkInput = document.getElementById('cursor-blink');
             const contextMenuInput = document.getElementById('browser-context-menu');
             const reservedKeysInput = document.getElementById('capture-reserved-keys');
+
+            // A replaced index.html need not carry the settings panel, and a
+            // half-built one is a mistake worth naming. Either way the panel
+            // is skipped and the terminal still runs: settings are a
+            // convenience and the terminal is the product.
+            const required = {
+                'settings-toggle': toggle,
+                'settings-panel': panel,
+                'settings-apply': apply,
+                'settings-close': close,
+                'transport-select': transportSelect,
+                'renderer-select': rendererSelect,
+                'font-size': fontSizeInput,
+                'font-size-value': fontSizeValue,
+                'copy-on-select': copyOnSelectInput,
+                'cursor-blink': cursorBlinkInput,
+            };
+            const missing = Object.keys(required).filter((id) => !required[id]);
+            if (missing.length === Object.keys(required).length) return;
+            if (missing.length) {
+                console.warn('sip: the settings panel is incomplete. Sip turned it off. Missing:', missing.join(', '));
+                return;
+            }
 
             transportSelect.value = this.settings.transport;
             rendererSelect.value = this.settings.renderer;
@@ -1047,7 +1176,7 @@
 
             // The desktop keeps the floating gear and lets it be moved out of
             // the way of whatever is under it.
-            if (!this.mobile.enabled) {
+            if (!this.mobile.enabled && toggle) {
                 SipMobile.installDraggable(toggle, { storageKey: 'sip-web-gear-pos', margin: 8 });
             }
 
@@ -1098,6 +1227,21 @@
             return out === text ? bytes : this.encoder.encode(out);
         }
 
+        /**
+         * Rename the browser tab for a title the program sent, falling back to
+         * Appearance.Title and then to sip's own name.
+         *
+         * One place, because the title arrives on two paths — webterm's own
+         * OSC handler and the server's MsgTitle frame — and a page script that
+         * wants to decorate the tab should not have to know which.
+         */
+        setTitle(title) {
+            const next = title || this.appearance.title || 'Sip';
+            this.sawTitle = true;
+            if (document.title !== next) document.title = next;
+            sipEmit('title', { title: next });
+        }
+
         updateStatus(status, text) {
             if (!this.statusEl || !this.statusTextEl) return;
 
@@ -1115,8 +1259,12 @@
     function start() {
         const sipTerm = new SipTerminal();
         // Handle for the browser tests and for debugging from the console.
+        // Internal: the page API is window.sip, and these two names are not
+        // part of it. They stay because the suites in clienttests/ use them.
         window.sipTerm = sipTerm;
-        window.sip = { term: sipTerm, settings: sipTerm.settings };
+        sipApi.term = sipTerm;
+        sipApi.settings = sipTerm.settings;
+        sipClient = sipTerm;
         sipTerm.init().catch(console.error);
     }
 

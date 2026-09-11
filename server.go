@@ -94,6 +94,9 @@ type httpServer struct {
 	connCount  int32
 	certInfo   *CertInfo
 	connectMW  []ConnectMiddleware
+
+	// indexSeamWarn keeps the page-assembly complaint to one line.
+	indexSeamWarn sync.Once
 }
 
 func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
@@ -153,9 +156,17 @@ func (s *httpServer) start(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
-	httpMux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+	// A deployment's own URLs. They go on before sip's favicon default so a
+	// route that supplies an icon simply takes the pattern; validateConfig
+	// has already refused every other path sip needs.
+	//
+	// ServeMux panics on a pattern that conflicts with one already there, so
+	// the loop turns that into a refusal to start that names the pattern. An
+	// exact-match check cannot see every conflict a wildcard can make, and a
+	// panic during startup reads as a bug in sip.
+	if err := s.registerRoutes(httpMux); err != nil {
+		return err
+	}
 
 	if s.certInfo != nil {
 		httpMux.HandleFunc("/cert-hash", s.handleCertHash(wtPort))
@@ -228,6 +239,7 @@ func (s *httpServer) start(ctx context.Context) error {
 		"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
 	)
 	warnStaleEmbed()
+	s.warnOverriddenAssets()
 
 	select {
 	case <-ctx.Done():
@@ -313,6 +325,9 @@ func (s *httpServer) validateConfig() error {
 	if err := s.config.Appearance.Validate(); err != nil {
 		return err
 	}
+	if err := s.validateRoutes(); err != nil {
+		return err
+	}
 
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
@@ -388,8 +403,8 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug("serving index", "remote", r.RemoteAddr)
 
-	data, err := staticFiles.ReadFile("static/index.html")
-	if err != nil {
+	data, ok := s.readAsset("index.html")
+	if !ok {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -450,6 +465,18 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	if look := s.config.Appearance.clientOptions(); look != nil {
 		cfg["appearance"] = look
 	}
+
+	// The deployment's own stylesheet and script. They go last in the
+	// placeholder, so the stylesheet follows sip's own and an ordinary rule
+	// wins on cascade order, and the script is deferred so it runs after
+	// terminal.js has published window.sip and before the terminal opens.
+	if s.config.ExtraCSS != "" {
+		extra.WriteString(`<link rel="stylesheet" href="static/` + extraCSSName + `">`)
+	}
+	if s.config.ExtraJS != "" {
+		extra.WriteString(`<script defer src="static/` + extraJSName + `"></script>`)
+	}
+
 	if len(cfg) > 0 {
 		blob, _ := json.Marshal(cfg)
 		extra.WriteString("<script>window.__sipConfig=")
@@ -457,9 +484,38 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 		extra.WriteString(";</script>")
 	}
 
-	body = strings.ReplaceAll(body, "{{FONT_FACE_EXTRA}}", extra.String())
+	body = s.injectHead(body, extra.String())
 	out.WriteString(body)
 	return out.Bytes()
+}
+
+// injectHead puts sip's per-deployment markup into the page.
+//
+// {{FONT_FACE_EXTRA}} is the documented seam and the shipped index.html has
+// it. A replaced index.html may not, so the closing </head> tag is the
+// fallback, and a page with neither gets a line in the log rather than
+// silently dropping every setting the deployment configured.
+func (s *httpServer) injectHead(body, markup string) string {
+	const placeholder = "{{FONT_FACE_EXTRA}}"
+	if strings.Contains(body, placeholder) {
+		return strings.ReplaceAll(body, placeholder, markup)
+	}
+	if markup == "" {
+		return body
+	}
+	if i := strings.Index(body, "</head>"); i >= 0 {
+		s.warnIndexSeamOnce("index.html has no {{FONT_FACE_EXTRA}} placeholder. Sip put its settings before </head>")
+		return body[:i] + markup + body[i:]
+	}
+	s.warnIndexSeamOnce("index.html has no {{FONT_FACE_EXTRA}} placeholder and no </head>. Sip served the page without its settings")
+	return body
+}
+
+// warnIndexSeamOnce keeps a page-assembly complaint to one line per server.
+// It is per request otherwise, and a log that repeats every reload is a log
+// nobody reads.
+func (s *httpServer) warnIndexSeamOnce(msg string) {
+	s.indexSeamWarn.Do(func() { logger.Warn(msg) })
 }
 
 // writeRevalidatingHeaders tags a response with a content ETag and asks the
@@ -480,19 +536,42 @@ func writeRevalidatingHeaders(w http.ResponseWriter, r *http.Request, data []byt
 // handleStatic serves embedded static files plus a virtual
 // /static/fonts/custom<ext> route for the user-supplied font.
 func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
+	path, ok := assetName(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 
 	// Virtual custom font route — sniff the prefix instead of an exact
 	// match so we accept any extension the user supplied.
-	if s.config.FontPath != "" && strings.HasPrefix(path, "static/fonts/custom") {
+	if s.config.FontPath != "" && strings.HasPrefix(path, "fonts/custom") {
 		s.serveCustomFont(w, r)
 		return
 	}
 
-	data, err := staticFiles.ReadFile(path)
-	if err != nil {
-		http.NotFound(w, r)
-		return
+	// ExtraCSS and ExtraJS are config, so they are served from the config
+	// rather than from a file. Serving them as files rather than inlining
+	// them into the page keeps a deployment's own code out of sip's HTML,
+	// which is both an escaping problem and a thing nobody can debug.
+	var data []byte
+	switch path {
+	case extraCSSName:
+		if s.config.ExtraCSS == "" {
+			http.NotFound(w, r)
+			return
+		}
+		data = []byte(s.config.ExtraCSS)
+	case extraJSName:
+		if s.config.ExtraJS == "" {
+			http.NotFound(w, r)
+			return
+		}
+		data = []byte(s.config.ExtraJS)
+	default:
+		if data, ok = s.readAsset(path); !ok {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
 	logger.Debug("serving static", "path", path, "size", len(data))
@@ -512,6 +591,18 @@ func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "font/ttf")
 	case strings.HasSuffix(path, ".otf"):
 		w.Header().Set("Content-Type", "font/otf")
+	// StaticFS lets a deployment add files sip does not ship, so the list
+	// covers the types a page asks for that http.DetectContentType cannot
+	// name from the bytes alone. PNG, JPEG, GIF and WebP it can, so they
+	// are left to it.
+	case strings.HasSuffix(path, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(path, ".ico"):
+		w.Header().Set("Content-Type", "image/x-icon")
+	case strings.HasSuffix(path, ".json"):
+		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(path, ".webmanifest"):
+		w.Header().Set("Content-Type", "application/manifest+json")
 	}
 
 	// Assets are served from the binary, so they change whenever sip is

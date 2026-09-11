@@ -21,6 +21,13 @@ export const BASE_URL = `http://localhost:${PORT}`;
 export const APPEARANCE_PORT = String(Number(PORT) + 10);
 export const APPEARANCE_URL = `http://localhost:${APPEARANCE_PORT}`;
 
+// A third, from examples/hackable: a deployment that replaces and adds to the
+// client files rather than configuring colours. extend.spec.mjs reads the
+// effects out of it and reads the default server above for the other half of
+// the claim, that a deployment configuring nothing pays nothing.
+export const HACK_PORT = String(Number(PORT) + 20);
+export const HACK_URL = `http://localhost:${HACK_PORT}`;
+
 export default defineConfig({
   testDir: '.',
   testMatch: /.*\.spec\.mjs/,
@@ -89,6 +96,15 @@ export default defineConfig({
     command: `go run ./examples/appearance -p ${APPEARANCE_PORT} -shell sh`,
     cwd: '..',
     url: APPEARANCE_URL,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  }, {
+    // The same shell again, served by a program that hacks the page itself.
+    command: `go run ./examples/hackable -p ${HACK_PORT}`,
+    cwd: '..',
+    url: HACK_URL,
     reuseExistingServer: false,
     timeout: 120_000,
     stdout: 'ignore',
