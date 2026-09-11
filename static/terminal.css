@@ -1,5 +1,19 @@
 /* Sip web terminal — xterm.js renderer */
 
+/* The chrome's colours, and the mouse cursor over the terminal.
+ *
+ * Every one of these is the value sip has always painted, so an unconfigured
+ * page renders exactly as it did before they had names. Config.Appearance
+ * derives them from the terminal palette and the client sets the ones it was
+ * given on the document element, which is why each use below carries the same
+ * value again as its var() fallback: a property nobody set is not a missing
+ * colour, it is the built-in one.
+ *
+ * There is no :root block declaring them. The fallback in each use is the
+ * whole default, so a page that sets none of them cannot be one stylesheet
+ * load away from an unpainted control.
+ */
+
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
     src: url('fonts/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
@@ -42,7 +56,7 @@ html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background-color: #1e1e2e;
+    background-color: var(--sip-bg, #1e1e2e);
     font-family: 'JetBrainsMono Nerd Font Mono', monospace;
 }
 
@@ -55,7 +69,7 @@ html, body {
        rather than height, so shrinking the box makes webterm's own
        ResizeObserver fire and the grid is refitted from it. */
     padding: 0 0 calc(var(--sip-kb-inset, 0px) + var(--sip-keybar-h, 0px));
-    background-color: #1e1e2e;
+    background-color: var(--sip-bg, #1e1e2e);
     min-height: 0;
 }
 
@@ -85,8 +99,18 @@ html, body {
     overflow-y: auto !important;
 }
 
-.xterm-screen {
-    cursor: text;
+.xterm,
+.xterm .xterm-screen {
+    cursor: var(--sip-mouse-cursor, text);
+}
+
+/* While a program is reading the mouse, xterm swaps the text bar for an
+   arrow, because there is nothing to select. A deployment that names a cursor
+   means it in both states: a cursor that changes under a program the user is
+   clicking through reads as a glitch. */
+.xterm.enable-mouse-events,
+.xterm.enable-mouse-events .xterm-screen {
+    cursor: var(--sip-mouse-cursor, default);
 }
 
 /* Scrollbar styling */
@@ -95,16 +119,16 @@ html, body {
 }
 
 .xterm-viewport::-webkit-scrollbar-track {
-    background: #1e1e2e;
+    background: var(--sip-bg, #1e1e2e);
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {
-    background: #45475a;
+    background: var(--sip-border, #45475a);
     border-radius: 5px;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
-    background: #585b70;
+    background: var(--sip-border-strong, #585b70);
 }
 
 /* Connection status indicator */
@@ -115,8 +139,8 @@ html, body {
        so this is plain bottom: 20px on a desktop. */
     bottom: calc(20px + var(--sip-kb-inset, 0px) + var(--sip-keybar-h, 0px));
     right: 20px;
-    background: rgba(30, 30, 46, 0.95);
-    border: 1px solid #45475a;
+    background: rgba(var(--sip-bg-rgb, 30, 30, 46), 0.95);
+    border: 1px solid var(--sip-border, #45475a);
     border-radius: 8px;
     padding: 8px 16px;
     display: flex;
@@ -124,7 +148,7 @@ html, body {
     gap: 8px;
     font-family: 'JetBrainsMono Nerd Font Mono', monospace;
     font-size: 12px;
-    color: #cdd6f4;
+    color: var(--sip-fg, #cdd6f4);
     z-index: 1000;
     transition: opacity 0.3s ease;
 }
@@ -136,20 +160,20 @@ html, body {
 
 #connection-status.connecting #status-icon,
 #connection-status.reconnecting #status-icon {
-    color: #f9e2af;
+    color: var(--sip-warn, #f9e2af);
     animation: pulse 1s infinite;
 }
 
 #connection-status.connected #status-icon {
-    color: #a6e3a1;
+    color: var(--sip-ok, #a6e3a1);
 }
 
 #connection-status.disconnected #status-icon {
-    color: #f38ba8;
+    color: var(--sip-error, #f38ba8);
 }
 
 #connection-status.webtransport #status-icon {
-    color: #89b4fa;
+    color: var(--sip-accent, #89b4fa);
 }
 
 @keyframes pulse {
@@ -170,9 +194,9 @@ html, body {
     width: 32px;
     height: 32px;
     border-radius: 6px;
-    border: 1px solid #45475a;
-    background: rgba(30, 30, 46, 0.9);
-    color: #cdd6f4;
+    border: 1px solid var(--sip-border, #45475a);
+    background: rgba(var(--sip-bg-rgb, 30, 30, 46), 0.9);
+    color: var(--sip-fg, #cdd6f4);
     /* The label is a Nerd Font glyph, so it has to be set in the Nerd Font. */
     font-family: 'JetBrainsMono Nerd Font Mono', monospace;
     font-size: 15px;
@@ -187,14 +211,14 @@ html, body {
 }
 
 #settings-toggle:hover {
-    background: #45475a;
+    background: var(--sip-border, #45475a);
     opacity: 1;
 }
 
 #settings-toggle.dragging {
     cursor: grabbing;
     opacity: 1;
-    background: #45475a;
+    background: var(--sip-border, #45475a);
 }
 
 /* Settings panel */
@@ -203,14 +227,14 @@ html, body {
     top: 50px;
     right: 10px;
     width: 280px;
-    background: rgba(30, 30, 46, 0.98);
-    border: 1px solid #45475a;
+    background: rgba(var(--sip-bg-rgb, 30, 30, 46), 0.98);
+    border: 1px solid var(--sip-border, #45475a);
     border-radius: 8px;
     padding: 16px;
     z-index: 1002;
     font-family: 'JetBrainsMono Nerd Font Mono', monospace;
     font-size: 12px;
-    color: #cdd6f4;
+    color: var(--sip-fg, #cdd6f4);
 }
 
 #settings-panel.hidden {
@@ -220,8 +244,8 @@ html, body {
 #settings-panel h3 {
     margin: 0 0 16px 0;
     font-size: 14px;
-    color: #89b4fa;
-    border-bottom: 1px solid #45475a;
+    color: var(--sip-accent, #89b4fa);
+    border-bottom: 1px solid var(--sip-border, #45475a);
     padding-bottom: 8px;
 }
 
@@ -232,7 +256,7 @@ html, body {
 .setting-group label {
     display: block;
     margin-bottom: 4px;
-    color: #a6adc8;
+    color: var(--sip-muted, #a6adc8);
 }
 
 .setting-group select,
@@ -240,9 +264,9 @@ html, body {
     width: 100%;
     padding: 6px 8px;
     border-radius: 4px;
-    border: 1px solid #45475a;
-    background: #313244;
-    color: #cdd6f4;
+    border: 1px solid var(--sip-border, #45475a);
+    background: var(--sip-surface, #313244);
+    color: var(--sip-fg, #cdd6f4);
     font-family: inherit;
     font-size: 12px;
 }
@@ -250,7 +274,7 @@ html, body {
 .setting-group select:focus,
 .setting-group input:focus {
     outline: none;
-    border-color: #89b4fa;
+    border-color: var(--sip-accent, #89b4fa);
 }
 
 .setting-group input[type="range"] {
@@ -261,10 +285,10 @@ html, body {
 .setting-info {
     margin: 16px 0;
     padding: 8px;
-    background: #313244;
+    background: var(--sip-surface, #313244);
     border-radius: 4px;
     font-size: 11px;
-    color: #a6adc8;
+    color: var(--sip-muted, #a6adc8);
 }
 
 .setting-info div {
@@ -279,9 +303,9 @@ html, body {
     width: 100%;
     padding: 8px 12px;
     border-radius: 4px;
-    border: 1px solid #45475a;
-    background: #313244;
-    color: #cdd6f4;
+    border: 1px solid var(--sip-border, #45475a);
+    background: var(--sip-surface, #313244);
+    color: var(--sip-fg, #cdd6f4);
     font-family: inherit;
     font-size: 12px;
     cursor: pointer;
@@ -290,17 +314,17 @@ html, body {
 }
 
 #settings-panel button:hover {
-    background: #45475a;
+    background: var(--sip-border, #45475a);
 }
 
 #settings-panel button.primary {
-    background: #89b4fa;
-    border-color: #89b4fa;
-    color: #1e1e2e;
+    background: var(--sip-accent, #89b4fa);
+    border-color: var(--sip-accent, #89b4fa);
+    color: var(--sip-bg, #1e1e2e);
 }
 
 #settings-panel button.primary:hover {
-    background: #b4befe;
+    background: var(--sip-accent-strong, #b4befe);
 }
 
 /* Selection styling */
@@ -310,15 +334,15 @@ html, body {
 
 /* Cursor styling */
 .xterm-cursor-block {
-    background-color: #f5e0dc !important;
+    background-color: var(--sip-cursor, #f5e0dc) !important;
 }
 
 .xterm-cursor-bar {
-    background-color: #f5e0dc !important;
+    background-color: var(--sip-cursor, #f5e0dc) !important;
 }
 
 .xterm-cursor-underline {
-    border-bottom-color: #f5e0dc !important;
+    border-bottom-color: var(--sip-cursor, #f5e0dc) !important;
 }
 
 /* Focus indicator */

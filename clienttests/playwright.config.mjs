@@ -12,6 +12,15 @@ const CHROMIUM = process.env.SIP_CHROMIUM ?? '/usr/bin/chromium';
 export const PORT = process.env.SIP_TEST_PORT ?? '7699';
 export const BASE_URL = `http://localhost:${PORT}`;
 
+// A second server, started from examples/appearance, which configures a
+// palette and a mouse cursor in Go. It is a separate process because
+// appearance is read once per server and the default server has to stay
+// default: the whole claim is that a deployment configuring nothing renders
+// what it always did, and one server cannot be both. Its port leaves the one
+// above it free for its own WebTransport listener.
+export const APPEARANCE_PORT = String(Number(PORT) + 10);
+export const APPEARANCE_URL = `http://localhost:${APPEARANCE_PORT}`;
+
 export default defineConfig({
   testDir: '.',
   testMatch: /.*\.spec\.mjs/,
@@ -47,14 +56,17 @@ export default defineConfig({
       // Only the keyboard suite runs here. The renderer checks read pixels
       // back out of a canvas under a pinned GL setup, which is Chromium-only.
       name: 'firefox',
-      testMatch: /keyboard\.spec\.mjs/,
+      // The appearance suite runs here for one test: the options frame is
+      // written at two sites, one per transport, and Firefox is the only
+      // engine that reaches WebTransport. Its pixel checks skip themselves.
+      testMatch: /(keyboard|appearance)\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',
       },
     },
   ],
-  webServer: {
+  webServer: [{
     // A bare, rc-free shell: deterministic prompt-free behaviour, and it
     // stays alive for the whole run so every test shares one server.
     command: `go run ./cmd/sip -p ${PORT} -- sh`,
@@ -72,5 +84,14 @@ export default defineConfig({
     timeout: 120_000,
     stdout: 'ignore',
     stderr: 'pipe',
-  },
+  }, {
+    // The same shell, served by a program that sets Config.Appearance.
+    command: `go run ./examples/appearance -p ${APPEARANCE_PORT} -shell sh`,
+    cwd: '..',
+    url: APPEARANCE_URL,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  }],
 });

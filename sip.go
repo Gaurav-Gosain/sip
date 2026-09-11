@@ -210,6 +210,11 @@ type Config struct {
 	// "JetBrainsMono Nerd Font Mono".
 	FontFamily string
 
+	// Appearance is how the page looks: the terminal's palette, its two
+	// cursors and the chrome around them. The zero value renders exactly
+	// what sip rendered before the field existed; see Appearance.
+	Appearance Appearance
+
 	// Renderer selects the client-side terminal renderer: "webgl",
 	// "canvas" or "dom". Empty means "auto", which prefers WebGL and
 	// falls back to canvas and then the DOM. A user's saved setting and

@@ -94,8 +94,63 @@
     };
 
     // Per-deployment config injected by the server (see renderIndex). Absent
-    // unless sip was started with a font or renderer flag.
+    // unless sip was started with a font, renderer or appearance setting.
     const sipConfig = window.__sipConfig || {};
+
+    // --- Appearance ------------------------------------------------------
+    //
+    // How the page looks: the palette, the two cursors, the chrome. See
+    // Appearance in the Go package for what each field means.
+    //
+    // It arrives twice from one producer. The blob in __sipConfig is read
+    // before the terminal is constructed, so the first paint is already the
+    // deployment's; the identical blob arrives again over MsgOptions on
+    // connect, which is what reaches a page sip did not render and what
+    // re-applies after a reconnect.
+    //
+    // Every field is optional and the whole blob may be missing: an old tab
+    // reconnecting to a new server, or a server that predates the option.
+    // Nothing here throws on an absent field, it falls back to the constant.
+
+    /** The deployment palette over sip's own, so a partial theme is a patch. */
+    function mergeTheme(a) {
+        return Object.assign({}, THEME, (a && a.theme) || {});
+    }
+
+    /**
+     * Paint the page around the terminal: the chrome colours, the mouse
+     * cursor, the tab title and its icon.
+     *
+     * The colours are CSS custom properties that static/terminal.css already
+     * declares with today's values as their fallbacks, so an unset property
+     * is not a missing colour, it is the built-in one.
+     */
+    function applyPageAppearance(a) {
+        const root = document.documentElement;
+        const chrome = (a && a.chrome) || {};
+        for (const prop of Object.keys(chrome)) {
+            // Two namespaces and no others, so the blob cannot reach a
+            // property the page did not mean to expose. --webterm-* is the
+            // vendored bundle's own hook for the ground behind the grid and
+            // the scrollbar, which sip's properties do not reach.
+            if (prop.startsWith('--sip-') || prop.startsWith('--webterm-')) {
+                root.style.setProperty(prop, chrome[prop]);
+            }
+        }
+        if (a && a.mouseCursor) root.style.setProperty('--sip-mouse-cursor', a.mouseCursor);
+        else root.style.removeProperty('--sip-mouse-cursor');
+
+        if (a && a.favicon) {
+            let link = document.querySelector('link[rel="icon"]');
+            if (!link) {
+                link = document.createElement('link');
+                link.rel = 'icon';
+                document.head.appendChild(link);
+            }
+            // Assigned as a property, never written into markup.
+            link.href = a.favicon;
+        }
+    }
 
     /**
      * Resolve sip's endpoint URLs against the document base URI, so the page
@@ -380,6 +435,12 @@
             this.encoder = new TextEncoder();
             this.decoder = new TextDecoder();
 
+            this.appearance = sipConfig.appearance || {};
+            this.storedSettings = {};
+            // Whether the program has named the tab itself. Until it does,
+            // the configured title stands; after it does, a reconnect must
+            // not pull the tab back to the deployment's name.
+            this.sawTitle = false;
             this.settings = this.loadSettings();
             this.fontFamily = sipConfig.fontFamily || FONT_FAMILY;
             // Replaced by the key bar on a touch device, inert everywhere else.
@@ -427,6 +488,9 @@
                 if (saved) stored = JSON.parse(saved) || {};
             } catch (e) {}
             const settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+            // What the user chose themselves, kept so a later options blob
+            // can tell a deployment default from a user's answer.
+            this.storedSettings = stored;
             // A ?renderer= query param pins a backend for the browser tests
             // without touching stored settings; the per-deployment config from
             // the sip --renderer flag outranks a default but not a saved
@@ -434,6 +498,16 @@
             const q = new URLSearchParams(window.location.search).get('renderer');
             if (q) settings.renderer = q;
             else if (!stored.renderer && sipConfig.renderer) settings.renderer = sipConfig.renderer;
+            // The deployment's defaults, which outrank sip's own and lose to
+            // anything the user set in the settings panel. Same rule the
+            // renderer preference follows, for the same reason: a deployment
+            // picks a starting point, a user picks an answer.
+            if (this.appearance.fontSize && stored.fontSize === undefined) {
+                settings.fontSize = this.appearance.fontSize;
+            }
+            if (this.appearance.cursorBlink && stored.cursorBlink === undefined) {
+                settings.cursorBlink = true;
+            }
             // A narrow touch screen starts a point smaller so the program has
             // some columns to work with, but only until the user picks a size,
             // which is what a stored fontSize means.
@@ -447,6 +521,50 @@
             try {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
             } catch (e) {}
+            // Everything in the panel is now the user's answer, so a later
+            // options blob must not push a deployment default over it.
+            this.storedSettings = Object.assign({}, this.settings);
+        }
+
+        /**
+         * Take the appearance the server sent at the handshake.
+         *
+         * The same blob was already seeded into the page from __sipConfig, so
+         * this is normally a no-op that costs one setOptions. It is not
+         * redundant: it is the only route into a page sip did not render, and
+         * it is what re-applies the deployment's palette after a reconnect to
+         * a server whose config has changed.
+         *
+         * An absent blob is not "clear everything". A server that knows
+         * nothing about appearance sends no field, and the page keeps what it
+         * has, which is what an old tab reconnecting needs.
+         */
+        applyAppearance(a) {
+            if (!a) return;
+            this.appearance = a;
+            applyPageAppearance(a);
+            if (a.title && !this.sawTitle) document.title = a.title;
+
+            // The two settings the user may have answered themselves. The
+            // deployment sets the default and loses to a stored answer.
+            if (a.fontSize && this.storedSettings.fontSize === undefined) {
+                this.settings.fontSize = a.fontSize;
+            }
+            if (a.cursorBlink && this.storedSettings.cursorBlink === undefined) {
+                this.settings.cursorBlink = true;
+            }
+
+            this.webterm.setOptions({
+                theme: mergeTheme(a),
+                fontSize: this.settings.fontSize,
+                cursorBlink: this.settings.cursorBlink,
+                cursorStyle: a.cursorStyle || 'block',
+                scrollback: a.scrollback || 5000,
+                xterm: {
+                    cursorInactiveStyle: a.cursorInactiveStyle || 'outline',
+                    tabStopWidth: 8,
+                },
+            });
         }
 
         /** The webterm option groups derived from sip's stored settings. */
@@ -464,9 +582,10 @@
                     { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-Italic.ttf)', weight: '400', style: 'italic' },
                     { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf)', weight: '700', style: 'italic' },
                 ],
-                theme: THEME,
+                theme: mergeTheme(this.appearance),
                 cursorBlink: this.settings.cursorBlink,
-                scrollback: 5000,
+                cursorStyle: this.appearance.cursorStyle || 'block',
+                scrollback: this.appearance.scrollback || 5000,
                 links: true,
                 renderer: { prefer: this.settings.renderer },
                 clipboard: { copyOnSelect: this.settings.copyOnSelect },
@@ -482,11 +601,19 @@
                 },
                 mouse: { suppressContextMenu: !this.settings.browserContextMenu },
                 input: { chunkBytes: INPUT_CHUNK_SIZE, readOnly: false },
-                xterm: { cursorInactiveStyle: 'outline', tabStopWidth: 8 },
+                xterm: {
+                    cursorInactiveStyle: this.appearance.cursorInactiveStyle || 'outline',
+                    tabStopWidth: 8,
+                },
             };
         }
 
         async init() {
+            // Before the terminal is constructed, so the deployment's ground
+            // colour is the first one painted rather than a flash of sip's.
+            applyPageAppearance(this.appearance);
+            if (this.appearance.title) document.title = this.appearance.title;
+
             this.statusEl = document.getElementById('connection-status');
             this.statusTextEl = document.getElementById('status-text');
             this.updateStatus('connecting', 'Initializing terminal...');
@@ -501,12 +628,13 @@
                 if (this.connected) this.sendResize();
             });
             this.webterm.on('title', title => {
-                document.title = title || 'Sip';
+                document.title = title || this.appearance.title || 'Sip';
+                this.sawTitle = true;
             });
             this.webterm.on('bell', () => {
                 const c = document.getElementById('terminal-container');
                 if (!c) return;
-                c.style.outline = '2px solid #f9e2af';
+                c.style.outline = '2px solid var(--sip-warn, #f9e2af)';
                 setTimeout(() => { c.style.outline = 'none'; }, 150);
             });
 
@@ -692,13 +820,15 @@
                     break;
 
                 case MSG_TITLE:
-                    document.title = this.decoder.decode(data.subarray(1)) || 'Sip';
+                    document.title = this.decoder.decode(data.subarray(1)) || this.appearance.title || 'Sip';
+                    this.sawTitle = true;
                     break;
 
                 case MSG_OPTIONS:
                     try {
                         const options = JSON.parse(this.decoder.decode(data.subarray(1)));
                         this.readOnly = options.readOnly || false;
+                        this.applyAppearance(options.appearance);
                         // Read-only is enforced inside webterm, so keystrokes,
                         // mouse reports and kitty protocol replies alike stop
                         // at the source rather than being filtered per path.
