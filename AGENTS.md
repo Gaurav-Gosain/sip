@@ -265,6 +265,16 @@ screen row are the same row there. sip previously forced `anchor: 'viewport'`,
 which pinned every image to the visible grid and left it hanging in place while
 the text scrolled underneath it.
 
+A placement that runs past an edge of the grid is cropped to it, never scaled
+into it. The overlay sizes the canvas to the cells that are still on screen and
+takes the matching fraction off the source rect, so an image leaving the
+viewport is cut off by the edge the way it is in a native terminal. Drawing the
+whole source into the clamped box instead squashed the image, and the squash
+tightened with every scroll step, so scrolling back through history shrank an
+image rather than cutting it off. A placement with nothing on the grid keeps its
+real position rather than the clamp, so a hidden canvas still sits against the
+row it is anchored to.
+
 After a placement the overlay moves the cursor past the image, right by its
 columns and down by its rows, unless the sender asks for `C=1`. `kitten icat`
 emits only a trailing CR LF of its own and relies on the terminal for the rest,
