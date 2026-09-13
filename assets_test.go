@@ -28,7 +28,7 @@ var defaultAssetDigests = map[string]string{
 	"/":                    "1ffe93de436e26c925d1a59b3ab872b23edcd4cb5dbb22700949462784993c07",
 	"/static/index.html":   "2a3f870fc6f650c9a3cdaa931b6b8e01661c4b9cac6a4e0a5af785e64c6d9693",
 	"/static/terminal.css": "3e32f10f34e88298fea71bf0697b774ce0c7dd11926630f703109bd3d21de0a7",
-	"/static/webterm.js":   "fb43389d176ef2fe2f993db0cd7b4104436927eccbda3f600c776a86e656ff27",
+	"/static/webterm.js":   "d251fbe49d33c72d182b268d7f1f3fb8b6a244c055e384c594effc7d511c2304",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",
 	"/static/mobile.js":    "3bb7c755ff498558226bd7977bba276501a7bcdba27fcb62a689dc805d6b61dd",
