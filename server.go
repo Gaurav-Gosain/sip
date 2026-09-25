@@ -177,7 +177,7 @@ func (s *httpServer) start(ctx context.Context) error {
 
 	if s.certInfo != nil {
 		s.wtServer = &webtransport.Server{
-			H3: http3.Server{
+			H3: &http3.Server{
 				Addr:            wtAddr,
 				TLSConfig:       s.certInfo.TLSConfig,
 				Handler:         wtMux,
