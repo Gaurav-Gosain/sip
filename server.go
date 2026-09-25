@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -178,8 +179,12 @@ func (s *httpServer) start(ctx context.Context) error {
 	if s.certInfo != nil {
 		s.wtServer = &webtransport.Server{
 			H3: &http3.Server{
-				Addr:            wtAddr,
-				TLSConfig:       s.certInfo.TLSConfig,
+				Addr: wtAddr,
+				// webtransport-go listens with this config directly rather
+				// than through http3.Server, so it has to offer the h3 ALPN
+				// itself. ConfigureTLSConfig clones, so the HTTPS listener
+				// that shares certInfo keeps its own protocols.
+				TLSConfig:       http3.ConfigureTLSConfig(s.certInfo.TLSConfig),
 				Handler:         wtMux,
 				EnableDatagrams: true,
 			},
@@ -225,7 +230,9 @@ func (s *httpServer) start(ctx context.Context) error {
 				"addr", wtAddr,
 				"protocol", "QUIC/UDP",
 			)
-			if err := s.wtServer.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
+			// Close cancels the listener's context, so a clean shutdown
+			// ends the accept loop with context.Canceled.
+			if err := s.wtServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.Canceled) {
 				logger.Warn("WebTransport server error", "err", err)
 			}
 		}()
