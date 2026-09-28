@@ -19,6 +19,10 @@ type cmdPlatformPty struct {
 	pty xpty.Pty
 	// master is a pollable duplicate of the PTY master (see
 	// pollableMaster). All reads and writes go through it.
+	// On Linux, never call Fd on the original master (pty.Fd,
+	// Master().Fd). Fd puts the shared file description back in blocking
+	// mode, and a blocking read ignores Close. Use SyscallConn or Control
+	// for ioctls. TestPTYMasterStaysNonBlocking checks this.
 	master   *os.File
 	cmd      *exec.Cmd
 	waitOnce sync.Once

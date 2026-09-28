@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 package sip
 
@@ -22,7 +22,14 @@ import (
 //
 // O_NONBLOCK belongs to the open file description, which the duplicate
 // shares with the original. The original must only be used for ioctls
-// and Close from now on.
+// (through SyscallConn) and Close from now on. Never call Fd on the
+// original (UnixPty.Fd, Master().Fd): os.File.Fd on it clears O_NONBLOCK
+// on the shared description, and every read is blocking again.
+// TestPTYMasterStaysNonBlocking checks this.
+//
+// This is Linux only, where epoll takes a PTY master. On other systems
+// Go leaves a non-blocking file that kqueue refuses outside the poller,
+// and reads then fail with EAGAIN. See pty_other.go.
 func pollableMaster(master *os.File) (*os.File, error) {
 	rc, err := master.SyscallConn()
 	if err != nil {

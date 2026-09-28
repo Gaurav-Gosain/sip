@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,16 +61,29 @@ func (m finalModel) View() tea.View                      { return tea.NewView(""
 // and collects output frames until the server sends MsgClose.
 func runUntilClose(t *testing.T, srv *httpServer) string {
 	t.Helper()
+	out, err := readUntilClose(t, srv, -1)
+	if err != nil {
+		t.Fatalf("connection ended without MsgClose (output so far %q): %v", out, err)
+	}
+	return out
+}
+
+// readUntilClose is runUntilClose without the failure. It keeps at most
+// keep bytes of output (all of it when keep < 0) and returns an error when
+// the connection ends without MsgClose.
+func readUntilClose(t *testing.T, srv *httpServer, keep int) (string, error) {
+	t.Helper()
 	hs := httptest.NewServer(http.HandlerFunc(srv.handleWebSocket))
 	defer hs.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(hs.URL, "http")+"/ws", nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.CloseNow() }()
+	conn.SetReadLimit(-1)
 
 	resize, _ := json.Marshal(ResizeMessage{Cols: 80, Rows: 24})
 	if err := conn.Write(ctx, websocket.MessageBinary, append([]byte{MsgResize}, resize...)); err != nil {
@@ -77,18 +94,36 @@ func runUntilClose(t *testing.T, srv *httpServer) string {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			t.Fatalf("connection ended without MsgClose (output so far %q): %v", out.String(), err)
+			return out.String(), err
 		}
 		if len(data) == 0 {
 			continue
 		}
 		switch data[0] {
 		case MsgOutput:
-			out.Write(data[1:])
+			p := data[1:]
+			if keep >= 0 && out.Len()+len(p) > keep {
+				p = p[:max(0, keep-out.Len())]
+			}
+			out.Write(p)
 		case MsgClose:
-			return out.String()
+			return out.String(), nil
 		}
 	}
+}
+
+// killGroupFromOutput kills the process group whose id the command
+// printed as "pgid=N;". Commands in these tests run in their own session,
+// so the group holds the command and the children it left behind.
+func killGroupFromOutput(t *testing.T, out string) {
+	t.Helper()
+	m := regexp.MustCompile(`pgid=(\d+);`).FindStringSubmatch(out)
+	if m == nil {
+		t.Errorf("no pgid in output %q", out)
+		return
+	}
+	pgid, _ := strconv.Atoi(m[1])
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
 // TestFinalOutputReachesClientBeforeClose covers a program that writes a
@@ -170,17 +205,115 @@ func waitClosed(t *testing.T, f *os.File) {
 // holding the terminal. The master never reads EIO, so only the drain
 // bound ends the session.
 func TestFinalOutputDrainIsBounded(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux can end a pending PTY read (see pty_other.go)")
+	}
 	srv := newCmdHTTPServer(DefaultConfig(), &CommandHandler{
-		name: "sh", args: []string{"-c", "trap '' HUP; sleep 5 & printf " + finalMarker},
+		name: "sh", args: []string{"-c", "printf 'pgid=%s;' $$; trap '' HUP; sleep 30 & printf " + finalMarker},
 	})
 	srv.connectMW = []ConnectMiddleware{connLimitMiddleware(srv)}
 
 	start := time.Now()
 	out := runUntilClose(t, srv)
+	took := time.Since(start)
+	killGroupFromOutput(t, out)
 	if !strings.Contains(out, finalMarker) {
 		t.Fatalf("client got MsgClose without the final output; got %q", out)
 	}
-	if took := time.Since(start); took > finalOutputDrain+3*time.Second {
+	if took > finalOutputDrain+3*time.Second {
 		t.Fatalf("session took %v to end, want about %v", took, finalOutputDrain)
+	}
+}
+
+// TestFinalOutputFloodAfterExit covers a background child that keeps
+// writing after the command exits. The drain runs out while output still
+// flows. MsgClose must still arrive: a write cut short by the drain bound
+// closes the WebSocket, and the page then starts the command again.
+func TestFinalOutputFloodAfterExit(t *testing.T) {
+	for i := range 10 {
+		srv := newCmdHTTPServer(DefaultConfig(), &CommandHandler{
+			name: "sh", args: []string{"-c", "printf 'pgid=%s;' $$; trap '' HUP; yes & sleep 0.2"},
+		})
+		srv.connectMW = []ConnectMiddleware{connLimitMiddleware(srv)}
+		out, err := readUntilClose(t, srv, 64)
+		killGroupFromOutput(t, out)
+		if err != nil {
+			t.Fatalf("run %d: connection ended without MsgClose: %v", i, err)
+		}
+	}
+}
+
+// fakeSession is a session whose output never ends. It has already ended.
+type fakeSession struct {
+	ctx    context.Context
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newFakeSession() *fakeSession {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return &fakeSession{ctx: ctx, closed: make(chan struct{})}
+}
+
+func (f *fakeSession) OutputReader() io.Reader {
+	return readerFunc(func(p []byte) (int, error) {
+		select {
+		case <-f.closed:
+			return 0, os.ErrClosed
+		default:
+		}
+		for i := range p {
+			p[i] = 'y'
+		}
+		return len(p), nil
+	})
+}
+func (f *fakeSession) InputWriter() io.Writer   { return io.Discard }
+func (f *fakeSession) Resize(int, int)          {}
+func (f *fakeSession) Done() <-chan struct{}    { return f.ctx.Done() }
+func (f *fakeSession) Context() context.Context { return f.ctx }
+func (f *fakeSession) Close() error             { f.once.Do(func() { close(f.closed) }); return nil }
+
+// TestStreamOutputStopsAfterAFailedSend checks the rule both transports
+// rely on. After a failed send the output loop sends nothing more. On
+// WebTransport a failed write can leave a partial frame, and a MsgClose
+// frame after it would break the client's length framing.
+func TestStreamOutputStopsAfterAFailedSend(t *testing.T) {
+	srv := &httpServer{config: DefaultConfig()}
+	var sends, failedAt int
+	send := func(_ context.Context, msg []byte) error {
+		sends++
+		if sends == 3 {
+			failedAt = sends
+			return errors.New("write deadline exceeded")
+		}
+		if failedAt != 0 {
+			t.Errorf("send %d (type %q) after the failed send %d", sends, msg[0], failedAt)
+		}
+		return nil
+	}
+	srv.streamOutput(context.Background(), newFakeSession(), sessionInfo{id: "t"}, "test", send)
+	if failedAt == 0 {
+		t.Fatal("the failing send was never reached")
+	}
+}
+
+// TestStreamOutputEndsAFloodWithMsgClose checks that a drain which runs
+// out of time while output still flows ends with MsgClose.
+func TestStreamOutputEndsAFloodWithMsgClose(t *testing.T) {
+	srv := &httpServer{config: DefaultConfig()}
+	var last byte
+	send := func(_ context.Context, msg []byte) error {
+		last = msg[0]
+		return nil
+	}
+	start := time.Now()
+	srv.streamOutput(context.Background(), newFakeSession(), sessionInfo{id: "t"}, "test", send)
+	if last != MsgClose {
+		t.Fatalf("last message type %q, want MsgClose", last)
+	}
+	if took := time.Since(start); took > finalOutputDrain+2*time.Second {
+		t.Fatalf("drain took %v, want about %v", took, finalOutputDrain)
 	}
 }

@@ -346,9 +346,12 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 
 	// Watchdog: see handleWebSocket. Closing the session on ctx.Done
 	// unblocks the output goroutine's PTY Read so teardown can't deadlock.
+	// A stream read does not watch ctx, so cancel it too. Otherwise the
+	// input goroutine waits for a client that may never send again.
 	go func() {
 		<-ctx.Done()
 		closeFunc()
+		stream.CancelRead(0)
 	}()
 
 	var wg sync.WaitGroup
@@ -358,6 +361,9 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 		defer wg.Done()
 		defer cancel()
 		s.streamOutputToWebTransport(ctx, stream, wrapped, info)
+		// End the send side after the last frame (MsgClose on a normal
+		// end), so the client reads everything and then EOF.
+		_ = stream.Close()
 	}()
 
 	go func() {
@@ -367,8 +373,19 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	}()
 
 	wg.Wait()
-	<-wtSession.Context().Done()
+	// Give the client time to read the last frames and close the session.
+	// A client that ignores MsgClose loses its slot after the grace time.
+	grace := time.NewTimer(wtCloseGrace)
+	defer grace.Stop()
+	select {
+	case <-wtSession.Context().Done():
+	case <-grace.C:
+	}
 }
+
+// wtCloseGrace bounds how long a WebTransport connection stays open after
+// the output ends, while the client reads the last frames and closes.
+const wtCloseGrace = 5 * time.Second
 
 // makeSession dispatches to the cmd or bubbletea path depending on
 // what's configured. Returns the raw session (pre-SessionMiddleware), a
@@ -405,7 +422,9 @@ func (s *httpServer) outputFilter() func([]byte) []byte {
 const finalOutputDrain = time.Second
 
 // outputSender writes one message (type byte plus payload) to the client.
-// It must give up when ctx is done.
+// It must give up when ctx is done. After a failed send the connection is
+// unusable (a WebSocket is closed, a WebTransport frame may be partial),
+// so streamOutput sends nothing more.
 type outputSender func(ctx context.Context, msg []byte) error
 
 func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo) {
@@ -426,17 +445,12 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 
 func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo) {
 	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
-	// A stream write does not watch ctx, so its deadline carries both the
-	// per-write bound and the ctx deadline, whichever comes first.
-	send := func(ctx context.Context, msg []byte) error {
-		var deadline time.Time
+	// A stream write does not watch ctx. The write deadline bounds a
+	// single write so a stalled client can't pin this goroutine.
+	send := func(_ context.Context, msg []byte) error {
 		if writeTimeout > 0 {
-			deadline = time.Now().Add(writeTimeout)
+			_ = stream.SetWriteDeadline(time.Now().Add(writeTimeout))
 		}
-		if d, ok := ctx.Deadline(); ok && (deadline.IsZero() || d.Before(deadline)) {
-			deadline = d
-		}
-		_ = stream.SetWriteDeadline(deadline)
 		return writeFramed(stream, msg)
 	}
 	s.streamOutput(ctx, session, info, "WebTransport", send)
@@ -481,7 +495,7 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 
 	// Bound the time from session end to teardown. The loop may sit in a
 	// read that no EIO will end (a process still holds the terminal).
-	// Closing the session unblocks that read.
+	// Closing the session unblocks that read on Linux (see pty_linux.go).
 	loopDone := make(chan struct{})
 	defer close(loopDone)
 	go func() {
@@ -510,8 +524,9 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 				return
 			}
 			logger.Debug("session ended, draining output", "transport", transport, "session", info.id)
-			drainOutput(ctx, session, buf, forward)
-			_ = send(ctx, []byte{MsgClose})
+			if drainOutput(ctx, session, buf, forward) {
+				_ = send(ctx, []byte{MsgClose})
+			}
 			return
 		default:
 		}
@@ -533,24 +548,27 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 }
 
 // drainOutput forwards output that is still buffered after the session
-// ended. It stops at the end of the output (EIO or EOF) or on a write
-// error. Writes share one finalOutputDrain budget, so a slow client
-// cannot hold the loop. The watcher in streamOutput bounds the reads.
-func drainOutput(ctx context.Context, session internalSession, buf []byte, forward func(context.Context, []byte) error) {
-	dctx, cancel := context.WithTimeout(ctx, finalOutputDrain)
-	defer cancel()
-
-	for dctx.Err() == nil {
+// ended. It stops at the end of the output (EIO, EOF or an empty read),
+// on a write error, or when finalOutputDrain has passed. The budget is
+// checked between reads only. Each write keeps the normal write timeout:
+// a write cut part-way by the budget closes a WebSocket and leaves a
+// partial WebTransport frame, and MsgClose could not follow it.
+//
+// It reports whether every write succeeded, so MsgClose can follow.
+func drainOutput(ctx context.Context, session internalSession, buf []byte, forward func(context.Context, []byte) error) bool {
+	deadline := time.Now().Add(finalOutputDrain)
+	for time.Now().Before(deadline) {
 		n, err := session.OutputReader().Read(buf)
 		if n > 0 {
-			if forward(dctx, buf[:n]) != nil {
-				return
+			if forward(ctx, buf[:n]) != nil {
+				return false
 			}
 		}
-		if err != nil {
-			return
+		if err != nil || n == 0 {
+			return true
 		}
 	}
+	return true
 }
 
 func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo, apply func(WindowSize)) {
@@ -564,8 +582,8 @@ func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.C
 			return
 		case <-session.Done():
 			// Wait for the output loop. It still has the last output and
-			// MsgClose to send, and it ends the connection when it is
-			// done. Returning here would cancel ctx and cut that short.
+			// MsgClose to send, and it cancels ctx when it is done.
+			// Returning here would cancel ctx and cut that short.
 			<-ctx.Done()
 			return
 		default:
@@ -597,8 +615,8 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 			return
 		case <-session.Done():
 			// Wait for the output loop. It still has the last output and
-			// MsgClose to send, and it ends the connection when it is
-			// done. Returning here would cancel ctx and cut that short.
+			// MsgClose to send, and it cancels ctx when it is done.
+			// Returning here would cancel ctx and cut that short.
 			<-ctx.Done()
 			return
 		default:
