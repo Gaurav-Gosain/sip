@@ -398,56 +398,69 @@ func (s *httpServer) outputFilter() func([]byte) []byte {
 	return tr.Filter
 }
 
+// finalOutputDrain bounds how long the output loop keeps forwarding
+// output after the session has ended. The program's last bytes are
+// already in the PTY, so this only runs out when something else still
+// holds the terminal open or the client reads too slowly.
+const finalOutputDrain = time.Second
+
+// outputSender writes one message (type byte plus payload) to the client.
+// It must give up when ctx is done.
+type outputSender func(ctx context.Context, msg []byte) error
+
 func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo) {
+	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
+	// Each write is bounded so a stalled-but-alive client (stopped
+	// reading, send buffer full) can't pin this goroutine and its
+	// connection slot forever.
+	send := func(ctx context.Context, msg []byte) error {
+		if writeTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, writeTimeout)
+			defer cancel()
+		}
+		return conn.Write(ctx, websocket.MessageBinary, msg)
+	}
+	s.streamOutput(ctx, session, info, "WebSocket", send)
+}
+
+func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo) {
+	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
+	// A stream write does not watch ctx, so its deadline carries both the
+	// per-write bound and the ctx deadline, whichever comes first.
+	send := func(ctx context.Context, msg []byte) error {
+		var deadline time.Time
+		if writeTimeout > 0 {
+			deadline = time.Now().Add(writeTimeout)
+		}
+		if d, ok := ctx.Deadline(); ok && (deadline.IsZero() || d.Before(deadline)) {
+			deadline = d
+		}
+		_ = stream.SetWriteDeadline(deadline)
+		return writeFramed(stream, msg)
+	}
+	s.streamOutput(ctx, session, info, "WebTransport", send)
+}
+
+// streamOutput copies session output to the client until the session or
+// the connection ends, then sends MsgClose. When the session ends first,
+// it forwards what the program wrote last before it sends MsgClose.
+func (s *httpServer) streamOutput(ctx context.Context, session internalSession, info sessionInfo, transport string, send outputSender) {
 	bufPtr := readBufPool.Get().(*[]byte)
 	buf := *bufPtr
 	defer readBufPool.Put(bufPtr)
 
 	filter := s.outputFilter()
-	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
 	var totalBytes int64
 
-	// wsWrite bounds a single write so a stalled-but-alive client (stopped
-	// reading, send buffer full) can't pin this goroutine and its
-	// connection slot forever.
-	wsWrite := func(msg []byte) error {
-		if writeTimeout <= 0 {
-			return conn.Write(ctx, websocket.MessageBinary, msg)
-		}
-		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
-		defer cancel()
-		return conn.Write(wctx, websocket.MessageBinary, msg)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Debug("WebSocket output stopped (context)", "session", info.id, "bytes_sent", totalBytes)
-			return
-		case <-session.Done():
-			logger.Debug("session ended, sending close", "session", info.id)
-			_ = wsWrite([]byte{MsgClose})
-			return
-		default:
-		}
-
-		n, err := session.OutputReader().Read(buf)
-		if err != nil {
-			logger.Debug("output closed", "session", info.id, "bytes_sent", totalBytes, "error", err)
-			_ = wsWrite([]byte{MsgClose})
-			return
-		}
-		if n == 0 {
-			continue
-		}
-
+	forward := func(ctx context.Context, data []byte) error {
 		if totalBytes == 0 {
-			logger.Debug("first output received", "session", info.id, "bytes", n)
+			logger.Debug("first output received", "transport", transport, "session", info.id, "bytes", len(data))
 		}
-		totalBytes += int64(n)
+		totalBytes += int64(len(data))
 
-		filtered := filter(buf[:n])
-		// Filter may return an empty slice (transcoder mid-APC) — in that
+		filtered := filter(data)
+		// Filter may return an empty slice (transcoder mid-APC). In that
 		// case there's nothing to send for this read.
 		for len(filtered) > 0 {
 			chunk := filtered
@@ -457,82 +470,85 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 			msg := make([]byte, len(chunk)+1)
 			msg[0] = MsgOutput
 			copy(msg[1:], chunk)
-			if err := wsWrite(msg); err != nil {
-				logger.Debug("WebSocket write error", "session", info.id, "err", err)
-				return
+			if err := send(ctx, msg); err != nil {
+				logger.Debug("output write error", "transport", transport, "session", info.id, "err", err)
+				return err
 			}
 			filtered = filtered[len(chunk):]
 		}
+		return nil
 	}
-}
 
-func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo) {
-	bufPtr := readBufPool.Get().(*[]byte)
-	buf := *bufPtr
-	defer readBufPool.Put(bufPtr)
-
-	filter := s.outputFilter()
-	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
-	var totalBytes int64
-
-	// setDeadline bounds a single stream write so a stalled client can't
-	// pin this goroutine and its connection slot forever.
-	setDeadline := func() {
-		if writeTimeout > 0 {
-			_ = stream.SetWriteDeadline(time.Now().Add(writeTimeout))
+	// Bound the time from session end to teardown. The loop may sit in a
+	// read that no EIO will end (a process still holds the terminal).
+	// Closing the session unblocks that read.
+	loopDone := make(chan struct{})
+	defer close(loopDone)
+	go func() {
+		select {
+		case <-loopDone:
+			return
+		case <-session.Done():
 		}
-	}
+		t := time.NewTimer(finalOutputDrain)
+		defer t.Stop()
+		select {
+		case <-loopDone:
+		case <-t.C:
+			_ = session.Close()
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debug("WebTransport output stopped (context)", "session", info.id, "bytes_sent", totalBytes)
+			logger.Debug("output stopped (context)", "transport", transport, "session", info.id, "bytes_sent", totalBytes)
 			return
 		case <-session.Done():
-			logger.Debug("session ended, sending close", "session", info.id)
-			setDeadline()
-			_ = writeFramed(stream, []byte{MsgClose})
+			if ctx.Err() != nil {
+				// The client left. The session ended because of it.
+				return
+			}
+			logger.Debug("session ended, draining output", "transport", transport, "session", info.id)
+			drainOutput(ctx, session, buf, forward)
+			_ = send(ctx, []byte{MsgClose})
 			return
 		default:
 		}
 
 		n, err := session.OutputReader().Read(buf)
-		if err != nil {
-			logger.Debug("output closed", "session", info.id, "bytes_sent", totalBytes, "error", err)
-			setDeadline()
-			_ = writeFramed(stream, []byte{MsgClose})
-			return
-		}
-		if n == 0 {
-			continue
-		}
-
-		if totalBytes == 0 {
-			debugBytes := n
-			if debugBytes > 100 {
-				debugBytes = 100
-			}
-			logger.Debug("first output received (WT)", "session", info.id, "bytes", n, "first_bytes", fmt.Sprintf("%q", string(buf[:debugBytes])))
-		}
-		totalBytes += int64(n)
-
-		filtered := filter(buf[:n])
-		for len(filtered) > 0 {
-			chunk := filtered
-			if len(chunk) > readBufSize {
-				chunk = chunk[:readBufSize]
-			}
-			msgLen := len(chunk) + 1
-			frame := make([]byte, 4+msgLen)
-			binary.BigEndian.PutUint32(frame[0:4], uint32(msgLen))
-			frame[4] = MsgOutput
-			copy(frame[5:], chunk)
-			setDeadline()
-			if _, err := stream.Write(frame); err != nil {
-				logger.Debug("WebTransport write error", "session", info.id, "err", err)
+		if n > 0 {
+			if forward(ctx, buf[:n]) != nil {
 				return
 			}
-			filtered = filtered[len(chunk):]
+		}
+		if err != nil {
+			// On a PTY the read fails only after the buffered output is
+			// read, so nothing is left to forward.
+			logger.Debug("output closed", "transport", transport, "session", info.id, "bytes_sent", totalBytes, "error", err)
+			_ = send(ctx, []byte{MsgClose})
+			return
+		}
+	}
+}
+
+// drainOutput forwards output that is still buffered after the session
+// ended. It stops at the end of the output (EIO or EOF) or on a write
+// error. Writes share one finalOutputDrain budget, so a slow client
+// cannot hold the loop. The watcher in streamOutput bounds the reads.
+func drainOutput(ctx context.Context, session internalSession, buf []byte, forward func(context.Context, []byte) error) {
+	dctx, cancel := context.WithTimeout(ctx, finalOutputDrain)
+	defer cancel()
+
+	for dctx.Err() == nil {
+		n, err := session.OutputReader().Read(buf)
+		if n > 0 {
+			if forward(dctx, buf[:n]) != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
@@ -547,6 +563,10 @@ func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.C
 			logger.Debug("WebSocket input stopped", "session", info.id, "messages", msgCount, "bytes", totalBytes)
 			return
 		case <-session.Done():
+			// Wait for the output loop. It still has the last output and
+			// MsgClose to send, and it ends the connection when it is
+			// done. Returning here would cancel ctx and cut that short.
+			<-ctx.Done()
 			return
 		default:
 		}
@@ -576,6 +596,10 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 			logger.Debug("WebTransport input stopped", "session", info.id, "messages", msgCount, "bytes", totalBytes)
 			return
 		case <-session.Done():
+			// Wait for the output loop. It still has the last output and
+			// MsgClose to send, and it ends the connection when it is
+			// done. Returning here would cancel ctx and cut that short.
+			<-ctx.Done()
 			return
 		default:
 		}

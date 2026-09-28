@@ -181,7 +181,11 @@ func (srv *httpServer) createSession(ctx context.Context, handler ProgramHandler
 
 	go func() {
 		defer func() {
-			_ = platform.Close()
+			// Close only the program's end of the terminal. What the program
+			// wrote last is still in the PTY, and the output loop reads it
+			// before it sends MsgClose. The session teardown (closeFunc in
+			// the handler) closes the rest.
+			_ = platform.CloseSlave()
 			cancel()
 		}()
 
@@ -208,8 +212,10 @@ func (srv *httpServer) closeSession(session *webSession) {
 	}
 	session.mu.Unlock()
 	_ = session.Close()
+	// Delete even when something else closed the session first (the idle
+	// timeout, the output drain), so the map never keeps a dead session.
+	srv.sessions.Delete(session.id)
 	if startedClose {
-		srv.sessions.Delete(session.id)
 		logger.Debug("session closed",
 			"session", session.id,
 			"duration", time.Since(session.startTime).Round(time.Millisecond),

@@ -205,8 +205,8 @@ func (srv *httpServer) closeCmdSession(session *cmdSession) {
 	}
 	session.mu.Unlock()
 	_ = session.Close()
+	srv.sessions.Delete(session.id)
 	if startedClose {
-		srv.sessions.Delete(session.id)
 		logger.Debug("command session closed",
 			"session", session.id,
 			"duration", time.Since(session.startTime).Round(time.Millisecond),

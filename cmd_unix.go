@@ -16,7 +16,10 @@ import (
 
 // cmdPlatformPty holds platform-specific PTY resources for command execution.
 type cmdPlatformPty struct {
-	pty      xpty.Pty
+	pty xpty.Pty
+	// master is a pollable duplicate of the PTY master (see
+	// pollableMaster). All reads and writes go through it.
+	master   *os.File
 	cmd      *exec.Cmd
 	waitOnce sync.Once
 	waitErr  error
@@ -45,14 +48,33 @@ func newCmdPlatformPty(name string, args []string, dir string, cols, rows int) (
 		Ctty:    0,    // Use stdin (which will be the PTY slave)
 	}
 
+	unixPty, ok := ptyInstance.(*xpty.UnixPty)
+	if !ok {
+		_ = ptyInstance.Close()
+		return nil, fmt.Errorf("expected UnixPty")
+	}
+	master, err := pollableMaster(unixPty.Master())
+	if err != nil {
+		_ = ptyInstance.Close()
+		return nil, err
+	}
+
 	// Start the command with PTY
 	if err := ptyInstance.Start(cmd); err != nil {
+		_ = master.Close()
 		_ = ptyInstance.Close()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
+	// The child has its own copy of the slave. Close ours, so the master
+	// reads EIO when the command (and anything it left holding the
+	// terminal) exits. Kept open, the output loop blocks on the master
+	// forever after the command ends.
+	_ = unixPty.Slave().Close()
+
 	return &cmdPlatformPty{
 		pty:      ptyInstance,
+		master:   master,
 		cmd:      cmd,
 		waitDone: make(chan struct{}),
 	}, nil
@@ -65,6 +87,9 @@ func newCmdPlatformPty(name string, args []string, dir string, cols, rows int) (
 func (p *cmdPlatformPty) Close() error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
+	}
+	if p.master != nil {
+		_ = p.master.Close()
 	}
 	if p.pty != nil {
 		_ = p.pty.Close()
@@ -100,12 +125,12 @@ func (p *cmdPlatformPty) ResizeWithPixels(cols, rows, widthPx, heightPx int) err
 
 // OutputReader returns an io.Reader for reading command output.
 func (p *cmdPlatformPty) OutputReader() io.Reader {
-	return p.pty
+	return p.master
 }
 
 // InputWriter returns an io.Writer for writing command input.
 func (p *cmdPlatformPty) InputWriter() io.Writer {
-	return p.pty
+	return p.master
 }
 
 // Wait waits for the command to exit. It is the single owner of
