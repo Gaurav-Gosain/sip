@@ -60,6 +60,18 @@ func (p *platformPty) Close() error {
 	return nil
 }
 
+// CloseSlave closes the program's ends of the pipes. The output reader
+// then returns EOF, and input writes fail instead of blocking.
+func (p *platformPty) CloseSlave() error {
+	if p.inputReader != nil {
+		_ = p.inputReader.Close()
+	}
+	if p.outputWriter != nil {
+		_ = p.outputWriter.Close()
+	}
+	return nil
+}
+
 // Resize is a no-op on Windows since we use pipes.
 // Resize is handled via tea.WindowSizeMsg instead.
 func (p *platformPty) Resize(cols, rows int) error {

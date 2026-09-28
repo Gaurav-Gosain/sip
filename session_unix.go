@@ -13,7 +13,13 @@ import (
 
 // platformPty holds platform-specific PTY resources.
 type platformPty struct {
-	pty       xpty.Pty
+	pty xpty.Pty
+	// ptyMaster is a pollable duplicate of the master (see
+	// pollableMaster). All reads and writes go through it.
+	// On Linux, never call Fd on the original master (pty.Fd,
+	// Master().Fd). Fd puts the shared file description back in blocking
+	// mode, and a blocking read ignores Close. Use SyscallConn or Control
+	// for ioctls. TestPTYMasterStaysNonBlocking checks this.
 	ptyMaster *os.File
 	ptySlave  *os.File
 }
@@ -31,17 +37,36 @@ func newPlatformPty(cols, rows int) (*platformPty, error) {
 		return nil, fmt.Errorf("expected UnixPty")
 	}
 
+	master, err := pollableMaster(unixPty.Master())
+	if err != nil {
+		_ = ptyInstance.Close()
+		return nil, err
+	}
+
 	return &platformPty{
 		pty:       ptyInstance,
-		ptyMaster: unixPty.Master(),
+		ptyMaster: master,
 		ptySlave:  unixPty.Slave(),
 	}, nil
 }
 
-// Close closes all PTY resources.
+// Close closes all PTY resources. It is safe to call more than once.
 func (p *platformPty) Close() error {
+	if p.ptyMaster != nil {
+		_ = p.ptyMaster.Close()
+	}
 	if p.pty != nil {
 		return p.pty.Close()
+	}
+	return nil
+}
+
+// CloseSlave closes the program's end of the PTY. The master stays open,
+// so the output loop can still read what the program wrote last. Reads
+// return EIO once that output is gone.
+func (p *platformPty) CloseSlave() error {
+	if p.ptySlave != nil {
+		return p.ptySlave.Close()
 	}
 	return nil
 }
