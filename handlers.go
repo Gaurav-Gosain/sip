@@ -346,11 +346,16 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 
 	// Watchdog: see handleWebSocket. Closing the session on ctx.Done
 	// unblocks the output goroutine's PTY Read so teardown can't deadlock.
-	// A stream read does not watch ctx, so cancel it too. Otherwise the
-	// input goroutine waits for a client that may never send again.
+	// A stream read does not watch ctx, so end it too. Otherwise the input
+	// goroutine waits for a client that may never send again. Set the
+	// read deadline first: once both directions of the stream are done,
+	// webtransport-go drops the stream from the session, and a Read that
+	// is parked for the session close is then never woken. The deadline
+	// wakes it.
 	go func() {
 		<-ctx.Done()
 		closeFunc()
+		_ = stream.SetReadDeadline(time.Now())
 		stream.CancelRead(0)
 	}()
 
@@ -361,9 +366,6 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 		defer wg.Done()
 		defer cancel()
 		s.streamOutputToWebTransport(ctx, stream, wrapped, info)
-		// End the send side after the last frame (MsgClose on a normal
-		// end), so the client reads everything and then EOF.
-		_ = stream.Close()
 	}()
 
 	go func() {
@@ -447,13 +449,29 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
 	// A stream write does not watch ctx. The write deadline bounds a
 	// single write so a stalled client can't pin this goroutine.
+	failed := false
 	send := func(_ context.Context, msg []byte) error {
 		if writeTimeout > 0 {
 			_ = stream.SetWriteDeadline(time.Now().Add(writeTimeout))
 		}
-		return writeFramed(stream, msg)
+		err := writeFramed(stream, msg)
+		if err != nil {
+			failed = true
+		}
+		return err
 	}
 	s.streamOutput(ctx, session, info, "WebTransport", send)
+
+	// This goroutine is the only writer, so it also ends the send side.
+	// quic-go does not allow Close during a Write. After a failed write
+	// the last frame may be partial: reset the stream, so the client
+	// never reads a FIN after it. Otherwise send the FIN, so the client
+	// reads everything and then EOF.
+	if failed {
+		stream.CancelWrite(0)
+	} else {
+		_ = stream.Close()
+	}
 }
 
 // streamOutput copies session output to the client until the session or
@@ -467,7 +485,10 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 	filter := s.outputFilter()
 	var totalBytes int64
 
-	forward := func(ctx context.Context, data []byte) error {
+	// forward sends data as MsgOutput frames. With a non-zero deadline it
+	// stops between frames once the deadline has passed and returns
+	// errDrainBudget. Frames stay whole, so MsgClose can still follow.
+	forward := func(ctx context.Context, data []byte, deadline time.Time) error {
 		if totalBytes == 0 {
 			logger.Debug("first output received", "transport", transport, "session", info.id, "bytes", len(data))
 		}
@@ -489,6 +510,9 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 				return err
 			}
 			filtered = filtered[len(chunk):]
+			if len(filtered) > 0 && !deadline.IsZero() && time.Now().After(deadline) {
+				return errDrainBudget
+			}
 		}
 		return nil
 	}
@@ -533,7 +557,7 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 
 		n, err := session.OutputReader().Read(buf)
 		if n > 0 {
-			if forward(ctx, buf[:n]) != nil {
+			if forward(ctx, buf[:n], time.Time{}) != nil {
 				return
 			}
 		}
@@ -547,20 +571,27 @@ func (s *httpServer) streamOutput(ctx context.Context, session internalSession, 
 	}
 }
 
+// errDrainBudget reports that the drain ran out of time between frames.
+var errDrainBudget = errors.New("output drain budget spent")
+
 // drainOutput forwards output that is still buffered after the session
 // ended. It stops at the end of the output (EIO, EOF or an empty read),
 // on a write error, or when finalOutputDrain has passed. The budget is
-// checked between reads only. Each write keeps the normal write timeout:
-// a write cut part-way by the budget closes a WebSocket and leaves a
-// partial WebTransport frame, and MsgClose could not follow it.
+// checked between reads and between frames, never during a write. Each
+// write keeps the normal write timeout: a write cut part-way by the
+// budget closes a WebSocket and leaves a partial WebTransport frame, and
+// MsgClose could not follow it.
 //
 // It reports whether every write succeeded, so MsgClose can follow.
-func drainOutput(ctx context.Context, session internalSession, buf []byte, forward func(context.Context, []byte) error) bool {
+func drainOutput(ctx context.Context, session internalSession, buf []byte, forward func(context.Context, []byte, time.Time) error) bool {
 	deadline := time.Now().Add(finalOutputDrain)
 	for time.Now().Before(deadline) {
 		n, err := session.OutputReader().Read(buf)
 		if n > 0 {
-			if forward(ctx, buf[:n]) != nil {
+			switch ferr := forward(ctx, buf[:n], deadline); {
+			case errors.Is(ferr, errDrainBudget):
+				return true
+			case ferr != nil:
 				return false
 			}
 		}
@@ -659,8 +690,9 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 			smallBufPool.Put(pooled)
 		}
 		if !ok {
+			// Returning cancels ctx. The output goroutine then ends the
+			// send side: Close must not run during its Write.
 			stream.CancelRead(0)
-			_ = stream.Close()
 			return
 		}
 	}

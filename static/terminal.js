@@ -1393,7 +1393,13 @@
             try {
                 while (true) {
                     const { value, done } = await this.wtReader.read();
-                    if (done) break;
+                    if (done) {
+                        // The server ended the stream, after MsgClose on a
+                        // normal end. Close the session now, so the server
+                        // frees the connection slot at once.
+                        this.reportClosed();
+                        return;
+                    }
 
                     if (bufferLen + value.length > buffer.length) {
                         const grown = new Uint8Array(Math.max(buffer.length * 2, bufferLen + value.length));
