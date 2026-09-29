@@ -26,6 +26,7 @@ type webSession struct {
 	closed        bool
 	startTime     time.Time
 	started       chan struct{}
+	programDone   chan struct{} // closes when the program's goroutine returns
 	windowChanges chan WindowSize
 }
 
@@ -126,6 +127,19 @@ func (s *webSession) Close() error {
 
 	if s.program != nil {
 		s.program.Quit()
+		// Close the PTY only after the program has stopped. bubbletea's
+		// input reader calls Fd on the slave while it waits for input, and
+		// a quitting program stops that reader before Run returns. Closing
+		// the PTY first races with the reader.
+		if s.programDone != nil {
+			t := time.NewTimer(programStopWait)
+			select {
+			case <-s.programDone:
+			case <-t.C:
+				logger.Debug("program did not stop before the session closed", "session", s.id)
+			}
+			t.Stop()
+		}
 	}
 	s.cancelFunc()
 	if s.platform != nil {
@@ -133,6 +147,11 @@ func (s *webSession) Close() error {
 	}
 	return nil
 }
+
+// programStopWait bounds how long Close waits for the program to stop before
+// it closes the PTY anyway. bubbletea itself waits up to 500ms for its input
+// reader. The wait also ends a Close that the program's own goroutine calls.
+const programStopWait = 2 * time.Second
 
 func (srv *httpServer) createSession(ctx context.Context, handler ProgramHandler, initialCols, initialRows, widthPx, heightPx int) (*webSession, error) {
 	cols, rows := initialCols, initialRows
@@ -168,6 +187,7 @@ func (srv *httpServer) createSession(ctx context.Context, handler ProgramHandler
 		ctx:           sessionCtx,
 		startTime:     time.Now(),
 		started:       started,
+		programDone:   make(chan struct{}),
 		windowChanges: windowChanges,
 	}
 
@@ -187,6 +207,7 @@ func (srv *httpServer) createSession(ctx context.Context, handler ProgramHandler
 			// the handler) closes the rest.
 			_ = platform.CloseSlave()
 			cancel()
+			close(session.programDone)
 		}()
 
 		logger.Debug("starting program", "session", session.id, "cols", cols, "rows", rows)
