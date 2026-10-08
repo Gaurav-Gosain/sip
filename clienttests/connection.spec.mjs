@@ -114,13 +114,6 @@ for (const transport of ['websocket', 'webtransport']) {
     });
 
     test('a session the program ended stays ended', async ({ page }) => {
-      // Over WebTransport the server sometimes ends the stream without
-      // MsgClose when the shell exits: the page shows no "Session ended"
-      // line, sees a plain close and reconnects to a new shell. It fails 4
-      // runs in 6 on main before this change too, so it is a server race in
-      // the WebTransport end of session, not the client. Fix it in
-      // handlers.go, then drop this fixme.
-      test.fixme(transport === 'webtransport', 'the server drops MsgClose over WebTransport on exit');
       await boot(page, transport);
       await page.evaluate(() => window.sipTerm.sendInput('exit\r'));
       await page.waitForFunction(() => window.sipTerm.connected === false, null, { timeout: 15_000 });

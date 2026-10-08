@@ -28,11 +28,19 @@ cp "$src/dist/webterm.css" "$root/static/webterm.css"
 cp "$src/node_modules/@xterm/xterm/css/xterm.css" "$root/static/xterm.css"
 
 commit=$(git -C "$src" rev-parse HEAD)
-node - "$src" "$root" "$commit" <<'NODE'
+# The vtgl checkout webterm built webterm-vtgl.js against. It is a file:
+# dependency, so the commit comes from the checkout the link points at.
+vtgl=$(cd "$src/node_modules/@gaurav-gosain/vtgl" && pwd -P)
+if [ -n "$(git -C "$vtgl" status --porcelain)" ]; then
+	echo "vendor-webterm: $vtgl has uncommitted changes. Commit them first." >&2
+	exit 1
+fi
+vtgl_commit=$(git -C "$vtgl" rev-parse HEAD)
+node - "$src" "$root" "$commit" "$vtgl_commit" <<'NODE'
 const { createHash } = require('node:crypto');
 const { readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
-const [src, root, commit] = process.argv.slice(2);
+const [src, root, commit, vtglCommit] = process.argv.slice(2);
 const pkg = (p) => JSON.parse(readFileSync(join(src, p, 'package.json'), 'utf8'));
 const files = {};
 for (const name of ['webterm.js', 'webterm-vtgl.js', 'webterm.css', 'xterm.css']) {
@@ -44,6 +52,8 @@ const record = {
   version: pkg('.').version,
   xterm: pkg('node_modules/@xterm/xterm').version,
   vtgl: pkg('node_modules/@gaurav-gosain/vtgl').version,
+  vtglRepository: 'https://github.com/Gaurav-Gosain/vtgl',
+  vtglCommit,
   files,
 };
 writeFileSync(join(root, 'webterm-vendor.json'), JSON.stringify(record, null, 2) + '\n');

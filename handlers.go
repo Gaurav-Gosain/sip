@@ -413,11 +413,17 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	// webtransport-go drops the stream from the session, and a Read that
 	// is parked for the session close is then never woken. The deadline
 	// wakes it.
+	//
+	// The deadline is the whole wake-up. Do not add stream.CancelRead here:
+	// its STOP_SENDING frame goes out after the last output frames and the
+	// FIN, and Firefox then errors the whole bidirectional stream and drops
+	// the MsgClose it already had. The page saw a plain close and
+	// reconnected to a new shell. TestWTNoStopSendingAtEnd checks for the
+	// frame.
 	go func() {
 		<-ctx.Done()
 		closeFunc()
 		_ = stream.SetReadDeadline(time.Now())
-		stream.CancelRead(0)
 	}()
 
 	var wg sync.WaitGroup

@@ -18,6 +18,7 @@ type webtermVendor struct {
 	Version    string            `json:"version"`
 	Xterm      string            `json:"xterm"`
 	Vtgl       string            `json:"vtgl"`
+	VtglCommit string            `json:"vtglCommit"`
 	Files      map[string]string `json:"files"`
 }
 
@@ -36,8 +37,13 @@ func TestVendoredWebtermMatchesItsRecord(t *testing.T) {
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(rec.Commit) {
+	hash := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	if !hash.MatchString(rec.Commit) {
 		t.Fatalf("webterm-vendor.json names commit %q, want a full git hash", rec.Commit)
+	}
+	// webterm-vtgl.js inlines vtgl, so its source is two commits.
+	if !hash.MatchString(rec.VtglCommit) {
+		t.Errorf("webterm-vendor.json names vtgl commit %q, want a full git hash", rec.VtglCommit)
 	}
 	if rec.Xterm == "" {
 		t.Error("webterm-vendor.json does not name the xterm.js version")
