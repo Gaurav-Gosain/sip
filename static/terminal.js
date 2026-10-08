@@ -1667,16 +1667,25 @@
                 // alternate screen has no scrollback, so there the anchoring
                 // row and the screen row are the same row.
                 graphics: { kitty: { anchor: 'scrollback' }, sixel: true },
-                keyboard: {
-                    captureReservedKeys: this.settings.captureReservedKeys,
-                    reservedKeys: RESERVED_KEYS,
-                },
+                keyboard: this.keyboardOptions(),
                 mouse: { suppressContextMenu: !this.settings.browserContextMenu },
                 input: { chunkBytes: INPUT_CHUNK_SIZE, readOnly: false },
                 xterm: {
                     cursorInactiveStyle: this.appearance.cursorInactiveStyle || 'outline',
                     tabStopWidth: 8,
                 },
+            };
+        }
+
+        /**
+         * The keyboard option group. setOptions replaces a group whole, so
+         * every call passes this, and the copy handler is never dropped.
+         */
+        keyboardOptions() {
+            return {
+                captureReservedKeys: this.settings.captureReservedKeys,
+                reservedKeys: RESERVED_KEYS,
+                onKeyEvent: ev => this.onCopyKey(ev),
             };
         }
 
@@ -1734,7 +1743,6 @@
                 setTimeout(() => { c.style.outline = 'none'; }, 150);
             });
 
-            this.setupCopyKeys();
             this.setupSettingsPanel();
             this.setupMobile();
             // The page's own scripts get their handle before the connection
@@ -1749,45 +1757,48 @@
         // --- Copy ------------------------------------------------------------
 
         /**
-         * Bind the copy chords.
+         * The copy chord, run before webterm encodes a key.
          *
          * webterm owns paste (xterm listens for the browser's native paste
          * event, so Ctrl+V and Ctrl+Shift+V already arrive) and it owns OSC 52,
          * but it binds no copy chord, so Ctrl+C on a selection used to fall
          * straight through to the encoder: the selection stayed on screen and
-         * the shell got an interrupt. Nothing in webterm claims the custom key
-         * handler slot, so taking it here does not displace anything.
+         * the shell got an interrupt.
+         *
+         * This goes in through keyboard.onKeyEvent, never through
+         * attachCustomKeyEventHandler. That slot holds one handler, and
+         * webterm's kitty keyboard protocol is in it. Taking the slot left the
+         * protocol answering CSI ? u while every key went out in legacy form,
+         * so a program that asked for Shift+Enter got a bare CR.
          */
-        setupCopyKeys() {
-            this.webterm.xterm.attachCustomKeyEventHandler(ev => {
-                // The handler runs for keypress as well as keydown; acting on
-                // both would copy twice for one chord.
-                if (ev.type !== 'keydown') return true;
-                if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
-                if (ev.code !== 'KeyC') return true;
+        onCopyKey(ev) {
+            // The handler runs for keypress and keyup as well as keydown;
+            // acting on more than one would copy twice for one chord.
+            if (ev.type !== 'keydown') return true;
+            if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+            if (ev.code !== 'KeyC') return true;
 
-                // The branch the whole fix turns on. Ctrl+C is overloaded: it
-                // is the only way to interrupt the foreground program, and it
-                // is what everyone reaches for to copy. Terminals resolve that
-                // by letting the selection decide, because a selection is a
-                // deliberate act that says "this chord is about text". With no
-                // selection there is nothing to copy, so the chord has to stay
-                // an interrupt or the terminal becomes unusable.
-                //
-                // Ctrl+Shift+C copies too where it survives the browser, but it
-                // is not the path to rely on: Chromium and Firefox both reserve
-                // it for devtools and it never reaches the page.
-                const selection = this.webterm.xterm.getSelection();
-                if (!selection) return true;
+            // The branch the whole fix turns on. Ctrl+C is overloaded: it
+            // is the only way to interrupt the foreground program, and it
+            // is what everyone reaches for to copy. Terminals resolve that
+            // by letting the selection decide, because a selection is a
+            // deliberate act that says "this chord is about text". With no
+            // selection there is nothing to copy, so the chord has to stay
+            // an interrupt or the terminal becomes unusable.
+            //
+            // Ctrl+Shift+C copies too where it survives the browser, but it
+            // is not the path to rely on: Chromium and Firefox both reserve
+            // it for devtools and it never reaches the page.
+            const selection = this.webterm.xterm.getSelection();
+            if (!selection) return true;
 
-                // Returning false stops xterm encoding the chord, but it does
-                // not suppress the browser's own copy, which would race this
-                // write against an empty DOM selection.
-                ev.preventDefault();
-                ev.stopPropagation();
-                this.copyText(selection);
-                return false;
-            });
+            // Returning false stops xterm encoding the chord, but it does
+            // not suppress the browser's own copy, which would race this
+            // write against an empty DOM selection.
+            ev.preventDefault();
+            ev.stopPropagation();
+            this.copyText(selection);
+            return false;
         }
 
         /**
@@ -2116,10 +2127,7 @@
                     cursorBlink: this.settings.cursorBlink,
                     clipboard: { copyOnSelect: this.settings.copyOnSelect },
                     mouse: { suppressContextMenu: !this.settings.browserContextMenu },
-                    keyboard: {
-                        captureReservedKeys: this.settings.captureReservedKeys,
-                        reservedKeys: RESERVED_KEYS,
-                    },
+                    keyboard: this.keyboardOptions(),
                 });
 
                 await this.reconnect();

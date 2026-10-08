@@ -169,10 +169,10 @@ async function bytesFor(page, transport, chord, url = '/') {
   return frames.flat();
 }
 
-// Ctrl+A..Ctrl+Z map to 0x01..0x1a. Unlike the ghostty encoder this replaced,
-// xterm.js does not speak the kitty keyboard protocol, so it never
-// disambiguates Ctrl+I from Tab or Ctrl+M from Enter with a CSI u sequence.
-// All 26 letters are therefore plain control bytes and none is excluded.
+// Ctrl+A..Ctrl+Z map to 0x01..0x1a. webterm speaks the kitty keyboard
+// protocol, but only after a program pushes flags, and a shell never does. So
+// here Ctrl+I is not told apart from Tab, nor Ctrl+M from Enter, and all 26
+// letters are plain control bytes. The kitty tests below push flags.
 const CTRL_LETTERS = [];
 for (let i = 0; i < 26; i++) {
   CTRL_LETTERS.push([String.fromCharCode(97 + i), i + 1]);
@@ -216,6 +216,74 @@ for (const transport of TRANSPORTS) {
       // path. This is the check that the seam did not swallow input.
       expect(await bytesFor(page, transport, 'Control+c', '/?renderer=webgl')).toEqual([0x03]);
       expect(await bytesFor(page, transport, 'Control+d', '/?renderer=webgl')).toEqual([0x04]);
+    });
+
+    // webterm's kitty keyboard protocol holds xterm's single custom key
+    // handler slot. sip once took that slot for its copy chord, after which the
+    // terminal still answered CSI ? u, so a program believed the protocol was
+    // on, while every key went out in legacy form. These tests push flags from
+    // the PTY, as a program does, and check the keys only the protocol can
+    // tell apart.
+    test.describe('kitty keyboard protocol', () => {
+      /** Make the shell push flags, and wait for the terminal to take them. */
+      async function pushFlags(page, flags) {
+        await page.keyboard.type(`printf '\\033[>${flags}u'`);
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(
+          (f) => window.sipTerm.webterm.keyboard?.flags === f, flags, { timeout: 10_000 },
+        );
+      }
+
+      /** Press one chord and return what it put on the wire, as a string. */
+      async function wireFor(page, chord) {
+        await page.evaluate(() => { window.__sentInput.length = 0; });
+        await page.keyboard.press(chord);
+        await page.waitForTimeout(150);
+        return page.evaluate(() => String.fromCharCode(...window.__sentInput.flat()));
+      }
+
+      test('with disambiguate on, Ctrl+I and Escape are CSI u, and CSI ? u answers', async ({ page }) => {
+        await boot(page, transport);
+        await pushFlags(page, 1);
+
+        expect(await wireFor(page, 'Control+i')).toBe('\x1b[105;5u');
+        expect(await wireFor(page, 'Escape')).toBe('\x1b[27u');
+        // Plain text and a plain Enter keep their legacy bytes under flag 1.
+        expect(await wireFor(page, 'Enter')).toBe('\r');
+
+        await page.evaluate(() => { window.__sentInput.length = 0; });
+        await page.keyboard.type(`printf '\\033[?u'`);
+        await page.evaluate(() => { window.__sentInput.length = 0; });
+        await page.keyboard.press('Enter');
+        await expect.poll(
+          () => page.evaluate(() => String.fromCharCode(...window.__sentInput.flat())),
+          { timeout: 10_000 },
+        ).toContain('\x1b[?1u');
+      });
+
+      test('with every flag on, Shift+Enter is CSI 13;2 u', async ({ page }) => {
+        await boot(page, transport);
+        await pushFlags(page, 31);
+
+        const sent = await wireFor(page, 'Shift+Enter');
+        expect(sent).toContain('\x1b[13;2u');
+        expect(sent).not.toContain('\r');
+      });
+
+      test('Ctrl+C on a selection still copies, and sends no key', async ({ page }) => {
+        // Flag 1, not 31. Under flag 8 the Ctrl press alone is reported as
+        // input, and input clears the selection before C arrives. That is
+        // webterm's behaviour and the same in any terminal that reports
+        // modifier keys.
+        await boot(page, transport);
+        await pushFlags(page, 1);
+        await page.evaluate(() => window.sipTerm.webterm.xterm.selectAll());
+
+        expect(await wireFor(page, 'Control+c')).toBe('');
+        // Without a selection the chord is the program's again.
+        await page.evaluate(() => window.sipTerm.webterm.xterm.clearSelection());
+        expect(await wireFor(page, 'Control+c')).toBe('\x1b[99;5u');
+      });
     });
 
     // The tests above stop at the transport boundary. These two carry all the

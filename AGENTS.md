@@ -176,7 +176,12 @@ sip/
 - Kitty graphics go through the local overlay, not the image addon (below)
 - Sixel goes through the image addon, which is loaded with `kittySupport: false`
 - OSC 52 clipboard writes are handled by a registered OSC handler (below)
-- Kitty *keyboard* protocol is not supported: xterm.js does not speak it, so
+- The kitty *keyboard* protocol is webterm's, and it is on by default. It
+  answers `CSI ? u` and encodes keys once a program pushes flags. It holds
+  xterm's single custom key handler slot, so sip never calls
+  `attachCustomKeyEventHandler`. sip's own key logic (the copy chord) goes in
+  `keyboard.onKeyEvent`, which webterm runs before the protocol. `setOptions`
+  replaces the `keyboard` group whole, so pass `keyboardOptions()` every time.
   `MsgKittyKbd` ('8') is never sent. The server still accepts and ignores it.
 
 #### Cell geometry
