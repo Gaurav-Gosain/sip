@@ -87,20 +87,52 @@ func newScanner(inner io.Reader, mode Mode, audit auditFn) io.Reader {
 		inner: inner,
 		mode:  mode,
 		audit: audit,
+		id:    -1,
 	}
 }
+
+// The scanner reads the stream the way the browser terminal (xterm.js) reads
+// it. A filter that parses differently from the terminal can be walked
+// around: any input the terminal runs as OSC 52 and the filter does not see
+// is a bypass. These are the rules of that parser the scanner follows:
+//
+//   - Bytes are decoded as UTF-8 before anything else, and a malformed
+//     sequence or a byte order mark is dropped without a trace. So
+//     "ESC ] 5 \xff 2" is OSC 52 to the terminal.
+//   - ESC and U+009D (C1 OSC, the bytes C2 9D) start a sequence from any
+//     state. A second ESC restarts the escape.
+//   - An OSC number is a number, so "052" is 52.
+//   - In the ESC state most C0 controls run without leaving the state, and
+//     inside an OSC they are ignored. Neither ends the sequence.
+//   - An OSC ends at BEL, at ST (ESC \ or U+009C), and at a bare ESC. CAN,
+//     SUB and the other C1 controls abandon it without running it.
+//
+// ModeDeny removes every OSC 52 and writes CAN (0x18) in its place. CAN
+// returns the terminal's parser to its ground state, which is where the
+// removed sequence would have left it. Without it, an escape that came before
+// the removed sequence would join the bytes after it.
 
 type scanState int
 
 const (
 	stNormal  scanState = iota
 	stEsc               // saw ESC
-	stBracket           // saw ESC ]
-	stPrefix            // consuming "52"
-	stSemi1             // saw ESC ] 52 ;
-	stSel               // consuming selection char(s) until ;
-	stData              // consuming data until terminator
-	stMaybeST           // saw ESC inside data, awaiting backslash
+	stID                // saw ESC ] or U+009D, reading the OSC number
+	stPayload           // inside an OSC 52, past its number
+)
+
+const (
+	bel   = 0x07
+	can   = 0x18
+	sub   = 0x1a
+	esc   = 0x1b
+	del   = 0x7f
+	c1ST  = 0x9c
+	c1OSC = 0x9d
+
+	// idCap bounds the OSC number. Any number past it is not 52, and a
+	// number only grows, so the exact value no longer matters.
+	idCap = 1000
 )
 
 type scanner struct {
@@ -108,157 +140,284 @@ type scanner struct {
 	mode  Mode
 	audit auditFn
 
+	// pend holds the bytes of a UTF-8 sequence that is not complete yet.
+	pend  [4]byte
+	npend int
+	need  int
+
 	state    scanState
-	buffered []byte
+	buffered []byte // the raw bytes of the sequence being examined
+	id       int    // the OSC number so far, -1 before its first digit
+	inData   bool   // past the selection field of an OSC 52
 	selBuf   []byte
 	dataLen  int
-	prefixN  int
+	// closing is set after an OSC 52 ended at a bare ESC, so a backslash
+	// that completes the ST goes with the sequence it closed.
+	closing bool
 
-	outBuf []byte
+	readBuf []byte
+	outBuf  []byte
+	outPos  int
+	err     error
 }
 
 func (s *scanner) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	for {
-		if len(s.outBuf) > 0 {
-			n := copy(p, s.outBuf)
-			s.outBuf = s.outBuf[n:]
+		if s.outPos < len(s.outBuf) {
+			n := copy(p, s.outBuf[s.outPos:])
+			s.outPos += n
+			if s.outPos == len(s.outBuf) {
+				s.outBuf = s.outBuf[:0]
+				s.outPos = 0
+			}
 			return n, nil
 		}
-		buf := make([]byte, len(p))
+		if s.err != nil {
+			return 0, s.err
+		}
+		if cap(s.readBuf) < len(p) {
+			s.readBuf = make([]byte, len(p))
+		}
+		buf := s.readBuf[:len(p)]
 		n, err := s.inner.Read(buf)
-		if n > 0 {
-			s.feed(buf[:n])
-		}
-		if len(s.outBuf) == 0 && err != nil {
-			if len(s.buffered) > 0 {
-				s.outBuf = append(s.outBuf, s.buffered...)
-				s.buffered = s.buffered[:0]
-				s.state = stNormal
-			}
-		}
-		if len(s.outBuf) > 0 {
-			m := copy(p, s.outBuf)
-			s.outBuf = s.outBuf[m:]
-			if err == io.EOF && len(s.outBuf) == 0 {
-				return m, io.EOF
-			}
-			return m, nil
+		for _, c := range buf[:n] {
+			s.stepByte(c)
 		}
 		if err != nil {
-			return 0, err
+			s.finish()
+			s.err = err
 		}
 	}
 }
 
-func (s *scanner) feed(b []byte) {
-	for _, c := range b {
-		s.step(c)
+// stepByte decodes UTF-8 the way xterm.js does and hands each code point,
+// with the raw bytes that carried it, to step.
+func (s *scanner) stepByte(c byte) {
+	if s.npend == 0 {
+		switch {
+		case c < 0x80:
+			s.pend[0] = c
+			s.step(rune(c), s.pend[:1])
+		case c&0xe0 == 0xc0:
+			s.pend[0], s.npend, s.need = c, 1, 2
+		case c&0xf0 == 0xe0:
+			s.pend[0], s.npend, s.need = c, 1, 3
+		case c&0xf8 == 0xf0:
+			s.pend[0], s.npend, s.need = c, 1, 4
+		default:
+			// A stray continuation byte, or a byte no UTF-8 sequence starts
+			// with. The terminal drops it.
+			s.pend[0] = c
+			s.dropped(s.pend[:1])
+		}
+		return
 	}
+	if c&0xc0 != 0x80 {
+		// The sequence ended early. The terminal drops what it has and
+		// reads this byte afresh.
+		s.dropped(s.pend[:s.npend])
+		s.npend = 0
+		s.stepByte(c)
+		return
+	}
+	s.pend[s.npend] = c
+	s.npend++
+	if s.npend < s.need {
+		return
+	}
+	raw := s.pend[:s.npend]
+	s.npend = 0
+	var r rune
+	switch len(raw) {
+	case 2:
+		r = rune(raw[0]&0x1f)<<6 | rune(raw[1]&0x3f)
+		if r < 0x80 {
+			s.dropped(raw)
+			return
+		}
+	case 3:
+		r = rune(raw[0]&0x0f)<<12 | rune(raw[1]&0x3f)<<6 | rune(raw[2]&0x3f)
+		if r < 0x800 || (r >= 0xd800 && r <= 0xdfff) || r == 0xfeff {
+			s.dropped(raw)
+			return
+		}
+	default:
+		r = rune(raw[0]&0x07)<<18 | rune(raw[1]&0x3f)<<12 | rune(raw[2]&0x3f)<<6 | rune(raw[3]&0x3f)
+		if r < 0x10000 || r > 0x10ffff {
+			s.dropped(raw)
+			return
+		}
+	}
+	s.step(r, raw)
 }
 
-func (s *scanner) step(c byte) {
+// dropped takes bytes the terminal discards. They change no state, so they
+// stay where they are in the stream.
+func (s *scanner) dropped(raw []byte) {
+	if s.state == stNormal {
+		s.emit(raw)
+		return
+	}
+	s.buffered = append(s.buffered, raw...)
+}
+
+func (s *scanner) step(r rune, raw []byte) {
 	switch s.state {
 	case stNormal:
-		if c == 0x1b {
-			s.buffered = append(s.buffered[:0], c)
+		switch r {
+		case esc:
+			s.buffered = append(s.buffered[:0], raw...)
 			s.state = stEsc
-			return
+		case c1OSC:
+			s.startOSC(raw)
+		default:
+			s.emit(raw)
 		}
-		s.emit(c)
 	case stEsc:
-		if c == ']' {
-			s.buffered = append(s.buffered, c)
-			s.state = stBracket
-			return
+		switch {
+		case r == '\\' && s.closing:
+			// The backslash of an ST whose ESC already closed an OSC 52.
+			if s.mode != ModeDeny {
+				s.emit(s.buffered)
+				s.emit(raw)
+			}
+			s.reset()
+		case r == ']':
+			s.buffered = append(s.buffered, raw...)
+			s.state = stID
+			s.id = -1
+			s.closing = false
+		case (r < 0x20 && r != can && r != sub && r != esc) || r == del:
+			// Run or ignored by the terminal, which stays in the ESC state.
+			s.buffered = append(s.buffered, raw...)
+		default:
+			s.release()
+			s.step(r, raw)
 		}
-		s.flushBuffered()
-		s.emit(c)
-		s.state = stNormal
-	case stBracket:
-		if c == '5' {
-			s.buffered = append(s.buffered, c)
-			s.prefixN = 1
-			s.state = stPrefix
-			return
+	case stID:
+		switch {
+		case r >= '0' && r <= '9':
+			if s.id < 0 {
+				s.id = 0
+			}
+			s.id = min(s.id*10+int(r-'0'), idCap)
+			s.buffered = append(s.buffered, raw...)
+		case r == ';' && s.id == 52:
+			s.buffered = append(s.buffered, raw...)
+			s.state = stPayload
+		case s.id == 52 && (r == bel || r == c1ST || r == esc):
+			// An OSC 52 with no data. Treat it as one.
+			s.end(r, raw)
+		case r < 0x20 && r != bel && r != can && r != sub && r != esc:
+			s.buffered = append(s.buffered, raw...)
+		default:
+			// Not OSC 52, or abandoned before it ran.
+			s.release()
+			s.step(r, raw)
 		}
-		s.flushBuffered()
-		s.emit(c)
-		s.state = stNormal
-	case stPrefix:
-		if s.prefixN == 1 && c == '2' {
-			s.buffered = append(s.buffered, c)
-			s.state = stSemi1
-			return
+	case stPayload:
+		switch {
+		case r == bel || r == c1ST || r == esc:
+			s.end(r, raw)
+		case r == can || r == sub:
+			s.buffered = append(s.buffered, raw...)
+			s.close(false)
+		case r >= 0x80 && r <= 0x9f:
+			// A C1 control leaves the OSC without running it. U+009D also
+			// starts a new one.
+			s.close(false)
+			s.step(r, raw)
+		case r < 0x20:
+			s.buffered = append(s.buffered, raw...)
+		default:
+			s.buffered = append(s.buffered, raw...)
+			switch {
+			case s.inData:
+				s.dataLen += len(raw)
+			case r == ';':
+				s.inData = true
+			default:
+				s.selBuf = append(s.selBuf, raw...)
+			}
 		}
-		s.flushBuffered()
-		s.emit(c)
-		s.state = stNormal
-	case stSemi1:
-		if c == ';' {
-			s.buffered = append(s.buffered, c)
-			s.selBuf = s.selBuf[:0]
-			s.state = stSel
-			return
-		}
-		s.flushBuffered()
-		s.emit(c)
-		s.state = stNormal
-	case stSel:
-		s.buffered = append(s.buffered, c)
-		if c == ';' {
-			s.dataLen = 0
-			s.state = stData
-			return
-		}
-		s.selBuf = append(s.selBuf, c)
-	case stData:
-		if c == 0x07 {
-			s.finishEscape(false)
-			return
-		}
-		if c == 0x1b {
-			s.buffered = append(s.buffered, c)
-			s.state = stMaybeST
-			return
-		}
-		s.buffered = append(s.buffered, c)
-		s.dataLen++
-	case stMaybeST:
-		if c == '\\' {
-			s.buffered = append(s.buffered, c)
-			s.finishEscape(true)
-			return
-		}
-		s.buffered = append(s.buffered, c)
-		s.dataLen++
-		s.state = stData
 	}
 }
 
-func (s *scanner) emit(c byte) {
-	s.outBuf = append(s.outBuf, c)
+func (s *scanner) startOSC(raw []byte) {
+	s.buffered = append(s.buffered[:0], raw...)
+	s.state = stID
+	s.id = -1
 }
 
-func (s *scanner) flushBuffered() {
-	s.outBuf = append(s.outBuf, s.buffered...)
-	s.buffered = s.buffered[:0]
+// end closes an OSC 52 at its terminator. A bare ESC closes it and also
+// starts the next escape, so it is read again in the ground state.
+func (s *scanner) end(r rune, raw []byte) {
+	if r == esc {
+		s.close(true)
+		s.step(r, raw)
+		s.closing = true
+		return
+	}
+	s.buffered = append(s.buffered, raw...)
+	s.close(true)
 }
 
-func (s *scanner) finishEscape(stTerminated bool) {
+// close finishes an OSC 52. ran says whether the terminal would run it.
+func (s *scanner) close(ran bool) {
 	switch s.mode {
-	case ModeAllow, ModeAudit:
-		if s.mode == ModeAudit && s.audit != nil {
+	case ModeDeny:
+		s.outBuf = append(s.outBuf, can)
+	default:
+		if ran && s.mode == ModeAudit && s.audit != nil {
 			s.audit(string(s.selBuf), s.dataLen)
 		}
-		s.outBuf = append(s.outBuf, s.buffered...)
-		if !stTerminated {
-			s.outBuf = append(s.outBuf, 0x07)
-		}
-	case ModeDeny:
-		// drop everything buffered
+		s.emit(s.buffered)
 	}
+	s.reset()
+}
+
+// release passes the bytes of a sequence that turned out not to be OSC 52.
+func (s *scanner) release() {
+	s.emit(s.buffered)
+	s.reset()
+}
+
+func (s *scanner) reset() {
 	s.buffered = s.buffered[:0]
 	s.selBuf = s.selBuf[:0]
 	s.dataLen = 0
+	s.inData = false
+	s.id = -1
+	s.closing = false
 	s.state = stNormal
+}
+
+// finish runs at the end of the stream. ModeDeny drops an unfinished
+// sequence, because the terminal outlives the session: a reconnect writes the
+// next session's output into the same terminal, and that output could
+// complete it.
+func (s *scanner) finish() {
+	if s.state == stNormal && s.npend == 0 {
+		return
+	}
+	// Of the incomplete UTF-8 sequences, only C2 can become a control
+	// (U+009D) when the next bytes arrive.
+	risky := s.state != stNormal || s.pend[0] == 0xc2
+	if s.mode == ModeDeny && risky {
+		s.npend = 0
+		s.reset()
+		s.outBuf = append(s.outBuf, can)
+		return
+	}
+	s.emit(s.buffered)
+	s.emit(s.pend[:s.npend])
+	s.npend = 0
+	s.reset()
+}
+
+func (s *scanner) emit(b []byte) {
+	s.outBuf = append(s.outBuf, b...)
 }

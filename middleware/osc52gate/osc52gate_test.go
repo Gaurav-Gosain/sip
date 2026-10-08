@@ -67,8 +67,9 @@ func TestModeDenyStripsSplitEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(got) != "ABCD" {
-		t.Fatalf("ModeDeny output = %q, want %q", got, "ABCD")
+	// CAN stands where the sequence was. See the scanner's doc comment.
+	if string(got) != "AB\x18CD" {
+		t.Fatalf("ModeDeny output = %q, want %q", got, "AB\x18CD")
 	}
 }
 
@@ -147,8 +148,8 @@ func TestModeAllowPassesLargePayloadAcrossManyReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read deny: %v", err)
 	}
-	if string(gotDeny) != "PREPOST" {
-		t.Fatalf("ModeDeny large output = %q, want %q", trunc(string(gotDeny)), "PREPOST")
+	if string(gotDeny) != "PRE\x18POST" {
+		t.Fatalf("ModeDeny large output = %q, want %q", trunc(string(gotDeny)), "PRE\x18POST")
 	}
 }
 
