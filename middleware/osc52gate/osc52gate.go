@@ -107,6 +107,12 @@ func newScanner(inner io.Reader, mode Mode, audit auditFn) io.Reader {
 //   - An OSC ends at BEL, at ST (ESC \ or U+009C), and at a bare ESC. CAN,
 //     SUB and the other C1 controls abandon it without running it.
 //
+//   - An OSC payload longer than 10,000,000 UTF-16 code units is not run.
+//     The payload is what follows the first ';', less the C0 controls.
+//
+// The scanner keeps no payload. ModeDeny drops it as it arrives, and the
+// other modes pass it on as it arrives, so a long payload costs no memory.
+//
 // ModeDeny removes every OSC 52 and writes CAN (0x18) in its place. CAN
 // returns the terminal's parser to its ground state, which is where the
 // removed sequence would have left it. Without it, an escape that came before
@@ -133,6 +139,18 @@ const (
 	// idCap bounds the OSC number. Any number past it is not 52, and a
 	// number only grows, so the exact value no longer matters.
 	idCap = 1000
+
+	// payloadLimit is the longest OSC payload xterm.js runs, in UTF-16 code
+	// units (OscHandler, _payloadLimit). A longer one is read to its end and
+	// dropped.
+	payloadLimit = 10_000_000
+
+	// selCap bounds the selection field kept for the audit log. Real
+	// selections are a few letters.
+	selCap = 32
+
+	// keepCap is the largest buffer reset keeps for the next sequence.
+	keepCap = 64 << 10
 )
 
 type scanner struct {
@@ -151,6 +169,9 @@ type scanner struct {
 	inData   bool   // past the selection field of an OSC 52
 	selBuf   []byte
 	dataLen  int
+	// units is the payload length as xterm.js counts it. It counts no C0
+	// control and no DEL, so it is never more than the count of xterm.js.
+	units int
 	// closing is set after an OSC 52 ended at a bare ESC, so a backslash
 	// that completes the ST goes with the sequence it closed.
 	closing bool
@@ -257,11 +278,14 @@ func (s *scanner) stepByte(c byte) {
 // dropped takes bytes the terminal discards. They change no state, so they
 // stay where they are in the stream.
 func (s *scanner) dropped(raw []byte) {
-	if s.state == stNormal {
+	switch s.state {
+	case stNormal:
 		s.emit(raw)
-		return
+	case stPayload:
+		s.payload(raw)
+	default:
+		s.buffered = append(s.buffered, raw...)
 	}
-	s.buffered = append(s.buffered, raw...)
 }
 
 func (s *scanner) step(r rune, raw []byte) {
@@ -308,6 +332,12 @@ func (s *scanner) step(r rune, raw []byte) {
 		case r == ';' && s.id == 52:
 			s.buffered = append(s.buffered, raw...)
 			s.state = stPayload
+			if s.mode != ModeDeny {
+				// The payload goes out as it arrives, so the start of the
+				// sequence goes first.
+				s.emit(s.buffered)
+				s.buffered = s.buffered[:0]
+			}
 		case s.id == 52 && (r == bel || r == c1ST || r == esc):
 			// An OSC 52 with no data. Treat it as one.
 			s.end(r, raw)
@@ -331,18 +361,32 @@ func (s *scanner) step(r rune, raw []byte) {
 			s.close(false)
 			s.step(r, raw)
 		case r < 0x20:
-			s.buffered = append(s.buffered, raw...)
+			s.payload(raw)
 		default:
-			s.buffered = append(s.buffered, raw...)
+			s.payload(raw)
+			if r != del {
+				s.units++
+				if r > 0xffff {
+					s.units++ // a surrogate pair in UTF-16
+				}
+			}
 			switch {
 			case s.inData:
 				s.dataLen += len(raw)
 			case r == ';':
 				s.inData = true
-			default:
+			case len(s.selBuf) < selCap:
 				s.selBuf = append(s.selBuf, raw...)
 			}
 		}
+	}
+}
+
+// payload takes one code point of an OSC 52 payload. ModeDeny drops it, and
+// the other modes pass it on.
+func (s *scanner) payload(raw []byte) {
+	if s.mode != ModeDeny {
+		s.emit(raw)
 	}
 }
 
@@ -371,7 +415,7 @@ func (s *scanner) close(ran bool) {
 	case ModeDeny:
 		s.outBuf = append(s.outBuf, can)
 	default:
-		if ran && s.mode == ModeAudit && s.audit != nil {
+		if ran && s.units <= payloadLimit && s.mode == ModeAudit && s.audit != nil {
 			s.audit(string(s.selBuf), s.dataLen)
 		}
 		s.emit(s.buffered)
@@ -386,9 +430,13 @@ func (s *scanner) release() {
 }
 
 func (s *scanner) reset() {
+	if cap(s.buffered) > keepCap {
+		s.buffered = nil
+	}
 	s.buffered = s.buffered[:0]
 	s.selBuf = s.selBuf[:0]
 	s.dataLen = 0
+	s.units = 0
 	s.inData = false
 	s.id = -1
 	s.closing = false

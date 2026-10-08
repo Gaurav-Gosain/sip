@@ -355,3 +355,98 @@ func FuzzScanner(f *testing.F) {
 		}
 	})
 }
+
+// longOSC52Reader produces PRE, one OSC 52 with n bytes of data, and POST, in
+// reads of at most 4096 bytes, without holding the stream in memory. On each
+// read it records the largest buffer the scanner holds.
+type longOSC52Reader struct {
+	sc      *scanner
+	head    []byte
+	n       int
+	tail    []byte
+	peakCap int
+}
+
+func (r *longOSC52Reader) Read(p []byte) (int, error) {
+	if r.sc != nil {
+		r.peakCap = max(r.peakCap, cap(r.sc.buffered), cap(r.sc.selBuf), cap(r.sc.outBuf))
+	}
+	p = p[:min(len(p), 4096)]
+	switch {
+	case len(r.head) > 0:
+		n := copy(p, r.head)
+		r.head = r.head[n:]
+		return n, nil
+	case r.n > 0:
+		k := min(len(p), r.n)
+		for i := range k {
+			p[i] = 'A'
+		}
+		r.n -= k
+		return k, nil
+	case len(r.tail) > 0:
+		n := copy(p, r.tail)
+		r.tail = r.tail[n:]
+		return n, nil
+	}
+	return 0, io.EOF
+}
+
+// TestPayloadIsNotBuffered sends a 32 MiB OSC 52 through each mode. The
+// scanner used to keep the whole payload until its terminator, so a program
+// could make sip hold any amount of memory.
+func TestPayloadIsNotBuffered(t *testing.T) {
+	const size = 32 << 20
+	const head, tail = "PRE\x1b]52;c;", "\x07POST"
+	for _, mode := range []Mode{ModeDeny, ModeAllow, ModeAudit} {
+		src := &longOSC52Reader{head: []byte(head), n: size, tail: []byte(tail)}
+		sc := newScanner(src, mode, func(string, int) {}).(*scanner)
+		src.sc = sc
+		var out countingWriter
+		if _, err := io.CopyBuffer(&out, sc, make([]byte, 4096)); err != nil {
+			t.Fatal(err)
+		}
+		want := len(head) + size + len(tail)
+		if mode == ModeDeny {
+			want = len("PRE\x18POST")
+		}
+		if out.n != want {
+			t.Fatalf("mode %d: wrote %d bytes, want %d", mode, out.n, want)
+		}
+		if src.peakCap > 64<<10 {
+			t.Fatalf("mode %d: the scanner held a buffer of %d bytes for a %d byte payload", mode, src.peakCap, size)
+		}
+	}
+}
+
+type countingWriter struct{ n int }
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += len(p)
+	return len(p), nil
+}
+
+// TestAuditSkipsAPayloadOverTheLimit checks the xterm.js payload limit.
+// xterm.js counts UTF-16 code units, so a character outside the BMP counts
+// twice. The terminal does not run a payload over the limit, so ModeAudit
+// must not report it.
+func TestAuditSkipsAPayloadOverTheLimit(t *testing.T) {
+	cases := []struct {
+		name string
+		data string // after "52;c;", which adds 2 units for "c;"
+		runs int
+	}{
+		{"ASCII at the limit", strings.Repeat("A", payloadLimit-2), 1},
+		{"ASCII over the limit", strings.Repeat("A", payloadLimit-1), 0},
+		{"surrogate pairs at the limit", strings.Repeat("\U0001F600", (payloadLimit-2)/2), 1},
+		{"surrogate pairs over the limit", strings.Repeat("\U0001F600", (payloadLimit-2)/2+1), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, audits := filter(ModeAudit, []byte("\x1b]52;c;"+tc.data+"\x07"), nil)
+			if audits != tc.runs {
+				t.Fatalf("ModeAudit reported %d writes, want %d", audits, tc.runs)
+			}
+		})
+	}
+}

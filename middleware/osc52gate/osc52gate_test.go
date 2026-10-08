@@ -20,11 +20,16 @@ type chunkedReader struct {
 }
 
 func (c *chunkedReader) Read(p []byte) (int, error) {
+	for c.i < len(c.chunks) && len(c.chunks[c.i]) == 0 {
+		c.i++
+	}
 	if c.i >= len(c.chunks) {
 		return 0, io.EOF
 	}
+	// Keep what does not fit in p for the next call. Dropping it loses
+	// bytes whenever the caller's buffer is smaller than a chunk.
 	n := copy(p, c.chunks[c.i])
-	c.i++
+	c.chunks[c.i] = c.chunks[c.i][n:]
 	return n, nil
 }
 
