@@ -10,7 +10,8 @@
 // The page is the caller's. sip's own static/terminal.js is a client for
 // the socket protocol and has no adapter for these globals, so a wasm
 // build ships its own index.html and its own terminal emulator or
-// renderer. static/mobile.js is standalone and can be used from one.
+// renderer. The touch layer is webterm's mobile entry, WebTerm.mobile in
+// static/webterm.js, and can be used from one.
 //
 // Usage:
 //

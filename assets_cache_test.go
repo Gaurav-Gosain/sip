@@ -13,7 +13,7 @@ import (
 // pageAssets are the files one page load asks for, the four fonts included.
 var pageAssets = []string{
 	"index.html", "terminal.css", "webterm.css", "xterm.css",
-	"webterm.js", "mobile.js", "terminal.js",
+	"webterm.js", "terminal.js",
 	"fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
 	"fonts/JetBrainsMonoNerdFontMono-Bold.ttf",
 	"fonts/JetBrainsMonoNerdFontMono-Italic.ttf",

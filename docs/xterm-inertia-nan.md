@@ -1,8 +1,9 @@
 # xterm.js: an inertial fling reports `NaN` mouse coordinates
 
 A writeup of an upstream xterm.js bug, kept here so it can be filed without
-being rediscovered. sip works around it in `static/mobile.js`
-(`TouchMouse.onChange`); the workaround is not a fix, and the bug affects every
+being rediscovered. sip works around it in webterm's touch layer
+(`src/mobile/touch-mouse.ts` in webterm, `TouchMouse.onChange`), which sip
+loads as `WebTerm.mobile` from `static/webterm.js`; the workaround is not a fix, and the bug affects every
 xterm.js embedder that runs on a touch device.
 
 **No upstream issue or PR exists for it** as of the check below.
@@ -210,4 +211,4 @@ ancestor's capture listener is the only place this can be done from outside:
 at the target itself, capture and bubble listeners run in registration order,
 so xterm's own handler would still win.
 
-See `static/mobile.js`, `TouchMouse.onChange`.
+See webterm's `src/mobile/touch-mouse.ts`, `TouchMouse.onChange`.

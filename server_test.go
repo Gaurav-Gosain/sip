@@ -189,25 +189,24 @@ func TestRenderIndexMobileMouse(t *testing.T) {
 }
 
 // TestDefaultMobileKeysMatchTheClient guards the one duplicated table in the
-// project. The client has its own DEFAULT_KEYS because mobile.js is standalone
-// and installable on a page sip never rendered; the Go copy exists so a
-// deployment declaring MobileRows can put its own chords above the default
-// typing row rather than instead of it. Two copies drift, and the drift is
-// invisible: both halves keep working and quietly disagree about what the bar
-// says.
+// project. The client has its own DEFAULT_MOBILE_KEYS, the typing row it shows
+// when the deployment names none; the Go copy exists so a deployment declaring
+// MobileRows can put its own chords above the default typing row rather than
+// instead of it. Two copies drift, and the drift is invisible: both halves keep
+// working and quietly disagree about what the bar says.
 func TestDefaultMobileKeysMatchTheClient(t *testing.T) {
-	src, err := staticFiles.ReadFile("static/mobile.js")
+	src, err := staticFiles.ReadFile("static/terminal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(src)
-	start := strings.Index(body, "const DEFAULT_KEYS = [")
+	start := strings.Index(body, "const DEFAULT_MOBILE_KEYS = [")
 	if start < 0 {
-		t.Fatal("DEFAULT_KEYS is gone from static/mobile.js")
+		t.Fatal("DEFAULT_MOBILE_KEYS is gone from static/terminal.js")
 	}
 	end := strings.Index(body[start:], "];")
 	if end < 0 {
-		t.Fatal("DEFAULT_KEYS is not terminated")
+		t.Fatal("DEFAULT_MOBILE_KEYS is not terminated")
 	}
 	table := body[start : start+end]
 
@@ -221,11 +220,11 @@ func TestDefaultMobileKeysMatchTheClient(t *testing.T) {
 			"title: '" + k.Title + "'",
 		} {
 			if !strings.Contains(table, want) {
-				t.Errorf("client DEFAULT_KEYS is missing %s", want)
+				t.Errorf("client DEFAULT_MOBILE_KEYS is missing %s", want)
 			}
 		}
 		if k.Code != "" && !strings.Contains(table, "code: '"+k.Code+"'") {
-			t.Errorf("client DEFAULT_KEYS is missing code: '%s'", k.Code)
+			t.Errorf("client DEFAULT_MOBILE_KEYS is missing code: '%s'", k.Code)
 		}
 	}
 }

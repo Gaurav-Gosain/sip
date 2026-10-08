@@ -31,7 +31,10 @@ same transports, so a bug in one is a bug in the other.
 The client is vendored, not built. `static/webterm.js` is a standalone build of
 the webterm package, which inlines xterm.js and its fit, webgl, canvas,
 web-links, image and unicode-graphemes addons along with the kitty overlay, the
-clipboard layer and the width overrides. There is no build step, no bundler and
+clipboard layer, the width overrides, the transports, the buffer search and the
+touch layer. `webterm-vendor.json` names the webterm commit it was built from.
+The optional vtgl renderer is a second file, `static/webterm-vtgl.js`, which the
+page loads only when the vtgl renderer is chosen. There is no build step, no bundler and
 no `node_modules` between a clone and a running server: `go:embed` bakes the
 whole client, fonts included, into one binary.
 

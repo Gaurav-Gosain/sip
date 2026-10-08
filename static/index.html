@@ -6,7 +6,7 @@
          bar can pad itself with env(safe-area-inset-bottom) instead.
          interactive-widget=resizes-content is the third line of defence for the
          software keyboard: browsers that honour it shrink the layout viewport
-         themselves, which mobile.js then measures as no inset at all, so the
+         themselves, which the key bar then measures as no inset at all, so the
          two do not double up. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
     <title>Sip</title>
@@ -28,7 +28,8 @@
     <!-- U+F013, the Font Awesome cog the bundled Nerd Font patches in. Not
          U+2699: that one is not in the font at all, so it fell through to
          whatever the system had and came out as a colour emoji. Draggable on a
-         desktop and folded into the key bar on touch; see mobile.js. -->
+         desktop and folded into the key bar on touch; see setupMobile in
+         terminal.js. -->
     <button id="settings-toggle" title="Settings" aria-label="Settings">&#xF013;</button>
     <div id="settings-panel" class="hidden">
         <h3>Settings</h3>
@@ -69,7 +70,6 @@
         <button id="settings-close">Close</button>
     </div>
     <script src="static/webterm.js"></script>
-    <script src="static/mobile.js"></script>
     <script src="static/terminal.js"></script>
 </body>
 </html>

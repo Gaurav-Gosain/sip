@@ -12,9 +12,45 @@
     'use strict';
 
     const { WebTerm } = window.WebTerm;
-    // The touch layer: the key bar, the keyboard-aware layout and the
-    // draggable page controls. See static/mobile.js.
-    const SipMobile = window.SipMobile;
+    // The touch layer: the key bar, the keyboard-aware layout, the touch
+    // mouse and the draggable page controls. It is webterm's (WebTerm.mobile,
+    // from @gaurav-gosain/webterm/mobile). sip names its DOM with the 'sip'
+    // namespace, so the page keeps #sip-keybar, --sip-kb-inset and the rest.
+    const Mobile = window.WebTerm.mobile;
+    const MOBILE_NAMESPACE = 'sip';
+
+    // window.SipMobile was the global of static/mobile.js, which is gone. A
+    // page of a deployment's own that still calls it gets webterm's touch
+    // layer under sip's names.
+    if (Mobile && !window.SipMobile) {
+        window.SipMobile = Object.freeze({
+            ...Mobile,
+            installKeyBar: (host, options) =>
+                Mobile.installKeyBar(host, { namespace: MOBILE_NAMESPACE, ...(options || {}) }),
+            installTouchMouse: (host, options) =>
+                Mobile.installTouchMouse(host, { namespace: MOBILE_NAMESPACE, ...(options || {}) }),
+        });
+    }
+
+    // The key bar's typing row when the deployment names none. It is sip's
+    // own table, not webterm's default, so that sip decides what its bar
+    // shows. TestDefaultMobileKeysMatchTheClient holds it equal to Go's
+    // DefaultMobileKeys, which a deployment declaring MobileRows uses to keep
+    // this row under its own.
+    const DEFAULT_MOBILE_KEYS = [
+        { label: 'esc', title: 'Escape', key: 'Escape', code: 'Escape' },
+        { label: 'tab', title: 'Tab', key: 'Tab', code: 'Tab' },
+        { label: 'ctrl', title: 'Ctrl (tap to arm, tap again to lock)', mod: 'ctrl' },
+        { label: 'alt', title: 'Alt (tap to arm, tap again to lock)', mod: 'alt' },
+        { label: '←', title: 'Left', key: 'ArrowLeft', code: 'ArrowLeft', narrow: true },
+        { label: '↓', title: 'Down', key: 'ArrowDown', code: 'ArrowDown', narrow: true },
+        { label: '↑', title: 'Up', key: 'ArrowUp', code: 'ArrowUp', narrow: true },
+        { label: '→', title: 'Right', key: 'ArrowRight', code: 'ArrowRight', narrow: true },
+        { label: '/', title: 'Slash', key: '/', code: 'Slash', narrow: true },
+        { label: '-', title: 'Minus', key: '-', code: 'Minus', narrow: true },
+        { label: '|', title: 'Pipe', key: '|', code: 'Backslash', shift: true, narrow: true },
+        { label: ':', title: 'Colon', key: ':', code: 'Semicolon', shift: true, narrow: true },
+    ];
 
     // Message types (must match server)
     const MSG_INPUT = 0x30;    // '0'
@@ -37,8 +73,6 @@
     // to arrive as several messages. 64 KiB stays well under any configured
     // limit and keeps each frame small enough not to stall the socket.
     const INPUT_CHUNK_SIZE = 64 * 1024;
-
-    const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
     // Reserved chords worth asking the Keyboard Lock API for. Only ever
     // granted to a fullscreen document, so this does nothing outside one.
@@ -145,7 +179,7 @@
         // A colour this palette does not name goes back to the stylesheet's
         // own default, which is what makes appearance.reset a reset rather
         // than a partial one. Only the properties this function set are
-        // removed: static/mobile.js publishes --sip-kb-inset and
+        // removed: webterm's key bar publishes --sip-kb-inset and
         // --sip-keybar-h on the same element, and taking those away would
         // hand the software keyboard's share of the window back to nobody.
         for (const prop of appliedChrome) {
@@ -760,130 +794,6 @@
         if (Object.keys(opts).length) sipClient.webterm.setOptions(opts);
     }
 
-    // --- Search over the grid --------------------------------------------
-    //
-    // No renderer object escapes, and none is promised: a match is a row, a
-    // column and a length, which any renderer that owns a grid can answer.
-    //
-    // A terminal wraps constantly, so a search that stopped at the row
-    // boundary would miss most of what is on the screen. Rows are joined into
-    // the logical line they came from, the match is found there, and the
-    // column is measured back out of the row it started in. A wide character
-    // is one character in two columns, which is why that last step is a
-    // measurement and not an index.
-
-    const MAX_QUERY = 256;
-
-    /** The buffer rows, joined into the logical lines they wrapped from. */
-    function logicalLines(buf) {
-        const lines = [];
-        for (let i = 0; i < buf.length; i++) {
-            const row = buf.getLine(i);
-            if (!row) continue;
-            const text = row.translateToString(false);
-            const last = lines[lines.length - 1];
-            if (row.isWrapped && last) {
-                last.text += text;
-                last.segments.push({ row: i, length: text.length });
-                continue;
-            }
-            lines.push({ row: i, text, segments: [{ row: i, length: text.length }] });
-        }
-        return lines;
-    }
-
-    /** The column a character index sits at, measured through the row's cells. */
-    function columnAt(row, charIndex) {
-        if (charIndex <= 0) return 0;
-        let lo = 0;
-        let hi = row.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (row.translateToString(false, 0, mid).length < charIndex) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
-    }
-
-    /** Where a character index inside a logical line lands in the buffer. */
-    function bufferPosition(buf, line, index) {
-        let left = index;
-        for (const seg of line.segments) {
-            if (left < seg.length) {
-                return { row: seg.row, col: columnAt(buf.getLine(seg.row), left) };
-            }
-            left -= seg.length;
-        }
-        return { row: line.row, col: 0 };
-    }
-
-    /** The terminal's search, over the buffer rather than over the renderer. */
-    const search = {
-        query: '',
-        caseSensitive: false,
-        match: null,
-
-        run(query, opts) {
-            const term = sipClient && sipClient.term;
-            if (!term) return null;
-            const q = String(query);
-            if (!q || q.length > MAX_QUERY) return null;
-            const o = opts || {};
-            const caseSensitive = !!o.caseSensitive;
-            const backwards = !!o.backwards;
-            this.query = q;
-            this.caseSensitive = caseSensitive;
-
-            const buf = term.buffer.active;
-            const lines = logicalLines(buf);
-            const needle = caseSensitive ? q : q.toLowerCase();
-
-            // Start where the last match was, so next and previous walk.
-            const from = this.match ? this.match.row : buf.viewportY;
-            let startLine = 0;
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].row <= from) startLine = i;
-                else break;
-            }
-
-            for (let n = 0; n <= lines.length; n++) {
-                const i = backwards
-                    ? (startLine - n + lines.length * 2) % lines.length
-                    : (startLine + n) % lines.length;
-                const line = lines[i];
-                const hay = caseSensitive ? line.text : line.text.toLowerCase();
-                // Skip the match the caller is already sitting on, so a
-                // second call moves instead of answering the same row.
-                let index = -1;
-                if (n === 0 && this.match && this.match.line === line.row) {
-                    index = backwards
-                        ? hay.lastIndexOf(needle, Math.max(0, this.match.index - 1))
-                        : hay.indexOf(needle, this.match.index + 1);
-                } else {
-                    index = backwards ? hay.lastIndexOf(needle) : hay.indexOf(needle);
-                }
-                if (index < 0) continue;
-
-                const at = bufferPosition(buf, line, index);
-                this.match = { line: line.row, index, row: at.row, col: at.col, length: q.length };
-                term.select(at.col, at.row, q.length);
-                if (at.row < buf.viewportY || at.row >= buf.viewportY + term.rows) {
-                    term.scrollToLine(Math.max(0, at.row - Math.floor(term.rows / 2)));
-                }
-                return { row: at.row, col: at.col, length: q.length };
-            }
-            this.match = null;
-            return null;
-        },
-
-        reset() {
-            this.query = '';
-            this.match = null;
-            const term = sipClient && sipClient.term;
-            if (term) term.clearSelection();
-        },
-    };
-
     // --- The API objects --------------------------------------------------
 
     const sipListeners = new Map();
@@ -909,6 +819,11 @@
     /** The terminal, or null before the page's terminal has opened. */
     function term() {
         return sipClient ? sipClient.term : null;
+    }
+
+    /** The terminal's buffer search, or null before the page's terminal exists. */
+    function searcher() {
+        return sipClient && sipClient.webterm ? sipClient.webterm.search : null;
     }
 
     /** Whether sip.claim has already handed the API over. */
@@ -1143,26 +1058,24 @@
              *
              * Options: caseSensitive and backwards. The query is plain text,
              * never a pattern: a regular expression from a page script is the
-             * page's own runtime to lose.
+             * page's own runtime to lose. The search itself is webterm's.
              */
             find(query, opts) {
                 need('read');
-                return search.run(query, opts);
+                return searcher() ? searcher().find(String(query), opts || {}) : null;
             },
             /** The next match for the last query. */
             findNext() {
                 need('read');
-                return search.query ? search.run(search.query, { caseSensitive: search.caseSensitive }) : null;
+                return searcher() ? searcher().findNext() : null;
             },
             /** The previous match for the last query. */
             findPrevious() {
                 need('read');
-                return search.query
-                    ? search.run(search.query, { caseSensitive: search.caseSensitive, backwards: true })
-                    : null;
+                return searcher() ? searcher().findPrevious() : null;
             },
             /** Forget the query and drop the selection. */
-            clear() { need('read'); search.reset(); },
+            clear() { need('read'); if (searcher()) searcher().clear(); },
         }),
 
         clipboard: Object.freeze({
@@ -1226,33 +1139,98 @@
     /**
      * sip's wire protocol as a webterm Transport.
      *
-     * webterm hands over raw input bytes and knows nothing about the framing;
-     * everything sip-specific lives here. `send` is the Transport method and
-     * carries terminal input only. Resize, ping and any other control message
-     * goes through sendMessage, which the client calls directly, because those
-     * are not terminal traffic and the package has no notion of them.
+     * The connection itself is webterm's: webTransportTransport (QUIC, with
+     * webterm's 4-byte length-prefix framing), webSocketTransport, fallback()
+     * between the two and reconnecting() around them. What is left here is
+     * sip's: the message types, the /cert-hash exchange, and turning the
+     * connection's life into the status line and the page events.
+     *
+     * `send` is the Transport method and carries terminal input only. Resize,
+     * ping and any other control message goes through sendMessage, which the
+     * client calls directly, because those are not terminal traffic and
+     * webterm has no notion of them. Messages from the server go to the
+     * client's handleMessage, not to webterm's sink, for the same reason.
      */
     class SipConnection {
         constructor(client) {
             this.client = client;
-            this.sink = null;
-            this.ready = null;
             this.closed = false;
-
-            this.useWebTransport = false;
-            this.ws = null;
-            this.wt = null;
-            this.wtWriter = null;
-            this.wtReader = null;
-            this.webTransportUnavailable = false;
             this.name = 'sip';
+            // The transport preference this connection was built with, and
+            // whether it wanted WebTransport and did not get it.
+            this.wantsWebTransport = false;
+            this.webTransportUnavailable = false;
+            this.wtUrl = client.urls.wtUrl;
+            this.inner = null;
+            this.ready = null;
+        }
+
+        // --- The live transport, for the status line and the browser tests --
+        //
+        // The suites in clienttests/ hook the socket's send and the stream
+        // writer's write, because that is the boundary where the framing of
+        // the two transports differs. Both are the objects webterm writes to.
+
+        /** The webterm transport carrying the session now, or null. */
+        live() {
+            const chosen = this.inner && this.inner.active;
+            return (chosen && chosen.active) || null;
+        }
+
+        get useWebTransport() {
+            const t = this.live();
+            return !!t && t.name === 'webtransport';
+        }
+
+        get wtWriter() {
+            const t = this.live();
+            return t && t.name === 'webtransport' ? t.writer || null : null;
+        }
+
+        get ws() {
+            const t = this.live();
+            return t && t.name === 'websocket' ? t.socket || null : null;
         }
 
         // --- Transport ----------------------------------------------------
 
-        start(sink) {
-            this.sink = sink;
-            this.ready = this.connect();
+        start() {
+            const preference = this.client.settings.transport;
+            this.wantsWebTransport = preference === 'auto' || preference === 'webtransport';
+            const W = window.WebTerm;
+            const client = this.client;
+
+            const candidates = () => {
+                const list = [];
+                // Fall back even when WebTransport was explicitly chosen.
+                // Chromium refuses a QUIC connection to a loopback origin with
+                // a self-signed cert hash where Firefox accepts it, so an
+                // honoured preference on one machine is an unreachable one on
+                // the next; leaving a dead page there helps nobody. The status
+                // line names the transport that actually carried the session.
+                if (this.wantsWebTransport) {
+                    list.push(W.webTransportTransport(() => this.wtUrl, {
+                        options: () => this.certOptions(),
+                    }));
+                }
+                list.push(W.webSocketTransport(client.urls.wsUrl));
+                return W.fallback(...list);
+            };
+
+            this.inner = W.reconnecting(candidates, {
+                delayMs: client.reconnectDelay,
+                factor: 1.5,
+                maxAttempts: client.maxReconnectAttempts,
+                onOpen: (chosen) => this.opened(chosen),
+                onRetry: (attempt, wait) => client.onRetry(attempt, wait),
+                onGiveUp: () => client.onGiveUp(),
+            });
+
+            const sink = {
+                data: (bytes) => client.handleMessage(bytes),
+                closed: () => client.handleDisconnect(),
+            };
+            this.ready = this.inner.start(sink);
             return this.ready;
         }
 
@@ -1270,174 +1248,54 @@
         }
 
         close() {
-            this.teardown();
+            if (this.closed) return;
+            this.closed = true;
+            if (this.inner) this.inner.close();
         }
 
         // --- Connection ---------------------------------------------------
 
-        async connect() {
-            const preference = this.client.settings.transport;
-            const wantsWebTransport = preference === 'auto' || preference === 'webtransport';
-            this.webTransportUnavailable = false;
-
-            if (wantsWebTransport && typeof WebTransport !== 'undefined') {
-                try {
-                    await this.connectWebTransport();
-                    return;
-                } catch (e) {
-                    console.log('WebTransport unavailable:', e.message);
-                    this.webTransportUnavailable = true;
-                    // Drop the half-open transport so the fallback below does
-                    // not inherit it and teardown has nothing stale to close.
-                    if (this.wt) { try { this.wt.close(); } catch (_) {} this.wt = null; }
-                }
-            } else if (preference === 'webtransport') {
-                console.log('WebTransport requested but this browser does not support it');
-                this.webTransportUnavailable = true;
-            }
-
-            // Fall back even when WebTransport was explicitly chosen. Chromium
-            // refuses a QUIC connection to a loopback origin with a self-signed
-            // cert hash where Firefox accepts it, so an honoured preference on
-            // one machine is an unreachable one on the next; leaving a dead
-            // page there helps nobody. The status line names the transport that
-            // actually carried the session, so the fallback is visible rather
-            // than silent.
-            await this.connectWebSocket();
-        }
-
-        async connectWebTransport() {
-            const urls = this.client.urls;
-            let transportOptions = {};
-            let wtUrl = urls.wtUrl;
-
-            try {
-                const resp = await fetch(urls.certHashUrl);
-                if (resp.ok) {
-                    const data = await resp.json();
-                    // Prefer the server's own advertised endpoint: it is
-                    // derived from the host the browser actually reached, and
-                    // the same-origin check on both transports expects that
-                    // value rather than a guess.
-                    if (data.wtUrl) wtUrl = data.wtUrl;
-
-                    const hashBytes = new Uint8Array(data.hashBytes);
-                    transportOptions = {
-                        serverCertificateHashes: [{
-                            algorithm: 'sha-256',
-                            value: hashBytes.buffer
-                        }]
-                    };
-                }
-            } catch (e) {}
-
-            const wt = new WebTransport(wtUrl, transportOptions);
-            this.wt = wt;
-
-            // Only report a close once this transport is the one carrying the
-            // session. A failed handshake settles `closed` too, and treating
-            // that as a session close would tear the connection down before
-            // the WebSocket fallback has even been tried.
-            const reportIfLive = () => {
-                if (this.useWebTransport && this.wt === wt) this.reportClosed();
-            };
-            wt.closed.then(reportIfLive, reportIfLive);
-
-            await wt.ready;
-
-            this.useWebTransport = true;
-            const stream = await this.wt.createBidirectionalStream();
-            this.wtWriter = stream.writable.getWriter();
-            this.wtReader = stream.readable.getReader();
-
-            this.client.onConnected('WebTransport (QUIC)', 'webtransport', 'Connected (QUIC)');
-            this.readLoop();
-        }
-
-        connectWebSocket() {
-            return new Promise((resolve, reject) => {
-                this.ws = new WebSocket(this.client.urls.wsUrl);
-                this.ws.binaryType = 'arraybuffer';
-
-                this.ws.onopen = () => {
-                    this.useWebTransport = false;
-                    const name = this.webTransportUnavailable
-                        ? 'WebSocket (WebTransport unavailable)'
-                        : 'WebSocket';
-                    this.client.onConnected(name, 'connected', `Connected (${name})`);
-                    resolve();
-                };
-
-                this.ws.onmessage = event => {
-                    if (event.data instanceof ArrayBuffer) {
-                        this.client.handleMessage(new Uint8Array(event.data));
-                    }
-                };
-
-                this.ws.onerror = reject;
-                this.ws.onclose = () => this.reportClosed();
-            });
-        }
-
         /**
-         * Reassemble the length-prefixed frames sip puts on a WebTransport
-         * stream. A QUIC stream is a byte stream with no message boundaries,
-         * so the 4-byte big-endian prefix is what re-establishes them.
+         * The WebTransport options: the certificate hash of sip's self-signed
+         * cert, and the endpoint the server advertises. webterm resolves these
+         * before it reads the URL, so the advertised endpoint is the one used.
          */
-        async readLoop() {
-            if (!this.wtReader) return;
-
-            let buffer = new Uint8Array(64 * 1024);
-            let bufferLen = 0;
-
+        async certOptions() {
             try {
-                while (true) {
-                    const { value, done } = await this.wtReader.read();
-                    if (done) {
-                        // The server ended the stream, after MsgClose on a
-                        // normal end. Close the session now, so the server
-                        // frees the connection slot at once.
-                        this.reportClosed();
-                        return;
-                    }
-
-                    if (bufferLen + value.length > buffer.length) {
-                        const grown = new Uint8Array(Math.max(buffer.length * 2, bufferLen + value.length));
-                        grown.set(buffer.subarray(0, bufferLen));
-                        buffer = grown;
-                    }
-
-                    buffer.set(value, bufferLen);
-                    bufferLen += value.length;
-
-                    let offset = 0;
-                    while (bufferLen - offset >= 4) {
-                        const msgLen = new DataView(buffer.buffer, buffer.byteOffset + offset, 4).getUint32(0, false);
-
-                        if (msgLen > MAX_FRAME_BYTES) {
-                            console.error('WebTransport frame too large:', msgLen);
-                            return;
-                        }
-
-                        if (bufferLen - offset < 4 + msgLen) break;
-
-                        this.client.handleMessage(buffer.subarray(offset + 4, offset + 4 + msgLen));
-                        offset += 4 + msgLen;
-                    }
-
-                    if (offset > 0) {
-                        if (bufferLen > offset) buffer.copyWithin(0, offset, bufferLen);
-                        bufferLen -= offset;
-                    }
-                }
+                const resp = await fetch(this.client.urls.certHashUrl);
+                if (!resp.ok) return {};
+                const data = await resp.json();
+                // Prefer the server's own advertised endpoint: it is derived
+                // from the host the browser actually reached, and the
+                // same-origin check on both transports expects that value
+                // rather than a guess.
+                if (data.wtUrl) this.wtUrl = data.wtUrl;
+                const hashBytes = new Uint8Array(data.hashBytes);
+                return {
+                    serverCertificateHashes: [{ algorithm: 'sha-256', value: hashBytes.buffer }],
+                };
             } catch (e) {
-                if (!this.closed) console.error('WebTransport read error:', e);
+                return {};
             }
+        }
+
+        /** A connection opened, the first or a reconnect. */
+        opened(chosen) {
+            const live = chosen && chosen.active;
+            if (live && live.name === 'webtransport') {
+                this.webTransportUnavailable = false;
+                this.client.onConnected('WebTransport (QUIC)', 'webtransport', 'Connected (QUIC)');
+                return;
+            }
+            this.webTransportUnavailable = this.wantsWebTransport;
+            const name = this.webTransportUnavailable ? 'WebSocket (WebTransport unavailable)' : 'WebSocket';
+            this.client.onConnected(name, 'connected', `Connected (${name})`);
         }
 
         /** Prefix `payload` with its message type and put it on the wire. */
         async sendMessage(type, payload) {
-            if (this.closed) return;
+            // Between a drop and the reconnect there is nothing to send on.
+            if (this.closed || !this.inner || !this.client.connected) return;
 
             const body = payload || new Uint8Array(0);
             const msg = new Uint8Array(body.length + 1);
@@ -1445,40 +1303,18 @@
             msg.set(body, 1);
 
             try {
-                if (this.useWebTransport && this.wtWriter) {
-                    const frame = new Uint8Array(4 + msg.length);
-                    new DataView(frame.buffer).setUint32(0, msg.length, false);
-                    frame.set(msg, 4);
-                    await this.wtWriter.write(frame);
-                } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(msg);
-                }
+                await this.inner.send(msg);
             } catch (e) {
                 console.error('Send error:', e);
             }
-        }
-
-        reportClosed() {
-            if (this.closed) return;
-            this.teardown();
-            if (this.sink) this.sink.closed();
-            this.client.handleDisconnect();
-        }
-
-        teardown() {
-            if (this.closed) return;
-            this.closed = true;
-
-            if (this.wtWriter) { try { this.wtWriter.releaseLock(); } catch (_) {} this.wtWriter = null; }
-            if (this.wtReader) { try { this.wtReader.releaseLock(); } catch (_) {} this.wtReader = null; }
-            if (this.wt) { try { this.wt.close(); } catch (_) {} this.wt = null; }
-            if (this.ws) { try { this.ws.close(); } catch (_) {} this.ws = null; }
         }
     }
 
     class SipTerminal {
         constructor() {
             this.webterm = null;
+            // The vtgl renderer provider, set only when the renderer is vtgl.
+            this.vtgl = null;
             this.connection = null;
             this.connected = false;
             this.readOnly = false;
@@ -1486,7 +1322,7 @@
             // because it hangs off xterm's parser and its buffers.
             this.pointer = null;
 
-            this.reconnectAttempts = 0;
+            // The reconnect policy, handed to webterm's reconnecting().
             this.maxReconnectAttempts = 5;
             this.reconnectDelay = 1000;
             this.pingInterval = null;
@@ -1625,8 +1461,8 @@
             // A narrow touch screen starts a point smaller so the program has
             // some columns to work with, but only until the user picks a size,
             // which is what a stored fontSize means.
-            if (SipMobile) {
-                settings.fontSize = SipMobile.pickFontSize(settings.fontSize, stored.fontSize !== undefined);
+            if (Mobile) {
+                settings.fontSize = Mobile.pickFontSize(settings.fontSize, stored.fontSize !== undefined);
             }
             return settings;
         }
@@ -1709,7 +1545,7 @@
                 cursorStyle: this.appearance.cursorStyle || 'block',
                 scrollback: this.appearance.scrollback || 5000,
                 links: true,
-                renderer: { prefer: this.settings.renderer },
+                renderer: { prefer: this.settings.renderer, vtgl: this.vtgl || undefined },
                 clipboard: { copyOnSelect: this.settings.copyOnSelect },
                 // The scrollback anchor, so an image scrolls away with the text
                 // that introduced it, which is what a shell running an image
@@ -1759,6 +1595,7 @@
                 return;
             }
 
+            if (this.settings.renderer === 'vtgl') await this.loadVtgl();
             this.webterm = new WebTerm(this.webtermOptions());
             await this.webterm.open(host);
             this.installClampedFit();
@@ -1803,6 +1640,42 @@
 
             await this.connect();
             this.webterm.focus();
+        }
+
+        /**
+         * Load the vtgl renderer, which is its own file.
+         *
+         * vtgl, its HarfBuzz wasm and its Arabic font are about 900 KB, and
+         * only the vtgl renderer runs them, so static/webterm.js does not
+         * carry them and a page that does not ask for vtgl never downloads
+         * them. A failed load leaves this.vtgl unset, and webterm then falls
+         * back to WebGL, canvas or DOM.
+         *
+         * ?vtglBackend=canvas2d and ?vtglShaper=pfb|none pick the vtgl
+         * backend and shaper, for comparing them side by side.
+         */
+        async loadVtgl() {
+            if (!window.WebTermVtgl) {
+                try {
+                    await new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = 'static/webterm-vtgl.js';
+                        script.onload = resolve;
+                        script.onerror = () => reject(new Error('static/webterm-vtgl.js did not load'));
+                        document.head.appendChild(script);
+                    });
+                } catch (e) {
+                    console.warn('sip: the vtgl renderer is unavailable', e);
+                    return;
+                }
+            }
+            if (!window.WebTermVtgl) return;
+            const q = new URLSearchParams(window.location.search);
+            const shaper = { pfb: 'forms', none: 'none' }[q.get('vtglShaper')] || 'harfbuzz';
+            this.vtgl = window.WebTermVtgl.vtgl({
+                backend: q.get('vtglBackend') === 'canvas2d' ? 'canvas2d' : 'webgl2',
+                shaper,
+            });
         }
 
         // --- Copy ------------------------------------------------------------
@@ -1948,6 +1821,7 @@
             this.updateStatus('connecting', 'Connecting...');
             const conn = new SipConnection(this);
             this.connection = conn;
+            // attach calls conn.start, which builds the transports.
             this.webterm.attach(conn);
             try {
                 await conn.ready;
@@ -1960,14 +1834,12 @@
         async reconnect() {
             this.webterm.detach();
             this.handleDisconnect();
-            this.reconnectAttempts = 0;
             await this.connect();
         }
 
         /** Called by the connection once a transport is carrying the session. */
         onConnected(name, status, text) {
             this.connected = true;
-            this.reconnectAttempts = 0;
             this.currentTransport = name;
             this.updateStatus(status, text);
             this.sendResize();
@@ -1986,7 +1858,15 @@
 
                 case MSG_CLOSE:
                     this.webterm.write('\r\n\x1b[33m[Session ended. Refresh to start new session.]\x1b[0m\r\n');
+                    // The session is over, so the connection must not come
+                    // back on its own. Closing it now also frees the server's
+                    // connection slot at once.
+                    if (this.connection) this.connection.close();
                     this.connected = false;
+                    if (this.pingInterval) {
+                        clearInterval(this.pingInterval);
+                        this.pingInterval = null;
+                    }
                     this.updateStatus('disconnected', 'Session ended');
                     sipEmit('disconnect', { reason: 'closed' });
                     break;
@@ -2060,16 +1940,19 @@
             this.currentTransport = 'disconnected';
             this.updateStatus('disconnected', 'Disconnected');
             sipEmit('disconnect', { reason: 'lost' });
+            // webterm's reconnecting() now schedules the retry and reports
+            // it through onRetry, or reports onGiveUp when none is left.
+        }
 
-            if (this.reconnectAttempts < this.maxReconnectAttempts) {
-                this.reconnectAttempts++;
-                const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
-                this.updateStatus('connecting', `Reconnecting in ${Math.round(delay / 1000)}s...`);
-                setTimeout(() => this.connect(), delay);
-            } else {
-                this.updateStatus('disconnected', 'Connection lost');
-                this.webterm.write('\r\n\x1b[31m[Connection lost. Refresh to reconnect.]\x1b[0m\r\n');
-            }
+        /** A retry is scheduled. `attempt` counts from 1. */
+        onRetry(attempt, delay) {
+            this.updateStatus('connecting', `Reconnecting in ${Math.round(delay / 1000)}s...`);
+        }
+
+        /** The last retry failed. */
+        onGiveUp() {
+            this.updateStatus('disconnected', 'Connection lost');
+            this.webterm.write('\r\n\x1b[31m[Connection lost. Refresh to reconnect.]\x1b[0m\r\n');
         }
 
         // --- Outbound messages ----------------------------------------------
@@ -2236,14 +2119,14 @@
          * into the bar, because a floating control on a phone floats over a
          * screen with no room to spare.
          *
-         * The key set is the default one from mobile.js unless the deployment
+         * The key set is DEFAULT_MOBILE_KEYS unless the deployment
          * named its own with Config.MobileKeys. sip serves arbitrary programs,
          * so the default is keys every terminal program understands and nothing
          * that assumes a keymap: an application that wants its own chords on
          * the bar supplies them.
          */
         setupMobile() {
-            if (!SipMobile) return;
+            if (!Mobile) return;
 
             const toggle = document.getElementById('settings-toggle');
             const actions = toggle ? [{
@@ -2252,7 +2135,7 @@
                 run: () => toggle.click(),
             }] : [];
 
-            this.mobile = SipMobile.installKeyBar({
+            this.mobile = Mobile.installKeyBar({
                 send: (text) => this.sendInput(text),
                 // xterm's own helper textarea is what holds the software
                 // keyboard up, so it is what the bar has to keep focus on.
@@ -2261,17 +2144,18 @@
             }, {
                 keys: Array.isArray(sipConfig.mobileKeys) && sipConfig.mobileKeys.length
                     ? sipConfig.mobileKeys
-                    : SipMobile.DEFAULT_KEYS,
+                    : DEFAULT_MOBILE_KEYS,
                 rows: Array.isArray(sipConfig.mobileRows) ? sipConfig.mobileRows : null,
                 prefix: sipConfig.mobilePrefix || null,
                 actions,
                 keyBar: sipConfig.mobileKeyBar !== false,
+                namespace: MOBILE_NAMESPACE,
             });
 
             // The desktop keeps the floating gear and lets it be moved out of
             // the way of whatever is under it.
             if (!this.mobile.enabled && toggle) {
-                SipMobile.installDraggable(toggle, { storageKey: 'sip-web-gear-pos', margin: 8 });
+                Mobile.installDraggable(toggle, { storageKey: 'sip-web-gear-pos', margin: 8 });
             }
 
             this.setupTouchMouse();
@@ -2295,13 +2179,13 @@
             const el = this.webterm && this.webterm.xterm.element;
             const screen = el ? el.querySelector('.xterm-screen') : null;
             const opts = sipConfig.mobileMouse || {};
-            this.touchMouse = SipMobile.installTouchMouse({
+            this.touchMouse = Mobile.installTouchMouse({
                 screen,
                 // A tap means the user wants to type here, so the software
                 // keyboard comes up with it. The bar owns that: it knows what
                 // is holding the keyboard and what it is waiting on.
                 onTap: () => this.mobile.focusInput(),
-            }, opts);
+            }, Object.assign({}, opts, { namespace: MOBILE_NAMESPACE }));
         }
 
         /**

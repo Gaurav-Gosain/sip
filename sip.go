@@ -382,7 +382,7 @@ type Config struct {
 }
 
 // MobileKey is one button on the client's touch key bar. It is handed to
-// the browser as-is, so the field names match what static/mobile.js reads.
+// the browser as-is, so the field names match what webterm's key bar reads.
 //
 // A key sends input:
 //

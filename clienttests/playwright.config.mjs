@@ -74,7 +74,10 @@ export default defineConfig({
       //
       // The size cap suite runs here because the server's clamp notice has
       // its own writer on the WebTransport path.
-      testMatch: /(keyboard|appearance|pointer|sizecap)\.spec\.mjs/,
+      //
+      // The connection suite runs here for its WebTransport half: a dropped
+      // session must come back as one connection, not two.
+      testMatch: /(keyboard|appearance|pointer|sizecap|connection)\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',

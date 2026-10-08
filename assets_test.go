@@ -24,14 +24,17 @@ import (
 // terminal.js is absent on purpose and pinned differently below: window.sip is
 // the page API and it is part of the default client now, so its bytes are
 // meant to have changed.
+//
+// webterm.js and webterm-vtgl.js are absent too. They are webterm's build, and
+// webterm-vendor.json pins them to the commit they came from; see
+// vendor_test.go. index.html and terminal.css changed when the touch layer
+// moved into webterm and static/mobile.js went away.
 var defaultAssetDigests = map[string]string{
-	"/":                    "1ffe93de436e26c925d1a59b3ab872b23edcd4cb5dbb22700949462784993c07",
-	"/static/index.html":   "2a3f870fc6f650c9a3cdaa931b6b8e01661c4b9cac6a4e0a5af785e64c6d9693",
-	"/static/terminal.css": "3e32f10f34e88298fea71bf0697b774ce0c7dd11926630f703109bd3d21de0a7",
-	"/static/webterm.js":   "d251fbe49d33c72d182b268d7f1f3fb8b6a244c055e384c594effc7d511c2304",
+	"/":                    "84cffe9e13663d95870d5c71ad27647f6c72ef5fcbc68f32d05ebd8f9e2c31bd",
+	"/static/index.html":   "b075f776458d764b48b6e15cc9696ffe2d576d8e8bd70c178f1b0571eb626ca6",
+	"/static/terminal.css": "a9a0ff7791afb142860951434c8eca0e0a5e852429521e2f579dd0227162cc88",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",
-	"/static/mobile.js":    "3bb7c755ff498558226bd7977bba276501a7bcdba27fcb62a689dc805d6b61dd",
 	"/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf": "9e4dad8c34fb31045d53790a936a0afc3aae3fb830e874faadf3670662b04853",
 }
 

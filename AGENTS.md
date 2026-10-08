@@ -116,16 +116,17 @@ sip/
 │   ├── sip/                # CLI binary
 │   └── sip-wasm-build/     # Wraps `GOOS=js GOARCH=wasm go build` with bubbletea v2 stubs
 ├── static/
-│   ├── index.html          # Loads webterm.js + mobile.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
-│   ├── terminal.js         # Classic script: SipConnection (wire protocol) + SipTerminal
-│   │                       # (settings, status) + window.sip, the page API and its
-│   │                       # capability check
-│   ├── mobile.js           # Classic script: the touch key bar, the keyboard-aware
-│   │                       # layout, the touch mouse layer and installDraggable.
-│   │                       # Publishes window.SipMobile
+│   ├── index.html          # Loads webterm.js + terminal.js, includes {{FONT_FACE_EXTRA}} placeholder
+│   ├── terminal.js         # Classic script: SipConnection (wire protocol over webterm's
+│   │                       # transports) + SipTerminal (settings, status, touch wiring)
+│   │                       # + window.sip, the page API and its capability check
 │   ├── terminal.css        # JBM Nerd Font @font-face + Catppuccin Mocha + chrome
-│   ├── webterm.js          # Vendored webterm standalone (~835 KB): xterm.js, its addons,
-│   │                       # the kitty overlay, the clipboard layer and the width overrides
+│   ├── webterm.js          # Vendored webterm standalone (~930 KB): xterm.js, its addons,
+│   │                       # the kitty overlay, the clipboard layer, the width overrides,
+│   │                       # the transports, the buffer search and the touch layer
+│   │                       # (WebTerm.mobile)
+│   ├── webterm-vtgl.js     # Vendored vtgl renderer standalone (~920 KB), loaded only
+│   │                       # when the renderer setting is vtgl
 │   ├── webterm.css         # webterm container + kitty overlay styles
 │   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
 │   └── fonts/              # JetBrains Mono Nerd Font (embedded)
@@ -156,7 +157,8 @@ sip/
      `bubbletea_resize` on `globalThis` and nothing else. `static/terminal.js`
      has no adapter for them: it was dropped in the webterm split and has not
      been rebuilt, so a wasm app currently supplies its own page and drives
-     those three globals itself. `static/mobile.js` is standalone and usable
+     those three globals itself. The touch layer, `WebTerm.mobile` in
+     `static/webterm.js`, is standalone and usable
      from such a page as it stands.
    - Build with `go run ./cmd/sip-wasm-build -o web/app.wasm ./your/cmd/`
 
@@ -164,7 +166,9 @@ sip/
 
 1. Browser loads `static/index.html` → `static/webterm.js` → `static/terminal.js`
 2. `WebTerm.open()` loads the fonts, constructs `Terminal`, then picks a renderer
-3. `SipConnection` tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket
+3. `SipConnection` tries WebTransport (HTTP/3 over QUIC) → falls back to WebSocket,
+   through webterm's `webTransportTransport`, `webSocketTransport`, `fallback()`
+   and `reconnecting()`
 4. Server creates a PTY for the session, spawns either Bubble Tea or the wrapped command
 5. PTY output is framed and sent to the browser (through the kitty transcoder only when enabled)
 6. The browser writes inbound bytes into xterm; outbound input goes to the PTY
@@ -238,8 +242,13 @@ VT with a wasm round trip per character on xterm's hottest path.
 
 #### Patches to the vendored bundles
 
-There are none. `static/webterm.js` is byte for byte a webterm `main` build, and
-nothing under `static/` is edited after vendoring. Anything that used to be a
+There are none. `static/webterm.js` and `static/webterm-vtgl.js` are byte for
+byte a webterm build of the commit `webterm-vendor.json` names, and nothing
+under `static/` is edited after vendoring. `scripts/vendor-webterm.sh
+/path/to/webterm` builds a clean checkout, copies the bundles and the two
+stylesheets, and writes that record. `vendor_test.go` fails when a file does
+not match its record, when the bundle lost `registerApcHandler`, the
+transports or the touch layer, or when vtgl slipped back into `webterm.js`. Anything that used to be a
 `/*__sipPatch:<name>*/` marker now lives in webterm's source, so a bundle bump
 carries it rather than dropping it.
 
@@ -305,10 +314,20 @@ restores it. Check for the handler before any bundle bump.
 
 ### Touch and the software keyboard
 
-`static/mobile.js` is a standalone classic script publishing `window.SipMobile`.
-It imports nothing, injects its own styles and builds its own DOM, and it is
-installed only on a touch device (`detectTouch`, overridable with `?mobile=1`
-and `?mobile=0` for testing). `terminal.js` wires it up in `setupMobile`.
+The touch layer is webterm's: `WebTerm.mobile` in `static/webterm.js`, the
+`@gaurav-gosain/webterm/mobile` entry, ported from what was `static/mobile.js`.
+Its own tests moved with it to webterm (`test/browser/mobile.spec.mjs`,
+`touch.spec.mjs`, `tablet.spec.mjs`). It imports nothing, injects its own
+styles and builds its own DOM, and it is installed only on a touch device
+(`detectTouch`, overridable with `?mobile=1` and `?mobile=0` for testing).
+`terminal.js` wires it up in `setupMobile` with `namespace: 'sip'`, which gives
+every id, class, custom property and storage key the `sip` names this section
+uses. Without it the names start with `webterm`. `window.SipMobile` stays as an
+alias that adds the namespace, for a deployment page that called it.
+
+The sip suites `mobile.spec.mjs`, `touch.spec.mjs` and `tablet.spec.mjs` stay
+as integration tests: the Go config routing through `__sipConfig`, the settings
+gear in the bar, the wire capture and `terminal.css`.
 
 Four parts:
 
@@ -524,9 +543,10 @@ browser test:
 - Do not hook `WebSocket.prototype.send` to capture what the client sends.
   Under WebTransport nothing passes through it, so the hook records zero frames
   and the test fails by timeout or passes vacuously.
-- Hook the transport boundary — `sipTerm.wsConnection.send` or
-  `sipTerm.wtWriter.write` — as `keyboard.spec.mjs` does, never a shared send
-  path above them. A hook above the transport records identical bytes whichever
+- Hook the transport boundary — `sipTerm.connection.ws.send` or
+  `sipTerm.connection.wtWriter.write` — as `keyboard.spec.mjs` does. Both are
+  the live objects webterm's transports write to, read through getters on
+  `SipConnection`. Never hook a shared send path above them. A hook above the transport records identical bytes whichever
   one is live, so it cannot tell them apart and a green run says nothing about
   either. The boundary also proves the framing, which differs between the two.
 
@@ -700,7 +720,7 @@ test, because `applyAppearance` put the value back at the handshake. Break the
 Go producer when you want to prove one of these reaches the browser at all.
 
 **The chrome follows the palette.** `static/terminal.css` and the styles
-`static/mobile.js` injects name their colours as `var(--sip-*, <today's value>)`
+webterm's touch layer injects under the `sip` namespace name their colours as `var(--sip-*, <today's value>)`
 rather than declaring them on `:root`, so a property nobody set is not a missing
 colour, it is the built-in one. `Appearance.chrome` derives them in Go, where
 the mix that makes the panel surface is unit-testable, and the client sets only
@@ -969,11 +989,12 @@ page set back on top afterwards. Without it a live theme reverts on the first
 reconnect, which is the same precedence rule the settings panel already
 follows: a deployment picks a starting point, a user picks an answer.
 
-**Search is sip's, not xterm's.** The vendored bundle carries no search addon.
-`terminal.js` joins the buffer rows back into the logical lines they wrapped
-from, finds the match there, and measures the column back out of the row it
-started in, because a wide character is one character in two columns. A match
-is a row, a column and a length, so no renderer object escapes.
+**Search is webterm's, not xterm's.** The vendored bundle carries no search
+addon. `webterm.search` (webterm's `BufferSearch`, which started here) joins
+the buffer rows back into the logical lines they wrapped from, finds the match
+there, and measures the column back out of the row it started in, because a
+wide character is one character in two columns. A match is a row, a column and
+a length, so no renderer object escapes. The page API's `search` calls it.
 
 ### Custom fonts
 
@@ -1021,7 +1042,10 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 ### Frontend (vendored, MIT)
 - `webterm.js`, the standalone build of the webterm package, which inlines
   xterm.js and the fit / webgl / canvas / web-links / image /
-  unicode-graphemes addons
+  unicode-graphemes addons, plus webterm's transports, buffer search and
+  touch layer
+- `webterm-vtgl.js`, webterm's vtgl renderer with vtgl, its HarfBuzz wasm and
+  its Arabic font, loaded only when the renderer setting is vtgl
 - webterm also owns what used to be `xterm-kitty-overlay.js` and
   `sip-unicode.js`: the kitty graphics overlay, the layered clipboard, the
   unicode width overrides, input chunking, motion dedup and Keyboard Lock
@@ -1029,10 +1053,13 @@ Sessions implement `WindowResizer` to opt into pixel-aware resize. The resize th
 #### The webterm split
 
 Everything reusable moved out to the webterm package and comes back as one
-vendored bundle. What stayed in `terminal.js` is what is sip's alone: the
-message types 0x30-0x37, the 4-byte WebTransport length prefix, the
-`/cert-hash` exchange and the port+1 convention, the settings panel, the status
-indicator and the reconnect policy.
+vendored bundle: the terminal, the WebTransport and WebSocket transports with
+the 4-byte length prefix, the fallback and the reconnect backoff, the buffer
+search and the touch layer. What stayed in `terminal.js` is what is sip's
+alone: the message types 0x30-0x37, the `/cert-hash` exchange and the port+1
+convention, the settings panel, the status indicator, the reconnect policy (how
+many tries, what the status line says, and that `MsgClose` ends the session for
+good) and the key bar's default keys.
 
 `SipConnection` implements webterm's three-method `Transport` (`start`, `send`,
 `close`), so the package never learns a message type byte. `send` carries
