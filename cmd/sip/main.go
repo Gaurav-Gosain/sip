@@ -40,6 +40,7 @@ var (
 	originPatterns     []string
 	allowHosts         []string
 	allowFraming       bool
+	frameAncestors     []string
 	idleTimeout        time.Duration
 	maxConns           int
 	enableKitty        bool
@@ -110,7 +111,9 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringSliceVar(&allowHosts, "allow-host", nil,
 		"Extra host name a loopback server answers to, such as a proxy's public name (repeatable, \"*\" turns the check off)")
 	rootCmd.Flags().BoolVar(&allowFraming, "allow-framing", false,
-		"Let pages of other origins show the terminal in a frame")
+		"Let pages of every origin show the terminal in a frame")
+	rootCmd.Flags().StringSliceVar(&frameAncestors, "frame-ancestor", nil,
+		"Origin that may show the terminal in a frame, such as https://app.example.com (repeatable)")
 
 	// Auth
 	rootCmd.Flags().StringVar(&basicUser, "basic-user", "", "HTTP Basic Auth username")
@@ -229,6 +232,7 @@ func runServer(cmdArgs []string) error {
 		OriginPatterns:        originPatterns,
 		AllowedHosts:          allowHosts,
 		AllowFraming:          allowFraming,
+		FrameAncestors:        frameAncestors,
 		MaxConnections:        maxConns,
 		IdleTimeout:           idleTimeout,
 		FontPath:              fontPath,

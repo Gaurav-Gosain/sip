@@ -362,6 +362,11 @@ func (s *httpServer) validateConfig() error {
 	if err := s.config.PageAPI.Validate(); err != nil {
 		return err
 	}
+	for _, a := range s.config.FrameAncestors {
+		if a = strings.TrimSpace(a); a == "" || strings.ContainsAny(a, " \t;,\r\n") {
+			return fmt.Errorf("FrameAncestors entry %q is not one origin. Give one origin per entry, such as https://app.example.com", a)
+		}
+	}
 
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
@@ -445,15 +450,31 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	rendered := s.renderIndex(data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if !s.config.AllowFraming {
-		// A page of another origin must not frame the terminal: keys typed
-		// into the frame reach the shell, and the frame's own origin passes
-		// the WebSocket origin check. X-Frame-Options covers browsers that
-		// predate frame-ancestors.
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'self'")
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-	}
+	s.setFrameHeaders(w.Header())
 	_, _ = w.Write(rendered)
+}
+
+// setFrameHeaders says which pages may frame the terminal. A page of
+// another origin must not: keys typed into the frame reach the shell, and the
+// frame's own origin passes the WebSocket origin check. X-Frame-Options
+// covers browsers that predate frame-ancestors. It can only say SAMEORIGIN,
+// so it is left off when FrameAncestors names other origins.
+func (s *httpServer) setFrameHeaders(h http.Header) {
+	if s.config.AllowFraming {
+		return
+	}
+	var extra []string
+	for _, a := range s.config.FrameAncestors {
+		// A source expression cannot hold a space, a semicolon or a comma.
+		// Dropping a bad entry keeps it from adding a directive.
+		if a = strings.TrimSpace(a); a != "" && !strings.ContainsAny(a, " \t;,\r\n") {
+			extra = append(extra, a)
+		}
+	}
+	h.Set("Content-Security-Policy", strings.Join(append([]string{"frame-ancestors 'self'"}, extra...), " "))
+	if len(extra) == 0 {
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+	}
 }
 
 // renderIndex injects per-deployment client config into the index HTML.

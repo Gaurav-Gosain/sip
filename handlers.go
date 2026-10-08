@@ -82,12 +82,35 @@ type ResizeMessage struct {
 
 // OptionsMessage is sent to configure the terminal.
 //
-// Appearance is a pointer and omitted when nothing is configured, so the
-// payload a deployment that predates it receives is still the two-field
-// {"readOnly":false} it has always received.
+// Appearance is a pointer and omitted when nothing is configured, so a
+// deployment that configures none gets no appearance key at all.
 type OptionsMessage struct {
 	ReadOnly   bool              `json:"readOnly"`
 	Appearance *clientAppearance `json:"appearance,omitempty"`
+	// MaxCols, MaxRows and MaxCells are the size caps. The client clamps
+	// its grid the same way before it asks, so it never draws rows the
+	// PTY does not have. The MsgResize the server sends back is still the
+	// authority.
+	MaxCols  int `json:"maxCols"`
+	MaxRows  int `json:"maxRows"`
+	MaxCells int `json:"maxCells"`
+}
+
+// SizeMessage is a MsgResize from the server to the client. The server
+// sends it when it clamped the size the client asked for. It carries the
+// size the PTY got, and the size that was asked for, so a client that has
+// asked again since can tell the answer is stale.
+type SizeMessage struct {
+	Cols      int `json:"cols"`
+	Rows      int `json:"rows"`
+	AskedCols int `json:"askedCols"`
+	AskedRows int `json:"askedRows"`
+}
+
+// sizeMessage builds the MsgResize the server sends after a clamp.
+func sizeMessage(size WindowSize, askedCols, askedRows int) []byte {
+	data, _ := json.Marshal(SizeMessage{Cols: size.Width, Rows: size.Height, AskedCols: askedCols, AskedRows: askedRows})
+	return append([]byte{MsgResize}, data...)
 }
 
 // optionsMessage builds the handshake options blob.
@@ -96,9 +119,13 @@ type OptionsMessage struct {
 // An option that reaches WebSocket and not WebTransport is a bug this project
 // keeps finding, and two literals is how it keeps finding it.
 func (s *httpServer) optionsMessage() []byte {
+	dims := windowDimsOrDefault(s.config.MaxWindowDims)
 	data, _ := json.Marshal(OptionsMessage{
 		ReadOnly:   s.config.ReadOnly,
 		Appearance: s.config.Appearance.clientOptions(),
+		MaxCols:    dims.Width,
+		MaxRows:    dims.Height,
+		MaxCells:   windowCellsOrDefault(s.config.MaxWindowCells),
 	})
 	return append([]byte{MsgOptions}, data...)
 }
@@ -176,9 +203,11 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			logger.Debug("got initial size from browser", "cols", cols, "rows", rows, "px", []int{pxW, pxH})
 		}
 	}
+	var initialEcho []byte
 	if size, clamped := clampWindow(s.config, cols, rows, pxW, pxH); clamped {
 		logger.Warn("initial resize over the size cap; clamped",
 			"got", []int{cols, rows}, "to", []int{size.Width, size.Height})
+		initialEcho = sizeMessage(size, cols, rows)
 		cols, rows, pxW, pxH = size.Width, size.Height, size.WidthPx, size.HeightPx
 	}
 
@@ -208,9 +237,20 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	)
 
 	_ = conn.Write(ctx, websocket.MessageBinary, s.optionsMessage())
+	if initialEcho != nil {
+		_ = conn.Write(ctx, websocket.MessageBinary, initialEcho)
+	}
 
-	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
+	applySize, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()
+	// A websocket.Conn takes concurrent writes, so the input goroutine can
+	// send the clamp notice while the output goroutine streams.
+	apply := func(size WindowSize, echo []byte) {
+		applySize(size)
+		if echo != nil {
+			_ = conn.Write(ctx, websocket.MessageBinary, echo)
+		}
+	}
 
 	// Watchdog: when the context is cancelled — client disconnect, child
 	// exit (cmd reaper), or handler return — close the session so its PTY
@@ -306,9 +346,11 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
+	var initialEcho []byte
 	if size, clamped := clampWindow(s.config, cols, rows, pxW, pxH); clamped {
 		logger.Warn("initial resize over the size cap; clamped (WT)",
 			"got", []int{cols, rows}, "to", []int{size.Width, size.Height})
+		initialEcho = sizeMessage(size, cols, rows)
 		cols, rows, pxW, pxH = size.Width, size.Height, size.WidthPx, size.HeightPx
 	}
 
@@ -337,9 +379,31 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	)
 
 	_ = writeFramed(stream, s.optionsMessage())
+	if initialEcho != nil {
+		_ = writeFramed(stream, initialEcho)
+	}
 
-	apply, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
+	applySize, stopThrottle := newResizeApplier(rawSess, resizeThrottleOrDefault(s.config.ResizeThrottle))
 	defer stopThrottle()
+	// A stream is not safe for concurrent writes, and two writers would
+	// interleave frames. wmu orders the clamp notice from the input
+	// goroutine with the output goroutine's frames and its final Close.
+	var wmu sync.Mutex
+	streamDone := false
+	apply := func(size WindowSize, echo []byte) {
+		applySize(size)
+		if echo == nil {
+			return
+		}
+		wmu.Lock()
+		defer wmu.Unlock()
+		if !streamDone {
+			if wt := writeTimeoutOrDefault(s.config.WriteTimeout); wt > 0 {
+				_ = stream.SetWriteDeadline(time.Now().Add(wt))
+			}
+			_ = writeFramed(stream, echo)
+		}
+	}
 
 	// Watchdog: see handleWebSocket. Closing the session on ctx.Done
 	// unblocks the output goroutine's PTY Read so teardown can't deadlock.
@@ -362,7 +426,7 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamOutputToWebTransport(ctx, stream, wrapped, info)
+		s.streamOutputToWebTransport(ctx, stream, wrapped, info, &wmu, &streamDone)
 	}()
 
 	go func() {
@@ -442,7 +506,7 @@ func (s *httpServer) streamOutputToWebSocket(ctx context.Context, conn *websocke
 	s.streamOutput(ctx, session, info, "WebSocket", send)
 }
 
-func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo) {
+func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo, wmu *sync.Mutex, done *bool) {
 	writeTimeout := writeTimeoutOrDefault(s.config.WriteTimeout)
 	// A stream write does not watch ctx. The write deadline bounds a
 	// single write so a stalled client can't pin this goroutine.
@@ -451,7 +515,9 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 		if writeTimeout > 0 {
 			_ = stream.SetWriteDeadline(time.Now().Add(writeTimeout))
 		}
+		wmu.Lock()
 		err := writeFramed(stream, msg)
+		wmu.Unlock()
 		if err != nil {
 			failed = true
 		}
@@ -459,11 +525,15 @@ func (s *httpServer) streamOutputToWebTransport(ctx context.Context, stream *web
 	}
 	s.streamOutput(ctx, session, info, "WebTransport", send)
 
-	// This goroutine is the only writer, so it also ends the send side.
-	// quic-go does not allow Close during a Write. After a failed write
+	// This goroutine ends the send side. The input goroutine also writes
+	// (the clamp notice), so wmu keeps it out, and done stops it writing
+	// after the end. quic-go does not allow Close during a Write. After a failed write
 	// the last frame may be partial: reset the stream, so the client
 	// never reads a FIN after it. Otherwise send the FIN, so the client
 	// reads everything and then EOF.
+	wmu.Lock()
+	defer wmu.Unlock()
+	*done = true
 	if failed {
 		stream.CancelWrite(0)
 	} else {
@@ -599,7 +669,7 @@ func drainOutput(ctx context.Context, session internalSession, buf []byte, forwa
 	return true
 }
 
-func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo, apply func(WindowSize)) {
+func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.Conn, session internalSession, info sessionInfo, apply func(WindowSize, []byte)) {
 	var totalBytes int64
 	var msgCount int64
 
@@ -631,7 +701,7 @@ func (s *httpServer) handleWebSocketInput(ctx context.Context, conn *websocket.C
 	}
 }
 
-func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo, apply func(WindowSize)) {
+func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtransport.Stream, session internalSession, info sessionInfo, apply func(WindowSize, []byte)) {
 	lenBuf := make([]byte, 4)
 	var totalBytes int64
 	var msgCount int64
@@ -698,7 +768,7 @@ func (s *httpServer) handleWebTransportInput(ctx context.Context, stream *webtra
 // processInput dispatches one inbound message. Returns false if the
 // caller should drop the connection. An oversized paste is dropped as a
 // single message rather than tearing down the session.
-func (s *httpServer) processInput(data []byte, session internalSession, info sessionInfo, apply func(WindowSize)) bool {
+func (s *httpServer) processInput(data []byte, session internalSession, info sessionInfo, apply func(WindowSize, []byte)) bool {
 	if len(data) == 0 {
 		return true
 	}
@@ -736,12 +806,14 @@ func (s *httpServer) processInput(data []byte, session internalSession, info ses
 			return true
 		}
 		size, clamped := clampWindow(s.config, resize.Cols, resize.Rows, resize.WidthPx, resize.HeightPx)
+		var echo []byte
 		if clamped {
 			logger.Debug("resize over the size cap; clamped",
 				"session", info.id, "got", []int{resize.Cols, resize.Rows},
 				"to", []int{size.Width, size.Height})
+			echo = sizeMessage(size, resize.Cols, resize.Rows)
 		}
-		apply(size)
+		apply(size, echo)
 		logger.Debug("terminal resize queued",
 			"session", info.id, "to", []int{resize.Cols, resize.Rows},
 			"px", []int{resize.WidthPx, resize.HeightPx},

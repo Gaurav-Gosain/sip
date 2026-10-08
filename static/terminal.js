@@ -1514,6 +1514,56 @@
 
             this.statusEl = null;
             this.statusTextEl = null;
+
+            // The server's size caps, from MsgOptions. Null until the first
+            // options arrive, and kept across a reconnect.
+            this.sizeCaps = null;
+            // The server's last clamp notice: the size it was asked for and
+            // the size it gave the PTY. While the grid would ask for the
+            // same size again, the grid takes the server's size instead.
+            this.serverClamp = null;
+        }
+
+        /**
+         * Fits a proposed grid under the server's caps, the same way the
+         * server clamps (clampWindow in config_context.go): each dimension
+         * first, then rows until columns times rows is under the cell cap.
+         * A grid larger than the PTY would put the program's bottom row in
+         * the middle of the screen, with stale lines under it. The area the
+         * smaller grid leaves is blank.
+         */
+        clampGrid(cols, rows) {
+            const caps = this.sizeCaps;
+            if (caps) {
+                if (caps.maxCols > 0) cols = Math.min(cols, caps.maxCols);
+                if (caps.maxRows > 0) rows = Math.min(rows, caps.maxRows);
+                if (caps.maxCells > 0 && cols * rows > caps.maxCells) {
+                    cols = Math.min(cols, caps.maxCells);
+                    rows = Math.max(1, Math.floor(caps.maxCells / cols));
+                }
+            }
+            const sc = this.serverClamp;
+            if (sc && sc.askedCols === cols && sc.askedRows === rows) {
+                return { cols: sc.cols, rows: sc.rows };
+            }
+            return { cols, rows };
+        }
+
+        /**
+         * Takes over webterm's fit so every fit, including the one its
+         * ResizeObserver runs, goes through clampGrid.
+         */
+        installClampedFit() {
+            const wt = this.webterm;
+            if (!wt || typeof wt.proposeGeometry !== 'function') return;
+            const fit = wt.fit.bind(wt);
+            wt.fit = () => {
+                const g = wt.proposeGeometry();
+                const term = this.term;
+                if (!g || !term) return fit();
+                const c = this.clampGrid(g.cols, g.rows);
+                if (c.cols !== term.cols || c.rows !== term.rows) term.resize(c.cols, c.rows);
+            };
         }
 
         // --- Handles the browser tests and the console reach for ------------
@@ -1711,6 +1761,7 @@
 
             this.webterm = new WebTerm(this.webtermOptions());
             await this.webterm.open(host);
+            this.installClampedFit();
             // A page script runs before the terminal is constructed, so a
             // theme or a font size it set is waiting for this moment.
             applyPagePatch();
@@ -1949,6 +2000,16 @@
                         const options = JSON.parse(this.decoder.decode(data.subarray(1)));
                         this.readOnly = options.readOnly || false;
                         this.applyAppearance(options.appearance);
+                        if (options.maxCols || options.maxRows || options.maxCells) {
+                            this.sizeCaps = {
+                                maxCols: options.maxCols || 0,
+                                maxRows: options.maxRows || 0,
+                                maxCells: options.maxCells || 0,
+                            };
+                            // Shrinks the grid now if it is over the caps.
+                            // The resize event then tells the server.
+                            this.webterm.fit();
+                        }
                         // Options arrive once per session, so this is where a
                         // reconnect starts over. A browser that comes back to
                         // a new PTY must not keep the shape the old one set:
@@ -1962,6 +2023,21 @@
                             input: { chunkBytes: INPUT_CHUNK_SIZE, readOnly: this.readOnly },
                         });
                         if (this.readOnly) this.updateStatus('connected', 'Connected (Read-Only)');
+                    } catch (e) {}
+                    break;
+
+                case MSG_RESIZE:
+                    // The server clamped a size this client asked for. Its
+                    // answer is the size of the PTY, so the grid takes it,
+                    // unless the client has asked for another size since.
+                    try {
+                        const m = JSON.parse(this.decoder.decode(data.subarray(1)));
+                        const term = this.term;
+                        if (term && m.cols > 0 && m.rows > 0 &&
+                            m.askedCols === term.cols && m.askedRows === term.rows) {
+                            this.serverClamp = m;
+                            term.resize(m.cols, m.rows);
+                        }
                     } catch (e) {}
                     break;
 

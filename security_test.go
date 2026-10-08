@@ -164,6 +164,21 @@ func TestAllowedHostsAdmitsAProxyName(t *testing.T) {
 // passes the WebSocket origin check. The headers stop the browser from
 // drawing the frame.
 func TestIndexRefusesFraming(t *testing.T) {
+	t.Run("FrameAncestors", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.FrameAncestors = []string{"https://app.example.com", "https://b.example; script-src *"}
+		h := http.Header{}
+		newHTTPServer(cfg, nil).setFrameHeaders(h)
+		if got := h.Get("Content-Security-Policy"); got != "frame-ancestors 'self' https://app.example.com" {
+			t.Errorf("Content-Security-Policy = %q", got)
+		}
+		if got := h.Get("X-Frame-Options"); got != "" {
+			t.Errorf("X-Frame-Options = %q, want none: it would refuse the listed origin", got)
+		}
+		if err := newHTTPServer(cfg, nil).validateConfig(); err == nil {
+			t.Error("a FrameAncestors entry that adds a directive was accepted")
+		}
+	})
 	for _, allow := range []bool{false, true} {
 		t.Run(fmt.Sprintf("AllowFraming=%v", allow), func(t *testing.T) {
 			cfg := DefaultConfig()

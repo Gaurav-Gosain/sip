@@ -342,13 +342,20 @@ type Config struct {
 	// entry turns the check off. A non-loopback bind is not checked.
 	AllowedHosts []string
 
-	// AllowFraming lets other origins put the page in a frame. By default
+	// AllowFraming lets every origin put the page in a frame. By default
 	// the page carries Content-Security-Policy: frame-ancestors 'self'
 	// and X-Frame-Options: SAMEORIGIN, so only a page of the same origin
 	// can frame it. A framed terminal takes the keys the user types into
-	// it, so set this only when another site embeds the terminal on
-	// purpose.
+	// it, so set this only when any site may embed the terminal. To allow
+	// some sites, use FrameAncestors.
 	AllowFraming bool
+
+	// FrameAncestors adds origins that may put the page in a frame, such
+	// as "https://app.example.com". Each entry is a CSP source expression.
+	// The page then carries frame-ancestors 'self' and the entries, and no
+	// X-Frame-Options, because that header cannot name an origin.
+	// AllowFraming overrides it.
+	FrameAncestors []string
 
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
 	// + connection-limit middleware are appended after the user chain

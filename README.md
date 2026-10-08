@@ -149,7 +149,8 @@ own flags are never read as sip's.
 | `--allow-insecure-no-tls` | permit a non-loopback bind, or basic auth, without TLS |
 | `--origin` | browser origin allowlist, a `path.Match` glob, repeatable |
 | `--allow-host` | extra host name a loopback server answers to, repeatable |
-| `--allow-framing` | let pages of other origins frame the terminal |
+| `--allow-framing` | let pages of every origin frame the terminal |
+| `--frame-ancestor` | an origin that may frame the terminal, repeatable |
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth. Only the owner of the file may have access to it (mode 600). `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |
 | `--max-conns`, `--idle-timeout` | concurrent session limit and idle cutoff |
 | `--renderer` | `webgl`, `canvas` or `dom`; empty picks the best available |
@@ -195,7 +196,7 @@ type Session interface {
 `Config` covers the rest: `Host`, `Port`, `ReadOnly`, `MaxConnections`,
 `IdleTimeout`, `AllowOrigins` and `OriginPatterns`, `TLSCert` and `TLSKey`,
 `AutoTLS` and its `CertDir`, `CertHosts` and `CertValidity`, `BasicUsername` and
-`BasicPassword`, `AllowedHosts`, `AllowFraming`, `MaxPasteBytes`,
+`BasicPassword`, `AllowedHosts`, `AllowFraming` and `FrameAncestors`, `MaxPasteBytes`,
 `ResizeThrottle`, `MaxWindowDims` and `MaxWindowCells`, `FontPath`
 and `FontFamily`, `Appearance` for the palette and the cursors, the touch key
 bar's `MobileKeys`, `MobileRows` and `MobilePrefix`, and the three middleware

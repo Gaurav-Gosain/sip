@@ -7,10 +7,11 @@ import (
 )
 
 // defaultOptionsPayload is the handshake blob a deployment that configures no
-// appearance has always received. Pinned as a literal: the whole promise of
-// the zero value is that such a deployment sees no change at all, and a
-// pointer field that marshalled as "appearance":null would break it silently.
-const defaultOptionsPayload = `{"readOnly":false}`
+// appearance receives. Pinned as a literal: the whole promise of the zero
+// value is that such a deployment gets no appearance key, and a pointer field
+// that marshalled as "appearance":null would break it silently. The size caps
+// are always sent, so the client can fit its grid to the PTY.
+const defaultOptionsPayload = `{"readOnly":false,"maxCols":2048,"maxRows":1024,"maxCells":250000}`
 
 // TestAppearanceZeroShipsNothing checks the zero value reaches neither route
 // into the page. A program that sets nothing must render exactly as it did

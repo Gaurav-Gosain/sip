@@ -245,7 +245,9 @@ So:
   and a script that wants the terminal's buffer can take it from there.
 - **An operator who needs a real boundary must use an iframe.** Serve sip on
   its own origin, put it in an iframe, and talk to it with `postMessage`. A
-  separate context is the only thing that is actually a wall.
+  separate context is the only thing that is actually a wall. sip refuses to
+  be framed by another origin by default. Add the origin of the embedding
+  page to `Config.FrameAncestors` (`sip --frame-ancestor`).
 
 ### 3. Your own config
 

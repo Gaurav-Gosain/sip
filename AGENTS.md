@@ -565,16 +565,22 @@ Binary frames, type-prefixed:
 MsgInput    = '0' // Terminal input  (client → server)
 MsgOutput   = '1' // Terminal output (server → client)
 MsgResize   = '2' // {cols, rows, widthPx?, heightPx?} (client → server)
+                  // {cols, rows, askedCols, askedRows} (server → client, after a clamp)
 MsgPing     = '3' // Ping
 MsgPong     = '4' // Pong
 MsgTitle    = '5' // Window title (server → client)
-MsgOptions  = '6' // {readOnly, appearance?} (server → client, sent on connect)
+MsgOptions  = '6' // {readOnly, appearance?, maxCols, maxRows, maxCells} (server → client, sent on connect)
 MsgClose    = '7' // Session ended (server → client)
 MsgKittyKbd = '8' // Kitty keyboard protocol flags (bidirectional)
 ```
 
 WebSocket framing: raw `[type][payload]`.
 WebTransport framing: `[uint32 BE length][type][payload]`.
+
+A resize over `MaxWindowDims` or `MaxWindowCells` is clamped. The client clamps
+its grid with the caps from `MsgOptions` before it asks. When the server still
+clamps, it sends `MsgResize` back with the size the PTY got, and the client
+takes that size while it would ask for the same size again.
 
 `MaxMessageSize` = 1 MiB. `MaxPasteBytes` defaults to 1 MiB; oversized inbound messages drop the connection.
 

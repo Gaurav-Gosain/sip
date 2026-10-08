@@ -71,7 +71,10 @@ export default defineConfig({
       // is written to the PTY through sendInput, so it is framed by whichever
       // transport is live, and this is the only engine that proves the
       // WebTransport half. Its computed-style checks skip themselves.
-      testMatch: /(keyboard|appearance|pointer)\.spec\.mjs/,
+      //
+      // The size cap suite runs here because the server's clamp notice has
+      // its own writer on the WebTransport path.
+      testMatch: /(keyboard|appearance|pointer|sizecap)\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',

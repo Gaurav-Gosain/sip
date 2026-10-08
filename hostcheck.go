@@ -24,7 +24,9 @@ func hostCheckMiddleware(allowed []string) ConnectMiddleware {
 	return func(next ConnectHandler) ConnectHandler {
 		return func(r *http.Request) error {
 			if !hostAllowed(r.Host, allowed) {
-				logger.Warn("refused a handshake for a host name that is not allowed",
+				// The browser cannot show the 403 body of a failed
+				// WebSocket, so the log line carries the remedy too.
+				logger.Warn("refused a session for a host name that is not allowed. Add the name with --allow-host (Config.AllowedHosts)",
 					"host", r.Host, "remote", r.RemoteAddr)
 				return &ConnectError{
 					Status: http.StatusForbidden,
