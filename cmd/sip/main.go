@@ -38,6 +38,8 @@ var (
 	basicPassFile      string
 	allowInsecureNoTLS bool
 	originPatterns     []string
+	allowHosts         []string
+	allowFraming       bool
 	idleTimeout        time.Duration
 	maxConns           int
 	enableKitty        bool
@@ -105,6 +107,10 @@ The command to run must be specified after "--".`,
 		"Days an --auto-tls certificate is valid for (0 = 365; under 14 also keeps Chrome's WebTransport path)")
 	rootCmd.Flags().StringSliceVar(&originPatterns, "origin", nil,
 		"Browser origin allowlist (path.Match glob, repeatable)")
+	rootCmd.Flags().StringSliceVar(&allowHosts, "allow-host", nil,
+		"Extra host name a loopback server answers to, such as a proxy's public name (repeatable, \"*\" turns the check off)")
+	rootCmd.Flags().BoolVar(&allowFraming, "allow-framing", false,
+		"Let pages of other origins show the terminal in a frame")
 
 	// Auth
 	rootCmd.Flags().StringVar(&basicUser, "basic-user", "", "HTTP Basic Auth username")
@@ -221,6 +227,8 @@ func runServer(cmdArgs []string) error {
 		BasicPassword:         authSecret,
 		AllowInsecureNoTLS:    allowInsecureNoTLS,
 		OriginPatterns:        originPatterns,
+		AllowedHosts:          allowHosts,
+		AllowFraming:          allowFraming,
 		MaxConnections:        maxConns,
 		IdleTimeout:           idleTimeout,
 		FontPath:              fontPath,

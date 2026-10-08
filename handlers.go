@@ -176,12 +176,10 @@ func (s *httpServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			logger.Debug("got initial size from browser", "cols", cols, "rows", rows, "px", []int{pxW, pxH})
 		}
 	}
-	maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
-	if cols > maxDims.Width || rows > maxDims.Height {
-		logger.Warn("initial resize exceeds MaxWindowDims",
-			"cols", cols, "rows", rows, "max", []int{maxDims.Width, maxDims.Height})
-		_ = conn.Close(websocket.StatusPolicyViolation, "window too large")
-		return
+	if size, clamped := clampWindow(s.config, cols, rows, pxW, pxH); clamped {
+		logger.Warn("initial resize over the size cap; clamped",
+			"got", []int{cols, rows}, "to", []int{size.Width, size.Height})
+		cols, rows, pxW, pxH = size.Width, size.Height, size.WidthPx, size.HeightPx
 	}
 
 	startTime := time.Now()
@@ -308,11 +306,10 @@ func (s *httpServer) handleWebTransport(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
-	maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
-	if cols > maxDims.Width || rows > maxDims.Height {
-		logger.Warn("initial resize exceeds MaxWindowDims (WT)",
-			"cols", cols, "rows", rows, "max", []int{maxDims.Width, maxDims.Height})
-		return
+	if size, clamped := clampWindow(s.config, cols, rows, pxW, pxH); clamped {
+		logger.Warn("initial resize over the size cap; clamped (WT)",
+			"got", []int{cols, rows}, "to", []int{size.Width, size.Height})
+		cols, rows, pxW, pxH = size.Width, size.Height, size.WidthPx, size.HeightPx
 	}
 
 	startTime := time.Now()
@@ -738,17 +735,13 @@ func (s *httpServer) processInput(data []byte, session internalSession, info ses
 		if resize.Cols <= 0 || resize.Rows <= 0 {
 			return true
 		}
-		maxDims := windowDimsOrDefault(s.config.MaxWindowDims)
-		if resize.Cols > maxDims.Width || resize.Rows > maxDims.Height {
-			logger.Debug("resize exceeds MaxWindowDims; ignoring",
+		size, clamped := clampWindow(s.config, resize.Cols, resize.Rows, resize.WidthPx, resize.HeightPx)
+		if clamped {
+			logger.Debug("resize over the size cap; clamped",
 				"session", info.id, "got", []int{resize.Cols, resize.Rows},
-				"max", []int{maxDims.Width, maxDims.Height})
-			return true
+				"to", []int{size.Width, size.Height})
 		}
-		apply(WindowSize{
-			Width: resize.Cols, Height: resize.Rows,
-			WidthPx: resize.WidthPx, HeightPx: resize.HeightPx,
-		})
+		apply(size)
 		logger.Debug("terminal resize queued",
 			"session", info.id, "to", []int{resize.Cols, resize.Rows},
 			"px", []int{resize.WidthPx, resize.HeightPx},

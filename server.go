@@ -142,7 +142,13 @@ func (s *httpServer) start(ctx context.Context) error {
 
 	// Compose the layer-1 ConnectMiddleware chain. Built-ins (basic auth,
 	// connection limit) appended last so they run innermost.
-	s.connectMW = append([]ConnectMiddleware{}, s.config.ConnectMiddleware...)
+	// The Host check runs first, so a rebinding page is refused before any
+	// other middleware sees the request.
+	s.connectMW = nil
+	if s.hostCheckEnabled() {
+		s.connectMW = append(s.connectMW, hostCheckMiddleware(s.allowedHosts()))
+	}
+	s.connectMW = append(s.connectMW, s.config.ConnectMiddleware...)
 	if s.config.BasicUsername != "" || s.config.BasicPassword != "" {
 		s.connectMW = append(s.connectMW, basicAuthMiddleware(s.config.BasicUsername, s.config.BasicPassword))
 	}
@@ -439,6 +445,14 @@ func (s *httpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	rendered := s.renderIndex(data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if !s.config.AllowFraming {
+		// A page of another origin must not frame the terminal: keys typed
+		// into the frame reach the shell, and the frame's own origin passes
+		// the WebSocket origin check. X-Frame-Options covers browsers that
+		// predate frame-ancestors.
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'self'")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	}
 	_, _ = w.Write(rendered)
 }
 

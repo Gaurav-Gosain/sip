@@ -8,8 +8,9 @@ import (
 const (
 	defaultMaxPasteBytes        = 1 << 20 // 1 MiB
 	defaultResizeThrottle       = 16 * time.Millisecond
-	defaultMaxWindowCols        = 4096
-	defaultMaxWindowRows        = 4096
+	defaultMaxWindowCols        = 2048
+	defaultMaxWindowRows        = 1024
+	defaultMaxWindowCells       = 250_000
 	defaultInitialResizeTimeout = 10 * time.Second
 	defaultWriteTimeout         = 30 * time.Second
 )
@@ -36,6 +37,39 @@ func windowDimsOrDefault(v WindowSize) WindowSize {
 		v.Height = defaultMaxWindowRows
 	}
 	return v
+}
+
+func windowCellsOrDefault(v int) int {
+	if v <= 0 {
+		return defaultMaxWindowCells
+	}
+	return v
+}
+
+// clampWindow fits a requested size under the configured caps. Each
+// dimension is cut to MaxWindowDims first. When columns times rows is still
+// over MaxWindowCells, the columns stay and the rows shrink, because a
+// terminal that is too narrow breaks more programs than one that is too
+// short. The pixel size shrinks in step, so the cell size stays the same.
+// It reports whether it changed the size.
+func clampWindow(cfg Config, cols, rows, widthPx, heightPx int) (WindowSize, bool) {
+	dims := windowDimsOrDefault(cfg.MaxWindowDims)
+	maxCells := windowCellsOrDefault(cfg.MaxWindowCells)
+	c, r := min(cols, dims.Width), min(rows, dims.Height)
+	if c > 0 && r > 0 && c*r > maxCells {
+		c = min(c, maxCells)
+		r = max(1, maxCells/c)
+	}
+	if c == cols && r == rows {
+		return WindowSize{Width: cols, Height: rows, WidthPx: widthPx, HeightPx: heightPx}, false
+	}
+	if cols > 0 {
+		widthPx = widthPx * c / cols
+	}
+	if rows > 0 {
+		heightPx = heightPx * r / rows
+	}
+	return WindowSize{Width: c, Height: r, WidthPx: widthPx, HeightPx: heightPx}, true
 }
 
 func initialResizeTimeoutOrDefault(v time.Duration) time.Duration {

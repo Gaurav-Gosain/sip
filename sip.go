@@ -183,9 +183,20 @@ type Config struct {
 	// most recent value. 0 = default 16ms.
 	ResizeThrottle time.Duration
 
-	// MaxWindowDims rejects resize messages exceeding these
-	// dimensions. 0 in either dim = default 4096.
+	// MaxWindowDims caps the terminal size a client can ask for. A resize
+	// over the cap is clamped to it. 0 in either dimension uses the
+	// default, 2048 columns by 1024 rows.
 	MaxWindowDims WindowSize
+
+	// MaxWindowCells caps columns times rows. A resize over the cap keeps
+	// its columns and loses rows until it fits. 0 uses the default,
+	// 250000 cells.
+	//
+	// The cap exists because memory grows with the cell count. A Bubble
+	// Tea program costs about 230 bytes per cell, so the default bounds a
+	// session near 60 MB. Without it one 2048x2048 resize took a server
+	// from 17 MB to 970 MB.
+	MaxWindowCells int
 
 	// InitialResizeTimeout is the maximum time to wait for the
 	// client's initial Resize message after WS upgrade or WT CONNECT.
@@ -318,6 +329,26 @@ type Config struct {
 	// value is the working default; see MobileMouse for what it means and
 	// for the two switches that turn parts of it off.
 	MobileMouse MobileMouse
+
+	// AllowedHosts adds host names that a session handshake may carry in
+	// its Host header.
+	//
+	// On a loopback bind, sip refuses a handshake whose Host is not a
+	// loopback address, localhost, a name under .localhost, the bind host,
+	// a CertHosts entry or an AllowedHosts entry. This stops DNS
+	// rebinding, where a web page points its own name at 127.0.0.1 and
+	// opens a session on this machine. Add the public name here when a
+	// reverse proxy on the same machine forwards the client's Host. A "*"
+	// entry turns the check off. A non-loopback bind is not checked.
+	AllowedHosts []string
+
+	// AllowFraming lets other origins put the page in a frame. By default
+	// the page carries Content-Security-Policy: frame-ancestors 'self'
+	// and X-Frame-Options: SAMEORIGIN, so only a page of the same origin
+	// can frame it. A framed terminal takes the keys the user types into
+	// it, so set this only when another site embeds the terminal on
+	// purpose.
+	AllowFraming bool
 
 	// ConnectMiddleware extends the layer-1 chain. Built-in basic auth
 	// + connection-limit middleware are appended after the user chain
