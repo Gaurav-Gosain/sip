@@ -10,7 +10,8 @@
 // The expectations below are derived from the font's own tables rather than
 // from what the client currently does, so a renderer that drifts fails here
 // instead of quietly redefining correct. Read from
-// static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf:
+// fonts/JetBrainsMonoNerdFontMono-Regular.ttf (served as the WOFF2 of the
+// same font, static/fonts/JetBrainsMonoNerdFontMono-Regular.woff2):
 //
 //   unitsPerEm       1000
 //   advanceWidth      600  ->  0.60 em

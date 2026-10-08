@@ -50,7 +50,7 @@ type Route struct {
 }
 
 // Assets returns the client files sip ships, rooted so the names match the
-// URLs under /static/: "terminal.css", "fonts/JetBrainsMonoNerdFontMono-Regular.ttf".
+// URLs under /static/: "terminal.css", "fonts/JetBrainsMonoNerdFontMono-Regular.woff2".
 //
 // Read from it to derive an override from the file sip actually serves,
 // instead of guessing at its content.

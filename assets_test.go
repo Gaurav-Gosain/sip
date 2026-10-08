@@ -31,11 +31,9 @@ import (
 // moved into webterm and static/mobile.js went away.
 var defaultAssetDigests = map[string]string{
 	"/":                    "b1316b4e9b3116d3eeffd2a5d43cc101641be6ad14615657319beb9b4931fec7",
-	"/static/index.html":   "4db290dd08c712ddc743a0ca3beaff7e2c20ede478884aea60cd138910f0614e",
-	"/static/terminal.css": "8c97308f4e0a41f050b2dd93453a92dca47b2293df1e49c57364e64f3dee9726",
+	"/static/terminal.css": "5349ba12daf15e51021a73a9072af11ca4dfd8693987059b56e469a302082699",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",
-	"/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf": "9e4dad8c34fb31045d53790a936a0afc3aae3fb830e874faadf3670662b04853",
 }
 
 func newTestServer(t *testing.T, cfg Config) *httpServer {
@@ -249,8 +247,8 @@ func TestAssetNameRejectsTraversal(t *testing.T) {
 		}
 	}
 	good := map[string]string{
-		"/static/terminal.css":                                "terminal.css",
-		"/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf": "fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+		"/static/terminal.css": "terminal.css",
+		"/static/fonts/JetBrainsMonoNerdFontMono-Regular.woff2": "fonts/JetBrainsMonoNerdFontMono-Regular.woff2",
 	}
 	for p, want := range good {
 		name, ok := assetName(p)
@@ -406,8 +404,12 @@ func TestAssetDigestAndNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssetDigest: %v", err)
 	}
-	if got != defaultAssetDigests["/static/index.html"] {
-		t.Errorf("ASSERTION: AssetDigest(index.html) is %s, want the digest of the file served at /static/index.html", got)
+	embedded, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := digest(embedded); got != want {
+		t.Errorf("ASSERTION: AssetDigest(index.html) is %s, want %s, the digest of the embedded file", got, want)
 	}
 	if _, err := AssetDigest("not-a-file"); err == nil {
 		t.Error("ASSERTION: AssetDigest accepted a name sip does not ship")

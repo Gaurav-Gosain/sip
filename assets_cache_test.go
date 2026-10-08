@@ -88,7 +88,7 @@ func TestStaticAssetsCostNoCopy(t *testing.T) {
 // with no body.
 func TestStaticAssetRevalidates(t *testing.T) {
 	s := newTestServer(t, DefaultConfig())
-	for _, name := range []string{"webterm.js", "fonts/JetBrainsMonoNerdFontMono-Regular.ttf"} {
+	for _, name := range []string{"webterm.js", "fonts/JetBrainsMonoNerdFontMono-Regular.woff2"} {
 		want, err := staticFiles.ReadFile("static/" + name)
 		if err != nil {
 			t.Fatal(err)

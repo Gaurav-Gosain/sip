@@ -129,9 +129,9 @@ sip/
 │   │                       # when the renderer setting is vtgl
 │   ├── webterm.css         # webterm container + kitty overlay styles
 │   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
-│   └── fonts/              # JetBrains Mono Nerd Font (embedded): WOFF2, which the page
-│                           # asks for first, and the TTF as the fallback.
-│                           # scripts/fonts-woff2.sh writes the WOFF2 files
+│   └── fonts/              # JetBrains Mono Nerd Font (embedded), WOFF2 only.
+│                           # scripts/fonts-woff2.sh writes them from the source
+│                           # TTFs in fonts/ at the repo root, which are not embedded
 ├── examples/simple/        # Counter example (Bubble Tea mode)
 ├── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
 └── examples/hackable/      # ExtraCSS/ExtraJS/StaticFS/Routes/PageAPI in one file;
@@ -1005,10 +1005,12 @@ a length, so no renderer object escapes. The page API's `search` calls it.
 (`compress.go`). The gzip body has its own ETag and the response carries
 `Vary: Accept-Encoding`. Fonts are not compressed again: WOFF2 is compressed
 already. An override from `StaticFS` is served as it is, because it can change
-on disk.
+on disk. `/static/index.html` answers 404: the page is `/`, which adds the
+deployment settings and the frame headers to that template.
 
-`TestColdLoadBudget` adds up a first visit to a default page with gzip and
-fails over 4.7 MB. It was 11.7 MB before WOFF2, gzip and the vtgl split.
+`TestColdLoadBudget` adds up a first visit to a default page with gzip: the
+page, every file it names and the fonts `terminal.css` names. It fails over
+4.7 MB. It was 11.7 MB before WOFF2, gzip and the vtgl split.
 
 ### Custom fonts
 

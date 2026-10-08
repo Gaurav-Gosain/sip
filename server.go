@@ -621,6 +621,8 @@ func setStaticContentType(w http.ResponseWriter, path string) {
 		w.Header().Set("Content-Type", "application/javascript")
 	case strings.HasSuffix(path, ".css"):
 		w.Header().Set("Content-Type", "text/css")
+	case strings.HasSuffix(path, ".html"):
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case strings.HasSuffix(path, ".wasm"):
 		w.Header().Set("Content-Type", "application/wasm")
 	case strings.HasSuffix(path, ".woff2"):
@@ -658,6 +660,13 @@ func setStaticContentType(w http.ResponseWriter, path string) {
 func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 	path, ok := assetName(r.URL.Path)
 	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	// The page is "/". index.html is its template: served as a file, it has
+	// no deployment settings, no Content-Security-Policy and no frame
+	// headers, so a site could frame it.
+	if path == "index.html" {
 		http.NotFound(w, r)
 		return
 	}

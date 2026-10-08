@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 // The client's text files are served gzipped to a browser that accepts it.
 // static/webterm.js alone is 928 KB, and 254 KB gzipped. Fonts are WOFF2,
-// which is compressed already, and a TTF is the fallback for a browser
-// without WOFF2, so neither is compressed again.
+// which is compressed already, so they are not compressed again.
 //
 // Only sip's own embedded files are compressed. An override from StaticFS is
 // read on every request and can change on disk, so it is served as it is.
@@ -26,20 +26,34 @@ func compressible(name string) bool {
 	return false
 }
 
-// acceptsGzip reports whether a request accepts a gzip body.
-//
-// It reads the coding names and ignores quality values, apart from an
-// explicit "gzip;q=0", which refuses gzip.
+// acceptsGzip reports whether a request accepts a gzip body: it names gzip,
+// or "*", with a weight above zero. Coding names and the q parameter are
+// case-insensitive (RFC 9110, section 12.5.3).
 func acceptsGzip(r *http.Request) bool {
+	star := false
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
-		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
-		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
-			continue
+		fields := strings.Split(part, ";")
+		name := strings.TrimSpace(fields[0])
+		weight := 1.0
+		for _, param := range fields[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+				continue
+			}
+			q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil {
+				q = 0
+			}
+			weight = q
 		}
-		q := strings.ReplaceAll(strings.TrimSpace(params), " ", "")
-		return q != "q=0" && q != "q=0.0" && q != "q=0.00" && q != "q=0.000"
+		switch {
+		case strings.EqualFold(name, "gzip"):
+			return weight > 0
+		case name == "*":
+			star = weight > 0
+		}
 	}
-	return false
+	return star
 }
 
 // gzipEntry is one compressed embedded asset.

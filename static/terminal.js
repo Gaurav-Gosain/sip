@@ -1527,12 +1527,11 @@
 
         /** The webterm option groups derived from sip's stored settings. */
         webtermOptions() {
-            // WOFF2 first: it is about 1 MB a face against 2.4 MB of TTF. A
-            // browser takes the first format it supports and downloads only
-            // that one, so the TTF is fetched only where WOFF2 is missing.
+            // WOFF2 only: about 1 MB a face against 2.4 MB of TTF. Every
+            // browser that runs webterm.js (it uses ?. and ??) reads WOFF2,
+            // so there is no TTF fallback to name.
             const font = (face) =>
-                `url(static/fonts/JetBrainsMonoNerdFontMono-${face}.woff2) format('woff2'), `
-                + `url(static/fonts/JetBrainsMonoNerdFontMono-${face}.ttf) format('truetype')`;
+                `url(static/fonts/JetBrainsMonoNerdFontMono-${face}.woff2) format('woff2')`;
             return {
                 fontFamily: this.fontFamily,
                 fontSize: this.settings.fontSize,
