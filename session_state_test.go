@@ -68,8 +68,10 @@ func TestSessionIDsAreUnique(t *testing.T) {
 	}
 }
 
-// TestShutdownClosesEverySession starts two sessions back to back and shuts
-// down. Each one is in the session map under its own id, and each one ends.
+// TestShutdownClosesEverySession starts two sessions and shuts down. Each one
+// must end and leave the session map. This covers closeAllSessions only. Two
+// sessions made one after the other rarely share a clock reading, so this
+// test passes with clock ids too. TestSessionIDsAreUnique covers the ids.
 func TestShutdownClosesEverySession(t *testing.T) {
 	srv := newCmdHTTPServer(DefaultConfig(), &CommandHandler{name: "sleep", args: []string{"30"}})
 	a, err := srv.createCmdSession(context.Background(), 80, 24, 0, 0)
@@ -81,6 +83,7 @@ func TestShutdownClosesEverySession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.id == b.id {
+		// A precondition, not the check: with one id the map holds one session.
 		t.Fatalf("both sessions have the id %s", a.id)
 	}
 

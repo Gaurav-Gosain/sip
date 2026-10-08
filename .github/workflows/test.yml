@@ -52,7 +52,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: clienttests/package-lock.json
-      - name: Build the servers once
+      # go run in the Playwright config builds these again. Building them
+      # here first fills the build cache, so a compile error fails this step
+      # and not a test timeout.
+      - name: Compile the servers and warm the build cache
         run: |
           go build ./cmd/sip ./examples/appearance ./examples/hackable
       - name: Install dependencies
