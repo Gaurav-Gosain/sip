@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/xpty v0.1.3
 	github.com/coder/websocket v1.8.14
+	github.com/muesli/termenv v0.16.0
 	github.com/quic-go/quic-go v0.63.0
 	github.com/quic-go/webtransport-go v0.13.0
 	github.com/spf13/cobra v1.10.1
@@ -42,7 +43,6 @@ require (
 	github.com/muesli/mango-cobra v1.2.0 // indirect
 	github.com/muesli/mango-pflag v0.1.0 // indirect
 	github.com/muesli/roff v0.1.0 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect

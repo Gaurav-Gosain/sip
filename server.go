@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/muesli/termenv"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 )
@@ -76,12 +78,21 @@ func warnStaleEmbed() {
 var logger *log.Logger
 
 func init() {
-	logger = log.NewWithOptions(os.Stderr, log.Options{
+	logger = newLogger(os.Stderr)
+}
+
+// newLogger builds the package logger around w.
+//
+// The log goes to files and journals as often as to a terminal, so it carries
+// no colour. charmbracelet/log v0.4 takes a termenv.Profile here, and the zero
+// value of that type is TrueColor, so passing 0 turned colour on.
+func newLogger(w io.Writer) *log.Logger {
+	l := log.NewWithOptions(w, log.Options{
 		ReportTimestamp: true,
 		Prefix:          "sip",
 	})
-	// Disable ANSI colors so escape sequences don't leak.
-	logger.SetColorProfile(0)
+	l.SetColorProfile(termenv.Ascii)
+	return l
 }
 
 // httpServer is the internal HTTP server implementation.
