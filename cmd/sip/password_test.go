@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,22 +58,78 @@ func freePort(t *testing.T) string {
 	return port
 }
 
+// syncBuffer is the log of a running sip. exec copies the output in its own
+// goroutine, so a test that reads the log while sip runs needs the lock.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// sipProcess is a running sip. exited closes when the process ends. Only the
+// goroutine started by startSip calls Wait, so the test and the cleanup never
+// both do.
+type sipProcess struct {
+	cmd     *exec.Cmd
+	logs    *syncBuffer
+	exited  chan struct{}
+	waitErr error
+}
+
 // startSip runs the binary and stops it by its own PID when the test ends.
-func startSip(t *testing.T, bin string, env []string, args ...string) (*exec.Cmd, *bytes.Buffer) {
+func startSip(t *testing.T, bin string, env []string, args ...string) *sipProcess {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), env...)
-	var logs bytes.Buffer
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
+	p := &sipProcess{cmd: cmd, logs: &syncBuffer{}, exited: make(chan struct{})}
+	cmd.Stdout = p.logs
+	cmd.Stderr = p.logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	go func() {
+		p.waitErr = cmd.Wait()
+		close(p.exited)
+	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-p.exited
 	})
-	return cmd, &logs
+	return p
+}
+
+// dialSip connects to sip's WebSocket with basic auth. It retries until sip
+// listens, and fails the test if sip exits first.
+func dialSip(t *testing.T, ctx context.Context, p *sipProcess, port, user, pass string) *websocket.Conn {
+	t.Helper()
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	for {
+		conn, _, err := websocket.Dial(ctx, "ws://127.0.0.1:"+port+"/ws", &websocket.DialOptions{
+			HTTPHeader: http.Header{"Authorization": {auth}},
+		})
+		if err == nil {
+			t.Cleanup(func() { _ = conn.CloseNow() })
+			return conn
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("sip exited (%v) before it served\nsip log:\n%s", p.waitErr, p.logs)
+		case <-ctx.Done():
+			t.Fatalf("dial: %v\nsip log:\n%s", err, p.logs)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // TestPasswordDoesNotReachTheProgram serves a command that prints
@@ -81,28 +138,13 @@ func TestPasswordDoesNotReachTheProgram(t *testing.T) {
 	bin := buildSip(t)
 	port := freePort(t)
 	secret := randomSecret(t)
-	_, logs := startSip(t, bin, []string{"SIP_PASSWORD=" + secret},
+	p := startSip(t, bin, []string{"SIP_PASSWORD=" + secret},
 		"-p", port, "--basic-user", "admin", "--allow-insecure-no-tls",
 		"--", "sh", "-c", `printf 'LEAK=[%s]\n' "$SIP_PASSWORD"; sleep 5`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:"+secret))
-	var conn *websocket.Conn
-	for {
-		var err error
-		conn, _, err = websocket.Dial(ctx, "ws://127.0.0.1:"+port+"/ws", &websocket.DialOptions{
-			HTTPHeader: http.Header{"Authorization": {auth}},
-		})
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			t.Fatalf("dial: %v\nsip log:\n%s", err, logs)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	defer func() { _ = conn.CloseNow() }()
+	conn := dialSip(t, ctx, p, port, "admin", secret)
 
 	resize, _ := json.Marshal(sip.ResizeMessage{Cols: 80, Rows: 24})
 	if err := conn.Write(ctx, websocket.MessageBinary, append([]byte{sip.MsgResize}, resize...)); err != nil {
@@ -127,32 +169,53 @@ func TestPasswordDoesNotReachTheProgram(t *testing.T) {
 	}
 }
 
-// TestPasswordFileOthersCanReadIsRefused starts sip with a password file in
-// mode 0644. It must exit with the fix in the message, before it serves.
-func TestPasswordFileOthersCanReadIsRefused(t *testing.T) {
+// TestPasswordFileMode starts sip with a password file in several modes. A
+// mode that gives the group or other users any access must stop sip before it
+// serves, with the fix in the message. Mode 600 must serve.
+func TestPasswordFileMode(t *testing.T) {
 	bin := buildSip(t)
-	file := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(file, []byte(randomSecret(t)+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(file, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cmd, logs := startSip(t, bin, nil,
-		"-p", freePort(t), "--basic-user", "admin", "--basic-pass-file", file,
-		"--allow-insecure-no-tls", "--", "true")
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatalf("sip exited 0 with a password file in mode 0644\n%s", logs)
-		}
-		// fang wraps the message, so compare with the whitespace folded.
-		if !strings.Contains(strings.Join(strings.Fields(logs.String()), " "), "Run 'chmod 600") {
-			t.Fatalf("the refusal does not say what to do:\n%s", logs)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("sip served with a password file in mode 0644\n%s", logs)
+	for _, tc := range []struct {
+		mode    os.FileMode
+		refused bool
+	}{
+		{0o644, true},
+		{0o640, true}, // the group can hold other users
+		{0o620, true}, // write access is access too
+		{0o600, false},
+		{0o400, false},
+	} {
+		t.Run(tc.mode.String(), func(t *testing.T) {
+			secret := randomSecret(t)
+			file := filepath.Join(t.TempDir(), "pass")
+			if err := os.WriteFile(file, []byte(secret+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(file, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			port := freePort(t)
+			p := startSip(t, bin, nil,
+				"-p", port, "--basic-user", "admin", "--basic-pass-file", file,
+				"--allow-insecure-no-tls", "--", "sleep", "30")
+
+			if !tc.refused {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				dialSip(t, ctx, p, port, "admin", secret)
+				return
+			}
+			select {
+			case <-p.exited:
+				if p.waitErr == nil {
+					t.Fatalf("sip exited 0 with a password file in mode %v\n%s", tc.mode, p.logs)
+				}
+				// fang wraps the message, so compare with the whitespace folded.
+				if !strings.Contains(strings.Join(strings.Fields(p.logs.String()), " "), "Run 'chmod 600") {
+					t.Fatalf("the refusal does not say what to do:\n%s", p.logs)
+				}
+			case <-time.After(20 * time.Second):
+				t.Fatalf("sip served with a password file in mode %v\n%s", tc.mode, p.logs)
+			}
+		})
 	}
 }

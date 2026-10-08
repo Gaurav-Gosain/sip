@@ -111,7 +111,7 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringVar(&basicPass, "basic-pass", "",
 		"HTTP Basic Auth password (prefer --basic-pass-file or $SIP_PASSWORD)")
 	rootCmd.Flags().StringVar(&basicPassFile, "basic-pass-file", "",
-		"Read the basic auth password from a file other users cannot read (precedence: file > env > flag)")
+		"Read the basic auth password from a file only its owner can open (precedence: file > env > flag)")
 
 	// Limits
 	rootCmd.Flags().IntVar(&maxConns, "max-conns", 0, "Concurrent session limit (0 = unlimited)")
@@ -151,8 +151,9 @@ const passwordEnv = "SIP_PASSWORD"
 //
 // The variable is removed once read. The wrapped command inherits sip's
 // environment, so a password left in it reaches the program in the browser.
-// The file must not be readable by other users, because the point of a file
-// is that ps and /proc do not show it.
+// Only the owner may have any access to the file, because the point of a file
+// is that ps and /proc do not show it. A group bit counts: the group can hold
+// other users.
 func resolvePassword(flagValue, file string) (string, error) {
 	chosen := flagValue
 	if fromEnv, ok := os.LookupEnv(passwordEnv); ok {
@@ -170,8 +171,8 @@ func resolvePassword(flagValue, file string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read basic-pass-file: %w", err)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o007 != 0 {
-		return "", fmt.Errorf("other users can read the password file %s. Run 'chmod 600 %s', then start sip again", file, file)
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("the password file %s is open to other users. Run 'chmod 600 %s', then start sip again", file, file)
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
