@@ -1,0 +1,75 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (vet, race)
+    # Linux only for now. On macOS two final-output tests fail
+    # (TestFinalOutputReachesClientBeforeClose and
+    # TestFinalCommandOutputReachesClientBeforeClose): the client gets
+    # MsgClose without the last output. That code predates this workflow.
+    # Add macos-latest back once it is fixed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
+      - name: Build for Windows and macOS
+        run: |
+          GOOS=windows go build ./...
+          GOOS=darwin go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  browser:
+    name: Browser (Playwright, Chromium and Firefox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clienttests/package-lock.json
+      - name: Build the servers once
+        run: |
+          go build ./cmd/sip ./examples/appearance ./examples/hackable
+      - name: Install dependencies
+        working-directory: clienttests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox
+      - name: Run the client tests
+        working-directory: clienttests
+        run: |
+          SIP_CHROMIUM="$(node -e "import('@playwright/test').then(m => console.log(m.chromium.executablePath()))")"
+          export SIP_CHROMIUM
+          npx playwright test
+      - name: Keep the failure context
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: clienttests/test-results/
+          retention-days: 7
