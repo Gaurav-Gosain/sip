@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -110,7 +111,7 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringVar(&basicPass, "basic-pass", "",
 		"HTTP Basic Auth password (prefer --basic-pass-file or $SIP_PASSWORD)")
 	rootCmd.Flags().StringVar(&basicPassFile, "basic-pass-file", "",
-		"Read basic auth password from file (precedence: file > env > flag)")
+		"Read the basic auth password from a file other users cannot read (precedence: file > env > flag)")
 
 	// Limits
 	rootCmd.Flags().IntVar(&maxConns, "max-conns", 0, "Concurrent session limit (0 = unlimited)")
@@ -142,6 +143,43 @@ The command to run must be specified after "--".`,
 	}
 }
 
+// passwordEnv names the environment variable that can carry the password.
+const passwordEnv = "SIP_PASSWORD"
+
+// resolvePassword picks the Basic Auth password: the file, then the
+// environment, then the flag.
+//
+// The variable is removed once read. The wrapped command inherits sip's
+// environment, so a password left in it reaches the program in the browser.
+// The file must not be readable by other users, because the point of a file
+// is that ps and /proc do not show it.
+func resolvePassword(flagValue, file string) (string, error) {
+	chosen := flagValue
+	if fromEnv, ok := os.LookupEnv(passwordEnv); ok {
+		if err := os.Unsetenv(passwordEnv); err != nil {
+			return "", fmt.Errorf("cannot remove %s from the environment: %w", passwordEnv, err)
+		}
+		if fromEnv != "" {
+			chosen = fromEnv
+		}
+	}
+	if file == "" {
+		return chosen, nil
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return "", fmt.Errorf("read basic-pass-file: %w", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o007 != 0 {
+		return "", fmt.Errorf("other users can read the password file %s. Run 'chmod 600 %s', then start sip again", file, file)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("read basic-pass-file: %w", err)
+	}
+	return strings.TrimRight(string(data), "\r\n"), nil
+}
+
 func runServer(cmdArgs []string) error {
 	if debug {
 		sip.SetLogLevel(log.DebugLevel)
@@ -156,17 +194,9 @@ func runServer(cmdArgs []string) error {
 		}
 	}
 
-	// Resolve basic auth password: file > env > flag.
-	password := basicPass
-	if envPass := os.Getenv("SIP_PASSWORD"); envPass != "" {
-		password = envPass
-	}
-	if basicPassFile != "" {
-		data, err := os.ReadFile(basicPassFile)
-		if err != nil {
-			return fmt.Errorf("read basic-pass-file: %w", err)
-		}
-		password = strings.TrimRight(string(data), "\r\n")
+	authSecret, err := resolvePassword(basicPass, basicPassFile)
+	if err != nil {
+		return err
 	}
 
 	// Before the server refuses the bind, since the whole point is to offer
@@ -187,7 +217,7 @@ func runServer(cmdArgs []string) error {
 		CertHosts:             certHosts,
 		CertValidity:          certValidity(),
 		BasicUsername:         basicUser,
-		BasicPassword:         password,
+		BasicPassword:         authSecret,
 		AllowInsecureNoTLS:    allowInsecureNoTLS,
 		OriginPatterns:        originPatterns,
 		MaxConnections:        maxConns,

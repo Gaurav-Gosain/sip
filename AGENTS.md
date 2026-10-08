@@ -47,8 +47,10 @@ Listener / TLS:
 Auth:
       --basic-user string     HTTP Basic Auth username
       --basic-pass string     HTTP Basic Auth password (prefer file/env)
-      --basic-pass-file string Read password from file
-                              ($SIP_PASSWORD env also honoured;
+      --basic-pass-file string Read password from file (refused when other
+                              users can read it)
+                              ($SIP_PASSWORD env also honoured, and removed
+                               from the environment the command inherits;
                                precedence: file > env > flag)
 
 Limits:

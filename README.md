@@ -148,7 +148,7 @@ own flags are never read as sip's.
 | `--cert-dir`, `--cert-host`, `--cert-days` | where that certificate lives, what else it signs for, how long it lasts |
 | `--allow-insecure-no-tls` | permit a non-loopback bind, or basic auth, without TLS |
 | `--origin` | browser origin allowlist, a `path.Match` glob, repeatable |
-| `--basic-user`, `--basic-pass-file` | HTTP basic auth; `$SIP_PASSWORD` is also read |
+| `--basic-user`, `--basic-pass-file` | HTTP basic auth. Other users must not be able to read the file. `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |
 | `--max-conns`, `--idle-timeout` | concurrent session limit and idle cutoff |
 | `--renderer` | `webgl`, `canvas` or `dom`; empty picks the best available |
 | `--font`, `--font-family` | serve a font from disk instead of the embedded one |
