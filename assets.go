@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Asset names that carry config rather than a file. A consumer's StaticFS
@@ -126,30 +128,80 @@ func assetName(urlPath string) (string, bool) {
 
 // readAsset returns the bytes to serve for an asset name, preferring the
 // consumer's StaticFS over the embedded copy.
-//
-// A missing file in StaticFS is the normal case and falls through quietly:
-// overriding one stylesheet must not mean vendoring the other six files. Any
-// other failure is logged and falls through too, because a consumer whose
-// directory lost its read permission wants a working terminal and a line in
-// the log, not a blank page.
 func (s *httpServer) readAsset(name string) ([]byte, bool) {
-	if s.config.StaticFS != nil {
-		data, err := fs.ReadFile(s.config.StaticFS, name)
-		switch {
-		case err == nil:
-			return data, true
-		case errors.Is(err, fs.ErrNotExist):
-			// Not an override. Serve sip's own copy.
-		default:
-			logger.Warn("cannot read the override. Sip serves its own copy of this file",
-				"file", name, "err", err)
-		}
+	if data, ok := s.readOverride(name); ok {
+		return data, true
 	}
 	data, err := staticFiles.ReadFile("static/" + name)
 	if err != nil {
 		return nil, false
 	}
 	return data, true
+}
+
+// readOverride returns the consumer's StaticFS copy of an asset, when there
+// is one.
+//
+// A missing file in StaticFS is the normal case and falls through quietly:
+// overriding one stylesheet must not mean vendoring the other six files. Any
+// other failure is logged and falls through too, because a consumer whose
+// directory lost its read permission wants a working terminal and a line in
+// the log, not a blank page.
+//
+// An override is read on every request and never cached. Its directory can
+// change on disk while the server runs, and a cached copy would go stale.
+func (s *httpServer) readOverride(name string) ([]byte, bool) {
+	if s.config.StaticFS == nil {
+		return nil, false
+	}
+	data, err := fs.ReadFile(s.config.StaticFS, name)
+	switch {
+	case err == nil:
+		return data, true
+	case errors.Is(err, fs.ErrNotExist):
+		// Not an override. Serve sip's own copy.
+	default:
+		logger.Warn("cannot read the override. Sip serves its own copy of this file",
+			"file", name, "err", err)
+	}
+	return nil, false
+}
+
+// embeddedETags caches the ETag of each embedded file, by asset name. The
+// files are part of the binary, so a tag never changes while the process
+// runs. Before the cache, every request copied the file out of the binary
+// and hashed it, 11.7 MB and about 27 ms of CPU for one page load, and a
+// request that ended in 304 paid the same.
+var embeddedETags sync.Map
+
+// embeddedAsset opens an embedded file and returns its ETag. It reports false
+// when there is no such file.
+func embeddedAsset(name string) (fs.File, fs.FileInfo, string, bool) {
+	f, err := staticFiles.Open("static/" + name)
+	if err != nil {
+		return nil, nil, "", false
+	}
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		_ = f.Close()
+		return nil, nil, "", false
+	}
+	if tag, ok := embeddedETags.Load(name); ok {
+		return f, info, tag.(string), true
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		_ = f.Close()
+		return nil, nil, "", false
+	}
+	_ = f.Close()
+	tag := etagFromSum(h.Sum(nil))
+	embeddedETags.Store(name, tag)
+	// The hash read the file to its end, so open it again for the body.
+	if f, err = staticFiles.Open("static/" + name); err != nil {
+		return nil, nil, "", false
+	}
+	return f, info, tag, true
 }
 
 // overriddenAssets lists the shipped files a consumer's StaticFS replaces.

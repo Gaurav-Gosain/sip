@@ -109,6 +109,8 @@ type httpServer struct {
 
 	// indexSeamWarn keeps the page-assembly complaint to one line.
 	indexSeamWarn sync.Once
+
+	customFont customFontState
 }
 
 func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
@@ -553,12 +555,21 @@ func (s *httpServer) warnIndexSeamOnce(msg string) {
 	s.indexSeamWarn.Do(func() { logger.Warn(msg) })
 }
 
-// writeRevalidatingHeaders tags a response with a content ETag and asks the
-// browser to revalidate before reusing it. It reports whether the request was
-// answered with 304, in which case the caller must not write a body.
-func writeRevalidatingHeaders(w http.ResponseWriter, r *http.Request, data []byte) bool {
+// contentETag is the ETag of a payload: the first 16 bytes of its SHA-256,
+// quoted.
+func contentETag(data []byte) string {
 	sum := sha256.Sum256(data)
-	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	return etagFromSum(sum[:])
+}
+
+func etagFromSum(sum []byte) string {
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// writeRevalidatingHeaders tags a response with an ETag and asks the browser
+// to revalidate before reusing it. It reports whether the request was
+// answered with 304, in which case the caller must not write a body.
+func writeRevalidatingHeaders(w http.ResponseWriter, r *http.Request, etag string) bool {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
@@ -568,8 +579,47 @@ func writeRevalidatingHeaders(w http.ResponseWriter, r *http.Request, data []byt
 	return false
 }
 
+// setStaticContentType names the type of a static file from its extension.
+func setStaticContentType(w http.ResponseWriter, path string) {
+	switch {
+	case strings.HasSuffix(path, ".js"):
+		w.Header().Set("Content-Type", "application/javascript")
+	case strings.HasSuffix(path, ".css"):
+		w.Header().Set("Content-Type", "text/css")
+	case strings.HasSuffix(path, ".wasm"):
+		w.Header().Set("Content-Type", "application/wasm")
+	case strings.HasSuffix(path, ".woff2"):
+		w.Header().Set("Content-Type", "font/woff2")
+	case strings.HasSuffix(path, ".woff"):
+		w.Header().Set("Content-Type", "font/woff")
+	case strings.HasSuffix(path, ".ttf"):
+		w.Header().Set("Content-Type", "font/ttf")
+	case strings.HasSuffix(path, ".otf"):
+		w.Header().Set("Content-Type", "font/otf")
+	// StaticFS lets a deployment add files sip does not ship, so the list
+	// covers the types a page asks for that http.DetectContentType cannot
+	// name from the bytes alone. PNG, JPEG, GIF and WebP it can, so they
+	// are left to it.
+	case strings.HasSuffix(path, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(path, ".ico"):
+		w.Header().Set("Content-Type", "image/x-icon")
+	case strings.HasSuffix(path, ".json"):
+		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(path, ".webmanifest"):
+		w.Header().Set("Content-Type", "application/manifest+json")
+	}
+}
+
 // handleStatic serves embedded static files plus a virtual
 // /static/fonts/custom<ext> route for the user-supplied font.
+//
+// Assets are served from the binary, so they change whenever sip is rebuilt
+// while their URLs stay the same. A long max-age therefore pins a browser to
+// a stale client for as long as the header says, and an ES module graph is
+// not reliably revalidated by a reload, so the stale copy survives even a
+// hard refresh. Every asset is revalidated instead, and an unchanged one
+// answers 304.
 func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 	path, ok := assetName(r.URL.Path)
 	if !ok {
@@ -603,58 +653,52 @@ func (s *httpServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 		}
 		data = []byte(s.config.ExtraJS)
 	default:
-		if data, ok = s.readAsset(path); !ok {
-			http.NotFound(w, r)
+		if data, ok = s.readOverride(path); !ok {
+			s.serveEmbedded(w, r, path)
 			return
 		}
 	}
 
 	logger.Debug("serving static", "path", path, "size", len(data))
-
-	switch {
-	case strings.HasSuffix(path, ".js"):
-		w.Header().Set("Content-Type", "application/javascript")
-	case strings.HasSuffix(path, ".css"):
-		w.Header().Set("Content-Type", "text/css")
-	case strings.HasSuffix(path, ".wasm"):
-		w.Header().Set("Content-Type", "application/wasm")
-	case strings.HasSuffix(path, ".woff2"):
-		w.Header().Set("Content-Type", "font/woff2")
-	case strings.HasSuffix(path, ".woff"):
-		w.Header().Set("Content-Type", "font/woff")
-	case strings.HasSuffix(path, ".ttf"):
-		w.Header().Set("Content-Type", "font/ttf")
-	case strings.HasSuffix(path, ".otf"):
-		w.Header().Set("Content-Type", "font/otf")
-	// StaticFS lets a deployment add files sip does not ship, so the list
-	// covers the types a page asks for that http.DetectContentType cannot
-	// name from the bytes alone. PNG, JPEG, GIF and WebP it can, so they
-	// are left to it.
-	case strings.HasSuffix(path, ".svg"):
-		w.Header().Set("Content-Type", "image/svg+xml")
-	case strings.HasSuffix(path, ".ico"):
-		w.Header().Set("Content-Type", "image/x-icon")
-	case strings.HasSuffix(path, ".json"):
-		w.Header().Set("Content-Type", "application/json")
-	case strings.HasSuffix(path, ".webmanifest"):
-		w.Header().Set("Content-Type", "application/manifest+json")
-	}
-
-	// Assets are served from the binary, so they change whenever sip is
-	// rebuilt while their URLs stay the same. A long max-age therefore pins a
-	// browser to a stale client for as long as the header says, and an ES
-	// module graph is not reliably revalidated by a reload, so the stale copy
-	// survives even a hard refresh. Revalidate every asset instead: the
-	// payloads come from memory and an unchanged one answers 304.
-	if writeRevalidatingHeaders(w, r, data) {
+	setStaticContentType(w, path)
+	if writeRevalidatingHeaders(w, r, contentETag(data)) {
 		return
 	}
-
 	_, _ = w.Write(data)
 }
 
+// serveEmbedded serves one of sip's own files straight from the binary. The
+// ETag comes from the cache and the body is streamed, so neither a 304 nor a
+// 200 copies the file.
+func (s *httpServer) serveEmbedded(w http.ResponseWriter, r *http.Request, path string) {
+	f, info, etag, ok := embeddedAsset(path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	logger.Debug("serving static", "path", path, "size", info.Size())
+	setStaticContentType(w, path)
+	if writeRevalidatingHeaders(w, r, etag) {
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	_, _ = io.Copy(w, f)
+}
+
+// customFontState remembers the ETag of the custom font with the size and
+// modification time it was computed for. A 304 then costs one stat, and a
+// font replaced on disk gets a new tag.
+type customFontState struct {
+	mu      sync.Mutex
+	size    int64
+	modTime time.Time
+	etag    string
+}
+
 func (s *httpServer) serveCustomFont(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile(s.config.FontPath)
+	info, err := os.Stat(s.config.FontPath)
 	if err != nil {
 		http.NotFound(w, nil)
 		return
@@ -669,7 +713,29 @@ func (s *httpServer) serveCustomFont(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.Header().Set("Content-Type", "font/ttf")
 	}
-	if writeRevalidatingHeaders(w, r, data) {
+
+	c := &s.customFont
+	c.mu.Lock()
+	etag := ""
+	if c.etag != "" && c.size == info.Size() && c.modTime.Equal(info.ModTime()) {
+		etag = c.etag
+	}
+	c.mu.Unlock()
+	if etag != "" && writeRevalidatingHeaders(w, r, etag) {
+		return
+	}
+
+	data, err := os.ReadFile(s.config.FontPath)
+	if err != nil {
+		w.Header().Del("Content-Type")
+		http.NotFound(w, nil)
+		return
+	}
+	etag = contentETag(data)
+	c.mu.Lock()
+	c.size, c.modTime, c.etag = info.Size(), info.ModTime(), etag
+	c.mu.Unlock()
+	if writeRevalidatingHeaders(w, r, etag) {
 		return
 	}
 	_, _ = w.Write(data)
