@@ -86,10 +86,7 @@ func (s *cmdSession) applyResize(size WindowSize) {
 		_ = s.platform.ResizeWithPixels(size.Width, size.Height, size.WidthPx, size.HeightPx)
 	}
 
-	select {
-	case s.windowChanges <- size:
-	default:
-	}
+	sendLatestSize(s.windowChanges, size)
 }
 
 // OutputReader returns the reader for terminal output (for handlers).
@@ -174,7 +171,7 @@ func (srv *httpServer) createCmdSession(ctx context.Context, initialCols, initia
 	windowChanges := make(chan WindowSize, 1)
 
 	session := &cmdSession{
-		id:            fmt.Sprintf("%d", time.Now().UnixNano()),
+		id:            newSessionID(),
 		platform:      platform,
 		cols:          cols,
 		rows:          rows,

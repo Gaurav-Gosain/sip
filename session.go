@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -91,14 +93,39 @@ func (s *webSession) applyResize(size WindowSize) {
 		_ = s.platform.ResizeWithPixels(size.Width, size.Height, size.WidthPx, size.HeightPx)
 	}
 
-	select {
-	case s.windowChanges <- size:
-	default:
-	}
+	sendLatestSize(s.windowChanges, size)
 
 	if s.program != nil {
 		s.program.Send(tea.WindowSizeMsg{Width: size.Width, Height: size.Height})
 	}
+}
+
+// sendLatestSize puts size in ch, a channel with a buffer of one, and
+// replaces a size nobody has read yet. A reader of WindowChanges wants the
+// size the window has now, so the older one is the one to lose.
+func sendLatestSize(ch chan WindowSize, size WindowSize) {
+	for {
+		select {
+		case ch <- size:
+			return
+		default:
+		}
+		select {
+		case <-ch:
+		default:
+		}
+	}
+}
+
+// sessionSeq numbers the sessions of this process.
+var sessionSeq atomic.Uint64
+
+// newSessionID returns an id no other session of this process has. The
+// server keys its session map on it, so two sessions with one id would share
+// an entry, and shutdown would close only one of them. The clock cannot
+// promise that: two sessions can start in one tick.
+func newSessionID() string {
+	return strconv.FormatUint(sessionSeq.Add(1), 10)
 }
 
 func (s *webSession) WaitForStart() {
@@ -177,7 +204,7 @@ func (srv *httpServer) createSession(ctx context.Context, handler ProgramHandler
 	windowChanges := make(chan WindowSize, 1)
 
 	session := &webSession{
-		id:            fmt.Sprintf("%d", time.Now().UnixNano()),
+		id:            newSessionID(),
 		platform:      platform,
 		cols:          cols,
 		rows:          rows,

@@ -118,6 +118,18 @@ func newHTTPServer(config Config, handler ProgramHandler) *httpServer {
 	}
 }
 
+// closeAllSessions closes every session the server holds. Shutdown calls it.
+func (s *httpServer) closeAllSessions() {
+	s.sessions.Range(func(_, value any) bool {
+		if sess, ok := value.(*cmdSession); ok {
+			s.closeCmdSession(sess)
+		} else if sess, ok := value.(*webSession); ok {
+			s.closeSession(sess)
+		}
+		return true
+	})
+}
+
 func (s *httpServer) start(ctx context.Context) error {
 	if err := s.resolveAutoTLS(); err != nil {
 		return err
@@ -263,14 +275,7 @@ func (s *httpServer) start(ctx context.Context) error {
 	case <-ctx.Done():
 		logger.Info("shutting down web server")
 
-		s.sessions.Range(func(_, value any) bool {
-			if sess, ok := value.(*cmdSession); ok {
-				s.closeCmdSession(sess)
-			} else if sess, ok := value.(*webSession); ok {
-				s.closeSession(sess)
-			}
-			return true
-		})
+		s.closeAllSessions()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
