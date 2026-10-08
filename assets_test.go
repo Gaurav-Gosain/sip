@@ -30,9 +30,9 @@ import (
 // vendor_test.go. index.html and terminal.css changed when the touch layer
 // moved into webterm and static/mobile.js went away.
 var defaultAssetDigests = map[string]string{
-	"/":                    "84cffe9e13663d95870d5c71ad27647f6c72ef5fcbc68f32d05ebd8f9e2c31bd",
-	"/static/index.html":   "b075f776458d764b48b6e15cc9696ffe2d576d8e8bd70c178f1b0571eb626ca6",
-	"/static/terminal.css": "a9a0ff7791afb142860951434c8eca0e0a5e852429521e2f579dd0227162cc88",
+	"/":                    "b1316b4e9b3116d3eeffd2a5d43cc101641be6ad14615657319beb9b4931fec7",
+	"/static/index.html":   "4db290dd08c712ddc743a0ca3beaff7e2c20ede478884aea60cd138910f0614e",
+	"/static/terminal.css": "8c97308f4e0a41f050b2dd93453a92dca47b2293df1e49c57364e64f3dee9726",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",
 	"/static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf": "9e4dad8c34fb31045d53790a936a0afc3aae3fb830e874faadf3670662b04853",

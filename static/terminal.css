@@ -16,7 +16,8 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('fonts/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Regular.woff2') format('woff2'),
+         url('fonts/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
     font-weight: 400;
     font-style: normal;
     font-display: block;
@@ -24,7 +25,8 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('fonts/JetBrainsMonoNerdFontMono-Bold.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Bold.woff2') format('woff2'),
+         url('fonts/JetBrainsMonoNerdFontMono-Bold.ttf') format('truetype');
     font-weight: 700;
     font-style: normal;
     font-display: block;
@@ -32,7 +34,8 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('fonts/JetBrainsMonoNerdFontMono-Italic.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-Italic.woff2') format('woff2'),
+         url('fonts/JetBrainsMonoNerdFontMono-Italic.ttf') format('truetype');
     font-weight: 400;
     font-style: italic;
     font-display: block;
@@ -40,7 +43,8 @@
 
 @font-face {
     font-family: 'JetBrainsMono Nerd Font Mono';
-    src: url('fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf') format('truetype');
+    src: url('fonts/JetBrainsMonoNerdFontMono-BoldItalic.woff2') format('woff2'),
+         url('fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf') format('truetype');
     font-weight: 700;
     font-style: italic;
     font-display: block;

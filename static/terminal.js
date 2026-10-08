@@ -1527,6 +1527,12 @@
 
         /** The webterm option groups derived from sip's stored settings. */
         webtermOptions() {
+            // WOFF2 first: it is about 1 MB a face against 2.4 MB of TTF. A
+            // browser takes the first format it supports and downloads only
+            // that one, so the TTF is fetched only where WOFF2 is missing.
+            const font = (face) =>
+                `url(static/fonts/JetBrainsMonoNerdFontMono-${face}.woff2) format('woff2'), `
+                + `url(static/fonts/JetBrainsMonoNerdFontMono-${face}.ttf) format('truetype')`;
             return {
                 fontFamily: this.fontFamily,
                 fontSize: this.settings.fontSize,
@@ -1535,10 +1541,10 @@
                 // named here. webterm awaits these before it constructs the
                 // Terminal, which is what keeps the cell box off the fallback.
                 fonts: [
-                    { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-Regular.ttf)', weight: '400', style: 'normal' },
-                    { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-Bold.ttf)', weight: '700', style: 'normal' },
-                    { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-Italic.ttf)', weight: '400', style: 'italic' },
-                    { source: 'url(static/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf)', weight: '700', style: 'italic' },
+                    { source: font('Regular'), weight: '400', style: 'normal' },
+                    { source: font('Bold'), weight: '700', style: 'normal' },
+                    { source: font('Italic'), weight: '400', style: 'italic' },
+                    { source: font('BoldItalic'), weight: '700', style: 'italic' },
                 ],
                 theme: mergeTheme(this.appearance),
                 cursorBlink: this.settings.cursorBlink,

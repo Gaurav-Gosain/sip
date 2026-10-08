@@ -129,7 +129,9 @@ sip/
 │   │                       # when the renderer setting is vtgl
 │   ├── webterm.css         # webterm container + kitty overlay styles
 │   ├── xterm.css           # xterm's own stylesheet, still required alongside webterm
-│   └── fonts/              # JetBrains Mono Nerd Font (embedded)
+│   └── fonts/              # JetBrains Mono Nerd Font (embedded): WOFF2, which the page
+│                           # asks for first, and the TTF as the fallback.
+│                           # scripts/fonts-woff2.sh writes the WOFF2 files
 ├── examples/simple/        # Counter example (Bubble Tea mode)
 ├── examples/appearance/    # Config.Appearance in one file; the appearance suite drives it
 └── examples/hackable/      # ExtraCSS/ExtraJS/StaticFS/Routes/PageAPI in one file;
@@ -995,6 +997,18 @@ the buffer rows back into the logical lines they wrapped from, finds the match
 there, and measures the column back out of the row it started in, because a
 wide character is one character in two columns. A match is a row, a column and
 a length, so no renderer object escapes. The page API's `search` calls it.
+
+### Compression and the size budget
+
+`serveEmbedded` gzips sip's own text files (`.js`, `.css`, `.html`, `.json`,
+`.svg`) for a browser that accepts gzip, once per file per process
+(`compress.go`). The gzip body has its own ETag and the response carries
+`Vary: Accept-Encoding`. Fonts are not compressed again: WOFF2 is compressed
+already. An override from `StaticFS` is served as it is, because it can change
+on disk.
+
+`TestColdLoadBudget` adds up a first visit to a default page with gzip and
+fails over 4.7 MB. It was 11.7 MB before WOFF2, gzip and the vtgl split.
 
 ### Custom fonts
 

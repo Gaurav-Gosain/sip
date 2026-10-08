@@ -715,6 +715,21 @@ func (s *httpServer) serveEmbedded(w http.ResponseWriter, r *http.Request, path 
 
 	logger.Debug("serving static", "path", path, "size", info.Size())
 	setStaticContentType(w, path)
+	if compressible(path) {
+		// The body differs by Accept-Encoding, so a cache must key on it.
+		w.Header().Add("Vary", "Accept-Encoding")
+		if acceptsGzip(r) {
+			if gz, gzTag, ok := gzippedAsset(path); ok {
+				w.Header().Set("Content-Encoding", "gzip")
+				if writeRevalidatingHeaders(w, r, gzTag) {
+					return
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(len(gz)))
+				_, _ = w.Write(gz)
+				return
+			}
+		}
+	}
 	if writeRevalidatingHeaders(w, r, etag) {
 		return
 	}

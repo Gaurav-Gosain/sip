@@ -14,10 +14,10 @@ import (
 var pageAssets = []string{
 	"index.html", "terminal.css", "webterm.css", "xterm.css",
 	"webterm.js", "terminal.js",
-	"fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
-	"fonts/JetBrainsMonoNerdFontMono-Bold.ttf",
-	"fonts/JetBrainsMonoNerdFontMono-Italic.ttf",
-	"fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+	"fonts/JetBrainsMonoNerdFontMono-Regular.woff2",
+	"fonts/JetBrainsMonoNerdFontMono-Bold.woff2",
+	"fonts/JetBrainsMonoNerdFontMono-Italic.woff2",
+	"fonts/JetBrainsMonoNerdFontMono-BoldItalic.woff2",
 }
 
 // discardResponse is a ResponseWriter that keeps the status and drops the
