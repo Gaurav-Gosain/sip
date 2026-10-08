@@ -284,6 +284,21 @@ for (const transport of TRANSPORTS) {
         await page.evaluate(() => window.sipTerm.webterm.xterm.clearSelection());
         expect(await wireFor(page, 'Control+c')).toBe('\x1b[99;5u');
       });
+
+      test('with key events reported, Ctrl+C on a selection sends no release either', async ({ page }) => {
+        // Flag 2 reports releases. The copy swallowed the press, so a release
+        // alone would reach the program as a key it never saw go down.
+        await boot(page, transport);
+        await pushFlags(page, 3);
+        await page.evaluate(() => window.sipTerm.webterm.xterm.selectAll());
+
+        expect(await wireFor(page, 'Control+c')).toBe('');
+        // Without a selection the program gets the press and the release.
+        await page.evaluate(() => window.sipTerm.webterm.xterm.clearSelection());
+        const sent = await wireFor(page, 'Control+c');
+        expect(sent).toContain('\x1b[99;5u');
+        expect(sent).toContain('\x1b[99;5:3u');
+      });
     });
 
     // The tests above stop at the transport boundary. These two carry all the

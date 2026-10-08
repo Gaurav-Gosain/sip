@@ -1773,8 +1773,16 @@
          */
         onCopyKey(ev) {
             // The handler runs for keypress and keyup as well as keydown;
-            // acting on more than one would copy twice for one chord.
-            if (ev.type !== 'keydown') return true;
+            // acting on more than one would copy twice for one chord. A key
+            // whose press was a copy keeps its release too: under kitty flag
+            // 2 the release is reported, and the program would get a release
+            // with no press.
+            if (ev.type !== 'keydown') {
+                if (this.copyKeyCode !== ev.code) return true;
+                if (ev.type === 'keyup') this.copyKeyCode = null;
+                return false;
+            }
+            if (ev.code === this.copyKeyCode) this.copyKeyCode = null;
             if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
             if (ev.code !== 'KeyC') return true;
 
@@ -1797,6 +1805,7 @@
             // write against an empty DOM selection.
             ev.preventDefault();
             ev.stopPropagation();
+            this.copyKeyCode = ev.code;
             this.copyText(selection);
             return false;
         }
