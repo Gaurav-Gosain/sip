@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Gaurav-Gosain/webterm",
-  "commit": "d7a41e862ec0e6c98c43c4a038ca4a6cfa08a1e3",
+  "commit": "637c0859321c52f307beadede740d058645e7e0c",
   "version": "0.1.0",
   "xterm": "6.1.0-beta.290",
   "vtgl": "0.0.0",
@@ -8,7 +8,7 @@
   "vtglCommit": "4048047fa46c0e545bfe4bee814751609ed0a461",
   "files": {
     "webterm.js": "a929cb3bd611deba13066701814380e274bb11757fd74c0f3da302e9fd85aa7b",
-    "webterm-vtgl.js": "1916d5bfc556f874e9178c07f79a452fa2530c60a3986620337138a939dd54c3",
+    "webterm-vtgl.js": "22d5197357d3a833862d593fb6e9205bbccda2bff2fbbdbafe944bf2c717aa8c",
     "webterm.css": "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
     "xterm.css": "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f"
   }
