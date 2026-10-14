@@ -61,10 +61,18 @@ async function shell(page, command, ready) {
   await page.waitForFunction(ready, null, { timeout: 10_000 });
 }
 
-/** Ask for the protocol and for bracketed paste, as a Bubble Tea v2 program does. */
+/**
+ * Ask for the protocol and for bracketed paste, as a Bubble Tea v2 program
+ * does, and wait until the terminal has both.
+ *
+ * The wait names bracketed paste as well as the flags. With flags 0 the flag
+ * check is true before the shell has run printf, so on its own it let the
+ * test paste before the terminal turned bracketed paste on.
+ */
 async function likeBubbleTea(page, flags) {
   await shell(page, `printf '\\033[?2004h\\033[>${flags}u'`,
-    `window.sipTerm.webterm.keyboard?.flags === ${flags}`);
+    `window.sipTerm.webterm.keyboard?.flags === ${flags}`
+    + ' && window.sipTerm.webterm.xterm.modes.bracketedPasteMode');
 }
 
 /**
