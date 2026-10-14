@@ -346,19 +346,6 @@ html, body {
     background-color: rgba(88, 91, 112, 0.5) !important;
 }
 
-/* Cursor styling */
-.xterm-cursor-block {
-    background-color: var(--sip-cursor, #f5e0dc) !important;
-}
-
-.xterm-cursor-bar {
-    background-color: var(--sip-cursor, #f5e0dc) !important;
-}
-
-.xterm-cursor-underline {
-    border-bottom-color: var(--sip-cursor, #f5e0dc) !important;
-}
-
 /* Focus indicator */
 #terminal:focus-within .xterm-cursor-layer {
     opacity: 1;
