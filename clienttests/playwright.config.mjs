@@ -77,7 +77,10 @@ export default defineConfig({
       //
       // The connection suite runs here for its WebTransport half: a dropped
       // session must come back as one connection, not two.
-      testMatch: /(keyboard|appearance|pointer|sizecap|connection)\.spec\.mjs/,
+      //
+      // The paste suite runs here because a paste chord's default action is
+      // the browser's, and the two engines map their chords to it apart.
+      testMatch: /(keyboard|appearance|pointer|sizecap|connection|paste)\.spec\.mjs/,
       use: {
         baseURL: BASE_URL,
         browserName: 'firefox',

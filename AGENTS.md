@@ -191,6 +191,12 @@ sip/
   `keyboard.onKeyEvent`, which webterm runs before the protocol. `setOptions`
   replaces the `keyboard` group whole, so pass `keyboardOptions()` every time.
   `MsgKittyKbd` ('8') is never sent. The server still accepts and ignores it.
+- Paste is the browser's. The paste chords (Ctrl+Shift+V, Shift+Insert, and
+  Cmd+V on Apple platforms) keep their default action, so the browser fires a
+  paste event on xterm's textarea, which reads `clipboardData`. No clipboard
+  permission, no secure context. The protocol never encodes these chords; a
+  handler that prevents their default breaks paste (`clienttests/paste.spec.mjs`).
+  Ctrl+V is the program's key.
 
 #### Cell geometry
 

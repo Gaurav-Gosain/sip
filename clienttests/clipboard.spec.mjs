@@ -137,8 +137,10 @@ test.describe('clipboard', () => {
   });
 
   // PASTE IS NOT BOUND BY SIP, and deliberately so: xterm listens for the
-  // browser's native paste event, so both paste chords already reach the
-  // terminal on their own. Binding them here as well would paste twice.
+  // browser's native paste event, so the paste chords reach the terminal on
+  // their own. Binding them here as well would paste twice. paste.spec.mjs
+  // covers paste under the kitty keyboard protocol, which this shell never
+  // asks for.
   //
   // Only Ctrl+Shift+V is asserted. Synthesized key events do not make Chromium
   // run the "Paste" editing command for Ctrl+V, so no paste event fires for it

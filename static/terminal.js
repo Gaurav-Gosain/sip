@@ -1689,7 +1689,8 @@
          * The copy chord, run before webterm encodes a key.
          *
          * webterm owns paste (xterm listens for the browser's native paste
-         * event, so Ctrl+V and Ctrl+Shift+V already arrive) and it owns OSC 52,
+         * event, and webterm leaves the paste chords' default alone even
+         * under the kitty protocol) and it owns OSC 52,
          * but it binds no copy chord, so Ctrl+C on a selection used to fall
          * straight through to the encoder: the selection stayed on screen and
          * the shell got an interrupt.
