@@ -17,7 +17,8 @@
 // Shift+Insert, so those two are end to end here. It runs none for Ctrl+V or
 // Cmd+V on Linux, and it cannot click the browser's context menu, so the menu
 // and middle-click cases dispatch the paste event the browser would send to
-// whatever holds focus after the click.
+// whatever holds focus after the click. The menu opens on Shift and a right
+// click: a plain right click goes to the program.
 
 import { test, expect } from '@playwright/test';
 
@@ -115,8 +116,16 @@ test.describe('paste', () => {
     // must still leave focus where the browser's paste lands.
     await shell(page, `printf '\\033[?2004h\\033[?1000h\\033[?1006h'`,
       `window.sipTerm.webterm.xterm.modes.mouseTrackingMode !== 'none'`);
-    for (const button of ['right', 'middle']) {
-      await page.locator('#terminal').click({ button, position: { x: 120, y: 80 } });
+    await page.evaluate(() => {
+      window.__menu = [];
+      window.addEventListener('contextmenu', (e) => {
+        setTimeout(() => window.__menu.push(e.defaultPrevented), 0);
+      }, true);
+    });
+    // Shift and a right click is the browser's menu, the one that has Paste in
+    // it. A plain right click goes to the program while it reports the mouse.
+    for (const [button, modifiers] of [['right', ['Shift']], ['middle', []]]) {
+      await page.locator('#terminal').click({ button, modifiers, position: { x: 120, y: 80 } });
       await clearWire(page);
       await page.evaluate((t) => {
         const data = new DataTransfer();
@@ -132,6 +141,11 @@ test.describe('paste', () => {
         expect(await wire(page), button).toContain(BRACKETED);
       }
       await page.keyboard.press('Escape');
+    }
+    // The menu was left to open. Firefox under Playwright fires no
+    // contextmenu event for a right click, so only Chromium can show this.
+    if (test.info().project.name === 'chromium') {
+      expect(await page.evaluate(() => window.__menu)).toEqual([false]);
     }
   });
 });
