@@ -28,6 +28,12 @@ export const APPEARANCE_URL = `http://localhost:${APPEARANCE_PORT}`;
 export const HACK_PORT = String(Number(PORT) + 20);
 export const HACK_URL = `http://localhost:${HACK_PORT}`;
 
+// A fourth, from the CLI with --ctrl-v-to-program: the deployment that gives
+// plain Ctrl+V back to the program. paste.spec.mjs reads both servers, because
+// the claim is that the default pastes and the option does not.
+export const CTRLV_PORT = String(Number(PORT) + 30);
+export const CTRLV_URL = `http://localhost:${CTRLV_PORT}`;
+
 export default defineConfig({
   testDir: '.',
   testMatch: /.*\.spec\.mjs/,
@@ -110,6 +116,15 @@ export default defineConfig({
     command: `go run ./examples/appearance -p ${APPEARANCE_PORT} -shell sh`,
     cwd: '..',
     url: APPEARANCE_URL,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  }, {
+    // The same shell, with Ctrl+V sent to the program.
+    command: `go run ./cmd/sip -p ${CTRLV_PORT} --ctrl-v-to-program -- sh`,
+    cwd: '..',
+    url: CTRLV_URL,
     reuseExistingServer: false,
     timeout: 120_000,
     stdout: 'ignore',

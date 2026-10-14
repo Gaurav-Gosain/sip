@@ -59,6 +59,7 @@ Limits:
 
 Renderer / fonts:
       --renderer string       Client renderer: "webgl", "canvas", "dom", empty = auto
+      --ctrl-v-to-program     Send Ctrl+V to the program as a key (default: it pastes)
       --font path             Custom font (.ttf/.otf/.woff/.woff2)
       --font-family string    CSS font-family (overrides default JBM Nerd Font)
       --disable-kitty-transcoder
@@ -191,12 +192,15 @@ sip/
   `keyboard.onKeyEvent`, which webterm runs before the protocol. `setOptions`
   replaces the `keyboard` group whole, so pass `keyboardOptions()` every time.
   `MsgKittyKbd` ('8') is never sent. The server still accepts and ignores it.
-- Paste is the browser's. The paste chords (Ctrl+Shift+V, Shift+Insert, and
-  Cmd+V on Apple platforms) keep their default action, so the browser fires a
-  paste event on xterm's textarea, which reads `clipboardData`. No clipboard
-  permission, no secure context. The protocol never encodes these chords; a
-  handler that prevents their default breaks paste (`clienttests/paste.spec.mjs`).
-  Ctrl+V is the program's key.
+- Paste is the browser's. The paste chords (Ctrl+V, Ctrl+Shift+V,
+  Shift+Insert, and Cmd+V on Apple platforms) keep their default action, so the
+  browser fires a paste event on xterm's textarea, which reads `clipboardData`.
+  No clipboard permission, no secure context. Neither the protocol nor xterm's
+  legacy encoding sends these chords; a handler that prevents their default
+  breaks paste (`clienttests/paste.spec.mjs`). `Config.CtrlVToProgram`
+  (`--ctrl-v-to-program`) gives plain Ctrl+V back to the program, which is
+  webterm's `keyboard.ctrlV = 'program'`. On a Mac Ctrl+V is always the
+  program's.
 
 #### Cell geometry
 

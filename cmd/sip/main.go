@@ -47,6 +47,7 @@ var (
 	fontPath           string
 	fontFamily         string
 	rendererChoice     string
+	ctrlVToProgram     bool
 )
 
 func main() {
@@ -134,6 +135,8 @@ The command to run must be specified after "--".`,
 		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
 	rootCmd.Flags().StringVar(&rendererChoice, "renderer", "",
 		"Client terminal renderer: \"webgl\", \"canvas\", \"dom\", or empty to prefer WebGL and fall back")
+	rootCmd.Flags().BoolVar(&ctrlVToProgram, "ctrl-v-to-program", false,
+		"Send Ctrl+V to the program as a key. By default Ctrl+V pastes")
 	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,
 		"Force the server-side kitty graphics PNG → RGBA transcoder (client decodes PNG by default)")
 
@@ -238,6 +241,7 @@ func runServer(cmdArgs []string) error {
 		FontPath:              fontPath,
 		FontFamily:            fontFamily,
 		Renderer:              rendererChoice,
+		CtrlVToProgram:        ctrlVToProgram,
 		EnableKittyTranscoder: enableKitty,
 	}
 

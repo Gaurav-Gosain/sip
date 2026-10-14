@@ -227,6 +227,14 @@ type Config struct {
 	// what sip rendered before the field existed; see Appearance.
 	Appearance Appearance
 
+	// CtrlVToProgram sends a plain Ctrl+V to the program as a key, for
+	// vim's block select (Ctrl+Q also starts one) and a shell's
+	// literal-next. By default Ctrl+V is a browser paste chord, like
+	// Ctrl+Shift+V and Shift+Insert, because a program's own paste key
+	// reads the server's clipboard and not the user's. On macOS Ctrl+V
+	// always goes to the program and Cmd+V pastes.
+	CtrlVToProgram bool
+
 	// Renderer selects the client-side terminal renderer: "webgl",
 	// "canvas" or "dom". Empty means "auto", which prefers WebGL and
 	// falls back to canvas and then the DOM. A user's saved setting and

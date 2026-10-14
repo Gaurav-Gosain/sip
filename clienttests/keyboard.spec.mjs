@@ -173,8 +173,12 @@ async function bytesFor(page, transport, chord, url = '/') {
 // protocol, but only after a program pushes flags, and a shell never does. So
 // here Ctrl+I is not told apart from Tab, nor Ctrl+M from Enter, and all 26
 // letters are plain control bytes. The kitty tests below push flags.
+//
+// Ctrl+V is left out: it is a browser paste chord unless the deployment sets
+// Config.CtrlVToProgram. paste.spec.mjs covers it both ways.
 const CTRL_LETTERS = [];
 for (let i = 0; i < 26; i++) {
+  if (i === 21) continue;
   CTRL_LETTERS.push([String.fromCharCode(97 + i), i + 1]);
 }
 

@@ -13,26 +13,27 @@
 // never happened. A plain shell never asks for the protocol, which is why the
 // Ctrl+Shift+V test in clipboard.spec.mjs stayed green throughout.
 //
-// Playwright makes both engines run their paste command for Ctrl+Shift+V and
-// Shift+Insert, so those two are end to end here. It runs none for Ctrl+V or
-// Cmd+V on Linux, and it cannot click the browser's context menu, so the menu
+// Playwright makes both engines run their paste command for Ctrl+V,
+// Ctrl+Shift+V and Shift+Insert, so those are end to end here. It runs none
+// for Cmd+V on Linux, and it cannot click the browser's context menu, so the menu
 // and middle-click cases dispatch the paste event the browser would send to
 // whatever holds focus after the click. The menu opens on Shift and a right
 // click: a plain right click goes to the program.
 
 import { test, expect } from '@playwright/test';
+import { CTRLV_URL } from './playwright.config.mjs';
 
 const MSG_INPUT = 0x30;
 const TEXT = 'PASTE_ONE_5821\nPASTE_TWO_5821';
 const BRACKETED = '\x1b[200~PASTE_ONE_5821\rPASTE_TWO_5821\x1b[201~';
 
-async function boot(page) {
+async function boot(page, url = '/') {
   await page.addInitScript(() => {
     localStorage.setItem('sip-web-settings', JSON.stringify({
       transport: 'websocket', fontSize: 14, copyOnSelect: false, cursorBlink: false, renderer: 'canvas',
     }));
   });
-  await page.goto('/');
+  await page.goto(url);
   await page.waitForFunction(() => window.sipTerm?.connected, null, { timeout: 30_000 });
   await page.evaluate((msgInput) => {
     window.__sent = [];
@@ -76,7 +77,11 @@ async function setClipboard(page) {
 }
 
 test.describe('paste', () => {
-  for (const [chord, flags] of [['Control+Shift+V', 1], ['Control+Shift+V', 31], ['Shift+Insert', 31]]) {
+  const chords = [
+    ['Control+v', 0], ['Control+v', 1], ['Control+v', 31],
+    ['Control+Shift+V', 1], ['Control+Shift+V', 31], ['Shift+Insert', 31],
+  ];
+  for (const [chord, flags] of chords) {
     test(`${chord} pastes under kitty flags ${flags}`, async ({ page }) => {
       await boot(page);
       await likeBubbleTea(page, flags);
@@ -95,9 +100,10 @@ test.describe('paste', () => {
     });
   }
 
-  test('Ctrl+V stays the program key', async ({ page }) => {
-    // Literal-next in a shell, block select in vim. Not a paste chord.
-    await boot(page);
+  test('with --ctrl-v-to-program, Ctrl+V reaches the program', async ({ page }) => {
+    // Literal-next in a shell, block select in vim.
+    await boot(page, CTRLV_URL);
+    await setClipboard(page);
     await clearWire(page);
     await page.keyboard.press('Control+v');
     await expect.poll(() => wire(page)).toBe('\x16');
@@ -108,6 +114,10 @@ test.describe('paste', () => {
     await clearWire(page);
     await page.keyboard.press('Control+v');
     await expect.poll(() => wire(page)).toBe('\x1b[118;5u');
+    // The other chords still paste.
+    await clearWire(page);
+    await page.keyboard.press('Control+Shift+V');
+    await expect.poll(() => wire(page), { timeout: 5_000 }).toContain(BRACKETED);
   });
 
   test('the context menu and middle click paste into the terminal', async ({ page }) => {

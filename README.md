@@ -157,6 +157,7 @@ own flags are never read as sip's.
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth. Only the owner of the file may have access to it (mode 600). `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |
 | `--max-conns`, `--idle-timeout` | concurrent session limit and idle cutoff |
 | `--renderer` | `webgl`, `canvas` or `dom`; empty picks the best available |
+| `--ctrl-v-to-program` | send Ctrl+V to the program as a key; by default it pastes |
 | `--font`, `--font-family` | serve a font from disk instead of the embedded one |
 | `-d, --dir` | working directory for the wrapped command |
 

@@ -142,12 +142,8 @@ test.describe('clipboard', () => {
   // covers paste under the kitty keyboard protocol, which this shell never
   // asks for.
   //
-  // Only Ctrl+Shift+V is asserted. Synthesized key events do not make Chromium
-  // run the "Paste" editing command for Ctrl+V, so no paste event fires for it
-  // under Playwright and a test on that chord would measure the harness rather
-  // than the client. Ctrl+Shift+V maps to PasteAndMatchStyle, which Chromium
-  // does execute, and it reaches the terminal through the same single xterm
-  // paste listener, so this covers the path both chords share.
+  // The chords share one xterm paste listener. paste.spec.mjs covers each of
+  // them, Ctrl+V included.
   test('Ctrl+Shift+V pastes the clipboard into the terminal', async ({ page }) => {
     await boot(page);
     await page.evaluate(() => window.sipTerm.webterm.xterm.clearSelection());

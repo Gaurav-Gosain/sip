@@ -1,13 +1,13 @@
 {
   "repository": "https://github.com/Gaurav-Gosain/webterm",
-  "commit": "cc047310915c280a44d3268f602b1a7b94114399",
+  "commit": "f1d476b5a983e0ac37e9524d401ea4e49b617e36",
   "version": "0.1.0",
   "xterm": "6.1.0-beta.290",
   "vtgl": "0.0.0",
   "vtglRepository": "https://github.com/Gaurav-Gosain/vtgl",
   "vtglCommit": "4048047fa46c0e545bfe4bee814751609ed0a461",
   "files": {
-    "webterm.js": "af92ba285daa836c8463424ed555c9d6774132ea00071be065c7783c5000ece6",
+    "webterm.js": "426161df8aac1fd8de1ae1a832682bcec5f8af2934e5b1ed18fcd9ef68aaed8c",
     "webterm-vtgl.js": "22d5197357d3a833862d593fb6e9205bbccda2bff2fbbdbafe944bf2c717aa8c",
     "webterm.css": "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
     "xterm.css": "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f"

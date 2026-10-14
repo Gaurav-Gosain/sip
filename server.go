@@ -506,6 +506,9 @@ func (s *httpServer) renderIndex(data []byte) []byte {
 	if s.config.Renderer != "" {
 		cfg["renderer"] = s.config.Renderer
 	}
+	if s.config.CtrlVToProgram {
+		cfg["ctrlV"] = "program"
+	}
 	if len(s.config.MobileKeys) > 0 {
 		cfg["mobileKeys"] = s.config.MobileKeys
 	}
