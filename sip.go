@@ -102,7 +102,8 @@ type ProgramHandler func(sess Session) *tea.Program
 
 // Config holds the web server configuration.
 type Config struct {
-	// Host to bind to (default: "localhost"). A name is looked up once
+	// Host to bind to (default: "localhost"). It takes no port; the port
+	// goes in Port. A name is looked up once
 	// when the server starts. Both listeners bind the address it gives,
 	// and the checks read that address. A name whose addresses are of
 	// more than one kind (loopback and network, say) is refused, and so
@@ -354,12 +355,14 @@ type Config struct {
 	// reverse proxy on the same machine forwards the client's Host.
 	//
 	// An unspecified bind (0.0.0.0, ::) listens on loopback too, so it
-	// gets the same check when the server has no Basic Auth. There, every
-	// IP address in Host also passes, because a rebinding page always
-	// sends a name. A browser that opens the server by its LAN address
-	// works with no change. Add each name that browsers use for this
-	// machine, such as myhost.local. With Basic Auth, an unspecified bind
-	// is not checked, because a rebinding page does not know the password.
+	// gets the same check when the server has no TLS and no password.
+	// There, every IP address in Host also passes, because a rebinding
+	// page always sends a name. A browser that opens the server by its
+	// LAN address works with no change. Add each name that browsers use
+	// for this machine, such as myhost.local. With TLS or a password, an
+	// unspecified bind is not checked: a rebound name is not in the
+	// certificate, and a rebinding page does not know the password. A
+	// user name with an empty password does not count.
 	//
 	// A "*" entry turns the check off. A bind to one network address is
 	// not checked.

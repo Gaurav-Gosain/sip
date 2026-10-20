@@ -76,9 +76,13 @@ func startShellOn(t *testing.T, cfg Config, resolver hostResolver) (*Server, str
 			t.Error("server did not stop")
 		}
 	})
+	scheme, client := "http", http.DefaultClient
+	if cfg.AutoTLS {
+		scheme, client = "https", insecureClient
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://127.0.0.1:" + port + "/health")
+		resp, err := client.Get(scheme + "://127.0.0.1:" + port + "/health")
 		if err == nil {
 			_ = resp.Body.Close()
 			return srv, port
@@ -92,6 +96,9 @@ func startShellOn(t *testing.T, cfg Config, resolver hostResolver) (*Server, str
 	t.Fatal("server did not start")
 	return nil, ""
 }
+
+// insecureClient trusts any certificate, for a server on a self-signed one.
+var insecureClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 
 // rebind is the audit's `wsharness -mode rebind` repro. It dials the
 // loopback server with the Host and Origin a DNS rebinding page sends, types
@@ -108,9 +115,15 @@ func rebind(t *testing.T, port, host, origin string) (ran bool, dialErr error) {
 // rebindWith is rebind with any request headers, such as Authorization.
 func rebindWith(t *testing.T, port, host string, h http.Header) (ran bool, dialErr error) {
 	t.Helper()
+	return rebindURL(t, "ws://127.0.0.1:"+port+"/ws", nil, host, h)
+}
+
+// rebindURL is rebind on any URL, with client for a wss:// one.
+func rebindURL(t *testing.T, url string, client *http.Client, host string, h http.Header) (ran bool, dialErr error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws://127.0.0.1:"+port+"/ws", &websocket.DialOptions{HTTPHeader: h, Host: host})
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: h, Host: host, HTTPClient: client})
 	if err != nil {
 		return false, err
 	}
@@ -226,6 +239,45 @@ func TestWildcardBindWithPasswordAnswersMachineNames(t *testing.T) {
 	ran, err := rebindWith(t, port, "myhost.local:"+port, http.Header{})
 	if ran || err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("Host myhost.local without the password: ran %v, err %v; want a 401", ran, err)
+	}
+}
+
+// TestWildcardBindWithTLSAnswersMachineNames is the README phone recipe,
+// --host 0.0.0.0 --auto-tls with no password. The certificate signs
+// hostname.local, so a phone opens that name. A rebound name is not in the
+// certificate, so the browser stops a rebinding page before the handshake,
+// and a Host check would only refuse the machine name.
+func TestWildcardBindWithTLSAnswersMachineNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "0.0.0.0"
+	cfg.AutoTLS = true
+	cfg.CertDir = t.TempDir()
+	_, port := startShellOn(t, cfg, nil)
+	for _, host := range []string{"myhost.local:" + port, "192.0.2.1:" + port} {
+		if ran, err := rebindURL(t, "wss://127.0.0.1:"+port+"/ws", insecureClient, host, nil); !ran {
+			t.Errorf("Host %s on 0.0.0.0 with TLS: the shell did not run the command (err %v)", host, err)
+		}
+	}
+}
+
+// TestWildcardBindUserWithoutPasswordChecksHost: a user name with an empty
+// password is no secret. A rebinding page can send admin and an empty
+// password, so the Host check stays on.
+func TestWildcardBindUserWithoutPasswordChecksHost(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "0.0.0.0"
+	cfg.AllowInsecureNoTLS = true
+	cfg.BasicUsername = "admin"
+	_, port := startShellOn(t, cfg, nil)
+
+	auth := http.Header{}
+	auth.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:")))
+	ran, err := rebindWith(t, port, "evil.example:"+port, auth)
+	if ran || err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("rebinding page with admin and an empty password: ran %v, err %v; want a 403", ran, err)
+	}
+	if ran, err := rebindWith(t, port, "192.0.2.1:"+port, auth); !ran {
+		t.Errorf("Host 192.0.2.1 with admin and an empty password: the shell did not run the command (err %v)", err)
 	}
 }
 

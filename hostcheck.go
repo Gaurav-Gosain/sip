@@ -48,25 +48,33 @@ func hostCheckMiddleware(allowed []string, anyIP bool) ConnectMiddleware {
 	}
 }
 
-// hostCheckEnabled reports whether the server checks the Host header. The
-// check runs on a loopback bind, which is the bind DNS rebinding reaches.
-// It runs on an unspecified bind, which listens on loopback too, only when
-// the server has no Basic Auth: a rebinding page does not know the
-// password, and people open such a server by machine names
-// (myhost.local, a Tailscale name) that sip cannot list. A "*" entry in
-// AllowedHosts turns it off. It reads the resolved bind, so resolveBind must
-// have run.
+// hostCheckEnabled reports whether the server checks the Host header.
+//
+// The check runs on a loopback bind, which is the bind DNS rebinding
+// reaches, whatever the TLS and the auth.
+//
+// An unspecified bind listens on loopback too. People open it by machine
+// names (myhost.local, a Tailscale name) that sip cannot list, so it is
+// checked only where nothing else stops a rebinding page:
+//   - With TLS, the rebound name is not in the certificate, so the browser
+//     fails the handshake.
+//   - With a password, the page does not know it. A user name alone is
+//     not enough: the page can send it with an empty password.
+//
+// A bind that resolveBind has not classified is checked, so a path that
+// reads it too early fails closed. A "*" entry in AllowedHosts turns the
+// check off.
 func (s *httpServer) hostCheckEnabled() bool {
 	if slices.Contains(s.config.AllowedHosts, "*") {
 		return false
 	}
 	switch s.bind {
-	case bindLoopback:
-		return true
+	case bindNetwork:
+		return false
 	case bindUnspecified:
-		return !s.hasBasicAuth()
+		return !s.mainTLSEnabled() && s.config.BasicPassword == ""
 	}
-	return false
+	return true
 }
 
 // hostGuard is the Host check this server runs on a session handshake, or
@@ -130,7 +138,8 @@ func normalizeHost(h string) string {
 type bindKind int
 
 const (
-	bindNetwork     bindKind = iota // one address that is not loopback
+	bindUnknown     bindKind = iota // not resolved yet; checked as loopback
+	bindNetwork                     // one address that is not loopback
 	bindLoopback                    // this machine only
 	bindUnspecified                 // every interface, loopback included
 )
@@ -154,8 +163,10 @@ func (k bindKind) String() string {
 		return "loopback"
 	case bindUnspecified:
 		return "every interface"
+	case bindNetwork:
+		return "network"
 	}
-	return "network"
+	return "unknown"
 }
 
 // hostResolver is the part of net.Resolver that resolveBindHost needs, so a
@@ -164,14 +175,11 @@ type hostResolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-// hostAddr parses a bind host as an IP address. It takes "addr",
-// "[addr]" and "[addr]:port", and unmaps an IPv4-mapped address. The zone
-// stays. net.ParseIP returns nil for "::%lo" and "::1%lo", which net.Listen
-// binds as :: and ::1, so the zone must not hide what the address is.
+// hostAddr parses a bind host as an IP address. It takes "addr" and
+// "[addr]", and unmaps an IPv4-mapped address. The zone stays.
+// net.ParseIP returns nil for "::%lo" and "::1%lo", which net.Listen binds
+// as :: and ::1, so the zone must not hide what the address is.
 func hostAddr(host string) (netip.Addr, bool) {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
 	a, err := netip.ParseAddr(strings.Trim(host, "[]"))
 	if err != nil {
 		return netip.Addr{}, false
@@ -199,10 +207,14 @@ func hostAddr(host string) (netip.Addr, bool) {
 // none. A link-local IPv6 address needs a zone that a name cannot give, so
 // it is refused.
 //
-// An empty host is localhost, as it always was.
+// An empty host is localhost, as it always was. A host with a port is
+// refused: the port goes in Config.Port.
 func resolveBindHost(ctx context.Context, r hostResolver, host string) (string, bindKind, error) {
 	if host == "" {
 		host = "localhost"
+	}
+	if _, port, err := net.SplitHostPort(host); err == nil {
+		return "", 0, fmt.Errorf("the bind host %s has a port (%s). Give the port as the port, not in the host", host, port)
 	}
 	if a, ok := hostAddr(host); ok {
 		kind := kindOf(a)

@@ -78,11 +78,11 @@ whole client, fonts included, into one binary.
   stops DNS rebinding, where a web page points its own name at 127.0.0.1 and
   opens your terminal. A name passes only when it is `localhost`, the `--host`
   name, a `--cert-host` name or an `--allow-host` name. `0.0.0.0` and `::`
-  listen on loopback too, so they get the same check when there is no basic
-  auth. There, every IP address passes, so the LAN address you type on a phone
-  works. With basic auth they are not checked, so a machine name such as
-  `myhost.local` works. sip looks up a `--host` name once, and the listeners
-  bind the address it gives.
+  listen on loopback too, so they get the same check on plain HTTP with no
+  password. There, every IP address passes, so the LAN address you type on a
+  phone works. With TLS or a password they are not checked, so a machine name
+  such as `myhost.local` works. sip looks up a `--host` name once, and the
+  listeners bind the address it gives.
 - Composes at three layers, after Wish: `ConnectMiddleware` wraps the handshake,
   `SessionMiddleware` wraps the byte streams, and `Middleware` wraps the
   per-session handler. `LiftHTTPMiddleware` turns any
@@ -160,7 +160,7 @@ own flags are never read as sip's.
 | `--cert-dir`, `--cert-host`, `--cert-days` | where that certificate lives, what else it signs for, how long it lasts |
 | `--allow-insecure-no-tls` | permit a non-loopback bind, or basic auth, without TLS |
 | `--origin` | browser origin allowlist, a `path.Match` glob, repeatable |
-| `--allow-host` | extra host name a loopback server, or a `0.0.0.0` server with no basic auth, answers to, repeatable |
+| `--allow-host` | extra host name a loopback server, or a `0.0.0.0` or `::` server with no TLS and no password, answers to, repeatable |
 | `--allow-framing` | let pages of every origin frame the terminal |
 | `--frame-ancestor` | an origin that may frame the terminal, repeatable |
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth. Only the owner of the file may have access to it (mode 600). `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |

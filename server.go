@@ -112,7 +112,7 @@ type httpServer struct {
 	resolver hostResolver
 	// listenHost is Config.Host resolved to one IP address, and bind is
 	// its kind. Both listeners bind listenHost, and every check reads
-	// bind. validateConfig sets them.
+	// bind. start (or validateConfig) sets them.
 	listenHost string
 	bind       bindKind
 
@@ -142,6 +142,11 @@ func (s *httpServer) closeAllSessions() {
 }
 
 func (s *httpServer) start(ctx context.Context) error {
+	// Resolve the bind host first, under the start context. validateConfig
+	// then reads the result.
+	if err := s.resolveBind(ctx); err != nil {
+		return err
+	}
 	if err := s.resolveAutoTLS(); err != nil {
 		return err
 	}
@@ -382,9 +387,12 @@ func (s *httpServer) validateConfig() error {
 	}
 
 	// The TLS rules below, the Host check and the listeners all read the
-	// one resolved address.
-	if err := s.resolveBind(context.Background()); err != nil {
-		return err
+	// one resolved address. start resolves it under its own context; a
+	// caller that validates without starting gets it resolved here.
+	if s.bind == bindUnknown {
+		if err := s.resolveBind(context.Background()); err != nil {
+			return err
+		}
 	}
 
 	switch {

@@ -64,7 +64,10 @@ func TestResolveBindHost(t *testing.T) {
 		{host: "::", addr: "::", kind: bindUnspecified},
 		{host: "[::]", addr: "::", kind: bindUnspecified},
 		{host: "::%lo", addr: "::", kind: bindUnspecified},
-		{host: "[::%lo]:0", addr: "::", kind: bindUnspecified},
+		{host: "[::%lo]:0", err: "has a port"},
+		{host: "0.0.0.0:1", err: "has a port"},
+		{host: "127.0.0.1:7681", err: "has a port"},
+		{host: "localhost:7681", err: "has a port"},
 		{host: "::ffff:0:0", addr: "0.0.0.0", kind: bindUnspecified},
 		{host: "wildname", addr: "0.0.0.0", kind: bindUnspecified},
 		{host: "127.0.0.1", addr: "127.0.0.1", kind: bindLoopback},
@@ -107,13 +110,15 @@ func TestHostGuard(t *testing.T) {
 	type tc struct {
 		bind, header string
 		allowed      []string
-		password     bool
+		password     bool // a user name and a password
+		userOnly     bool // a user name and an empty password
+		tls          bool // a certificate on the main listener
 		want         bool
 	}
 	var cases []tc
 	for _, bind := range []string{
 		"127.0.0.1", "127.1", "0177.0.0.1", "LOCALHOST", "localhost.", "ip6-localhost", "arch-btw", "::1%lo", "",
-		"0.0.0.0", "0", "0x0", "::", "[::]", "::%lo", "[::%lo]:0", "::ffff:0:0", "wildname",
+		"0.0.0.0", "0", "0x0", "::", "[::]", "::%lo", "::ffff:0:0", "wildname",
 	} {
 		cases = append(cases,
 			tc{bind: bind, header: "evil.example:7681", want: false},
@@ -150,7 +155,22 @@ func TestHostGuard(t *testing.T) {
 		)
 	}
 	for _, bind := range []string{"127.0.0.1", "LOCALHOST", "::1%lo"} {
-		cases = append(cases, tc{bind: bind, header: "evil.example", password: true, want: false})
+		cases = append(cases,
+			tc{bind: bind, header: "evil.example", password: true, want: false},
+			tc{bind: bind, header: "evil.example", tls: true, want: false},
+			tc{bind: bind, header: "evil.example", tls: true, password: true, want: false},
+		)
+	}
+	// A user name with an empty password is no password: a rebinding page
+	// can send it. With TLS, a rebound name is not in the certificate, so
+	// the browser stops the page before the handshake.
+	for _, bind := range []string{"0.0.0.0", "::", "::%lo"} {
+		cases = append(cases,
+			tc{bind: bind, header: "evil.example", userOnly: true, want: false},
+			tc{bind: bind, header: "192.168.1.20", userOnly: true, want: true},
+			tc{bind: bind, header: "myhost.local:7681", tls: true, want: true},
+			tc{bind: bind, header: "hostname.local", tls: true, userOnly: true, want: true},
+		)
 	}
 	// The name as typed passes, so a server bound by name opens by name.
 	cases = append(cases,
@@ -169,6 +189,12 @@ func TestHostGuard(t *testing.T) {
 		if c.password {
 			s.config.BasicUsername, s.config.BasicPassword = "u", "p"
 		}
+		if c.userOnly {
+			s.config.BasicUsername = "admin"
+		}
+		if c.tls {
+			s.config.TLSCert, s.config.TLSKey = "server.crt", "server.key"
+		}
 		if err := s.validateConfig(); err != nil {
 			t.Fatalf("bind %q: %v", c.bind, err)
 		}
@@ -179,7 +205,8 @@ func TestHostGuard(t *testing.T) {
 			got = mw(func(*http.Request) error { return nil })(r) == nil
 		}
 		if got != c.want {
-			t.Errorf("bind %q, allowed %q, password %v, Host %q: passed %v, want %v", c.bind, c.allowed, c.password, c.header, got, c.want)
+			t.Errorf("bind %q, allowed %q, password %v, user only %v, tls %v, Host %q: passed %v, want %v",
+				c.bind, c.allowed, c.password, c.userOnly, c.tls, c.header, got, c.want)
 		}
 	}
 }
@@ -192,6 +219,24 @@ func TestLoopbackNameNeedsNoTLS(t *testing.T) {
 		s := &httpServer{config: Config{Host: host, Port: "7681"}, resolver: testResolver}
 		if err := s.validateConfig(); (err == nil) != ok {
 			t.Errorf("%q without TLS: err %v, want accepted %v", host, err, ok)
+		}
+	}
+}
+
+// TestHostGuardBeforeResolve: a server whose bind is not resolved yet runs
+// the check. A path that reads the bind too early must fail closed.
+func TestHostGuardBeforeResolve(t *testing.T) {
+	for _, host := range []string{"0.0.0.0", "192.0.2.10", "lanname"} {
+		s := &httpServer{config: Config{Host: host, Port: "7681"}}
+		mw := s.hostGuard()
+		if mw == nil {
+			t.Errorf("bind %q not resolved: no Host check", host)
+			continue
+		}
+		r, _ := http.NewRequest(http.MethodGet, "/ws", nil)
+		r.Host = "evil.example"
+		if mw(func(*http.Request) error { return nil })(r) == nil {
+			t.Errorf("bind %q not resolved: Host evil.example passed", host)
 		}
 	}
 }
