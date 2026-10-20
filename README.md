@@ -74,6 +74,13 @@ whole client, fonts included, into one binary.
 - Refuses to bind a non-loopback address without TLS, and refuses basic auth
   without it, unless told otherwise by an explicit flag that logs what it is
   giving up. Loopback gets a self-signed certificate generated on the spot.
+- Checks the Host header of each session handshake on a loopback bind and on
+  `0.0.0.0` or `::`, which listen on loopback too. This stops DNS rebinding,
+  where a web page points its own name at 127.0.0.1 and opens your terminal.
+  On `0.0.0.0` every IP address passes, so the LAN address you type on a phone
+  works. A name passes only when it is `localhost`, the `--host` name, a
+  `--cert-host` name or an `--allow-host` name. sip looks up a `--host` name
+  once, and the listeners bind the address it gives.
 - Composes at three layers, after Wish: `ConnectMiddleware` wraps the handshake,
   `SessionMiddleware` wraps the byte streams, and `Middleware` wraps the
   per-session handler. `LiftHTTPMiddleware` turns any
@@ -151,7 +158,7 @@ own flags are never read as sip's.
 | `--cert-dir`, `--cert-host`, `--cert-days` | where that certificate lives, what else it signs for, how long it lasts |
 | `--allow-insecure-no-tls` | permit a non-loopback bind, or basic auth, without TLS |
 | `--origin` | browser origin allowlist, a `path.Match` glob, repeatable |
-| `--allow-host` | extra host name a loopback server answers to, repeatable |
+| `--allow-host` | extra host name a loopback or `0.0.0.0` server answers to, repeatable |
 | `--allow-framing` | let pages of every origin frame the terminal |
 | `--frame-ancestor` | an origin that may frame the terminal, repeatable |
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth. Only the owner of the file may have access to it (mode 600). `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |

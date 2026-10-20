@@ -132,6 +132,7 @@ func (s *Server) ServeCommand(ctx context.Context, name string, args []string, d
 		dir:  dir,
 	}
 	s.server = newCmdHTTPServer(s.config, cmdHandler)
+	s.server.resolver = s.resolver
 	return s.server.start(ctx)
 }
 

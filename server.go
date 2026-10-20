@@ -107,6 +107,15 @@ type httpServer struct {
 	certInfo   *CertInfo
 	connectMW  []ConnectMiddleware
 
+	// resolver looks up a bind host that is a name. Nil is
+	// net.DefaultResolver, the resolver net.Listen uses.
+	resolver hostResolver
+	// listenHost is Config.Host resolved to one IP address, and bind is
+	// its kind. Both listeners bind listenHost, and every check reads
+	// bind. validateConfig sets them.
+	listenHost string
+	bind       bindKind
+
 	// indexSeamWarn keeps the page-assembly complaint to one line.
 	indexSeamWarn sync.Once
 
@@ -145,8 +154,8 @@ func (s *httpServer) start(ctx context.Context) error {
 	// The Host check runs first, so a rebinding page is refused before any
 	// other middleware sees the request.
 	s.connectMW = nil
-	if s.hostCheckEnabled() {
-		s.connectMW = append(s.connectMW, hostCheckMiddleware(s.allowedHosts()))
+	if mw := s.hostGuard(); mw != nil {
+		s.connectMW = append(s.connectMW, mw)
 	}
 	s.connectMW = append(s.connectMW, s.config.ConnectMiddleware...)
 	if s.config.BasicUsername != "" || s.config.BasicPassword != "" {
@@ -169,12 +178,16 @@ func (s *httpServer) start(ctx context.Context) error {
 	}
 	wtPort := strconv.Itoa(wtPortNum)
 
-	httpAddr := net.JoinHostPort(s.config.Host, httpPort)
+	// Both listeners bind the address the checks read, never the name:
+	// a second lookup of the name could give another address.
+	httpAddr := net.JoinHostPort(s.listenHost, httpPort)
 	// Bind WebTransport to the same host as HTTP so the advertised wtUrl
 	// (derived per-request from the client's Host header) is actually
 	// reachable. Hardcoding 127.0.0.1 here left WT dead for any non-loopback
 	// or hostname-based deployment.
-	wtAddr := net.JoinHostPort(s.config.Host, wtPort)
+	wtAddr := net.JoinHostPort(s.listenHost, wtPort)
+	// The URL in the log keeps the host as typed.
+	urlAddr := net.JoinHostPort(s.config.Host, httpPort)
 
 	if err := s.configureCert(); err != nil {
 		return err
@@ -242,7 +255,7 @@ func (s *httpServer) start(ctx context.Context) error {
 		}
 		logger.Info("HTTP server starting",
 			"addr", httpAddr,
-			"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
+			"url", fmt.Sprintf("%s://%s", scheme, urlAddr),
 		)
 		var err error
 		if s.mainTLSEnabled() {
@@ -274,7 +287,7 @@ func (s *httpServer) start(ctx context.Context) error {
 		scheme = "https"
 	}
 	logger.Info("server ready",
-		"url", fmt.Sprintf("%s://%s", scheme, httpAddr),
+		"url", fmt.Sprintf("%s://%s", scheme, urlAddr),
 	)
 	warnStaleEmbed()
 	s.warnOverriddenAssets()
@@ -368,19 +381,25 @@ func (s *httpServer) validateConfig() error {
 		}
 	}
 
+	// The TLS rules below, the Host check and the listeners all read the
+	// one resolved address.
+	if err := s.resolveBind(context.Background()); err != nil {
+		return err
+	}
+
 	switch {
 	case (s.config.TLSCert == "") != (s.config.TLSKey == ""):
 		return fmt.Errorf("TLSCert and TLSKey must be provided together")
 	case s.hasBasicAuth() && !s.mainTLSEnabled() && !s.config.AllowInsecureNoTLS:
 		return fmt.Errorf("basic auth requires TLS; %s", tlsRemedy)
-	case !s.mainTLSEnabled() && !isLoopbackHost(s.config.Host) && !s.config.AllowInsecureNoTLS:
+	case !s.mainTLSEnabled() && s.bind != bindLoopback && !s.config.AllowInsecureNoTLS:
 		return fmt.Errorf("non-loopback listeners require TLS; %s", tlsRemedy)
 	}
 
 	if s.hasBasicAuth() && !s.mainTLSEnabled() && s.config.AllowInsecureNoTLS {
 		logger.Warn("basic auth enabled without TLS — credentials are sent in plaintext on every request")
 	}
-	if !s.mainTLSEnabled() && !isLoopbackHost(s.config.Host) && s.config.AllowInsecureNoTLS {
+	if !s.mainTLSEnabled() && s.bind != bindLoopback && s.config.AllowInsecureNoTLS {
 		logger.Warn("non-loopback bind without TLS — terminal traffic is unencrypted")
 	}
 	return nil
@@ -407,7 +426,7 @@ func (s *httpServer) configureCert() error {
 	// Auto-generate self-signed only for loopback. Non-loopback without
 	// TLS is already either rejected (validateConfig) or running without
 	// WT (no cert) — both fine.
-	if !isLoopbackHost(s.config.Host) {
+	if s.bind != bindLoopback {
 		s.certInfo = nil
 		return nil
 	}
@@ -864,15 +883,4 @@ func wtURLFromHost(reqHost, wtPort string) string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("https://%s/webtransport", net.JoinHostPort(host, wtPort))
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "" || host == "localhost" {
-		return true
-	}
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		host = parsed
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

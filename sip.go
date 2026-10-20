@@ -102,7 +102,12 @@ type ProgramHandler func(sess Session) *tea.Program
 
 // Config holds the web server configuration.
 type Config struct {
-	// Host to bind to (default: "localhost")
+	// Host to bind to (default: "localhost"). A name is looked up once
+	// when the server starts. Both listeners bind the address it gives,
+	// and the checks read that address. A name whose addresses are of
+	// more than one kind (loopback and network, say) is refused, and so
+	// is a name for a link-local IPv6 address. Give that address with its
+	// zone, such as fe80::1%eth0.
 	Host string
 
 	// Port to listen on (default: "7681")
@@ -346,8 +351,16 @@ type Config struct {
 	// a CertHosts entry or an AllowedHosts entry. This stops DNS
 	// rebinding, where a web page points its own name at 127.0.0.1 and
 	// opens a session on this machine. Add the public name here when a
-	// reverse proxy on the same machine forwards the client's Host. A "*"
-	// entry turns the check off. A non-loopback bind is not checked.
+	// reverse proxy on the same machine forwards the client's Host.
+	//
+	// An unspecified bind (0.0.0.0, ::) listens on loopback too, so it
+	// gets the same check. There, every IP address in Host also passes,
+	// because a rebinding page always sends a name. A browser that opens
+	// the server by its LAN address works with no change. Add each name
+	// that browsers use for this machine, such as myhost.local.
+	//
+	// A "*" entry turns the check off. A bind to one network address is
+	// not checked.
 	AllowedHosts []string
 
 	// AllowFraming lets every origin put the page in a frame. By default
@@ -621,6 +634,10 @@ type Server struct {
 	config  Config
 	handler ProgramHandler
 	server  *httpServer
+
+	// resolver looks up a bind host that is a name. Nil is
+	// net.DefaultResolver. Tests set it.
+	resolver hostResolver
 }
 
 // NewServer creates a new web terminal server with the given configuration.
@@ -654,6 +671,7 @@ func (s *Server) Serve(ctx context.Context, handler Handler) error {
 func (s *Server) ServeWithProgram(ctx context.Context, handler ProgramHandler) error {
 	s.handler = handler
 	s.server = newHTTPServer(s.config, handler)
+	s.server.resolver = s.resolver
 	return s.server.start(ctx)
 }
 

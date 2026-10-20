@@ -5,6 +5,7 @@ package sip
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/webtransport-go"
 )
 
 // freePortPair finds a loopback port p where p and p+1 are both free. sip
@@ -46,12 +50,23 @@ func freePortPair(t *testing.T) string {
 // the same path the CLI takes, and returns the port once /health answers.
 func startShell(t *testing.T, cfg Config) string {
 	t.Helper()
-	port := freePortPair(t)
 	cfg.Host = "127.0.0.1"
+	_, port := startShellOn(t, cfg, nil)
+	return port
+}
+
+// startShellOn is startShell on cfg.Host, with the bind host looked up by
+// resolver (nil for the system's). sip listens on 127.0.0.1 for every bind
+// these tests use, so the probes dial there.
+func startShellOn(t *testing.T, cfg Config, resolver hostResolver) (*Server, string) {
+	t.Helper()
+	port := freePortPair(t)
 	cfg.Port = port
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewServer(cfg).ServeCommand(ctx, "sh", nil, "") }()
+	srv := NewServer(cfg)
+	srv.resolver = resolver
+	go func() { done <- srv.ServeCommand(ctx, "sh", nil, "") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -65,7 +80,7 @@ func startShell(t *testing.T, cfg Config) string {
 		resp, err := http.Get("http://127.0.0.1:" + port + "/health")
 		if err == nil {
 			_ = resp.Body.Close()
-			return port
+			return srv, port
 		}
 		select {
 		case err := <-done:
@@ -74,7 +89,7 @@ func startShell(t *testing.T, cfg Config) string {
 		}
 	}
 	t.Fatal("server did not start")
-	return ""
+	return nil, ""
 }
 
 // rebind is the audit's `wsharness -mode rebind` repro. It dials the
@@ -156,6 +171,77 @@ func TestAllowedHostsAdmitsAProxyName(t *testing.T) {
 	port = startShell(t, cfg)
 	if ran, err := rebind(t, port, "any.example", ""); !ran {
 		t.Errorf(`AllowedHosts "*" still checks the host: %v`, err)
+	}
+}
+
+// TestWildcardBindChecksHost: 0.0.0.0 listens on loopback too, so a page
+// that rebinds its name to 127.0.0.1 reached the shell of a server bound
+// there. The Host check now runs on it. An IP address in Host still passes,
+// so a phone that opens the LAN address keeps working.
+func TestWildcardBindChecksHost(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "0.0.0.0"
+	cfg.AllowInsecureNoTLS = true
+	_, port := startShellOn(t, cfg, nil)
+
+	ran, err := rebind(t, port, "evil.example:"+port, "http://evil.example:"+port)
+	if ran {
+		t.Fatal("rebinding page got a shell on a 0.0.0.0 bind: PWNED-42 in the output")
+	}
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("rebinding handshake on 0.0.0.0: want a 403 refusal, got %v", err)
+	}
+	for _, host := range []string{"192.0.2.1:" + port, "127.0.0.1:" + port, "[fd00::20]:" + port, "localhost:" + port} {
+		if ran, err := rebind(t, port, host, ""); !ran {
+			t.Errorf("Host %s on 0.0.0.0: the shell did not run the command (err %v)", host, err)
+		}
+	}
+}
+
+// TestNamedBindListensOnResolvedAddress: a bind host that is a name is
+// looked up once. Both listeners bind the address, and the Host check reads
+// it. "termbox.test" exists only in the fake resolver, so a listener that
+// looked the name up again could not start.
+func TestNamedBindListensOnResolvedAddress(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "termbox.test"
+	srv, port := startShellOn(t, cfg, fakeResolver{"termbox.test": {"127.0.0.1"}})
+
+	if ran, err := rebind(t, port, "evil.example:"+port, ""); ran || err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("rebinding handshake on a loopback name: ran %v, err %v; want a 403 refusal", ran, err)
+	}
+	if ran, err := rebind(t, port, "termbox.test:"+port, ""); !ran {
+		t.Errorf("Host termbox.test: the shell did not run the command (err %v)", err)
+	}
+
+	// WebTransport listens on the same address and runs the same check.
+	p, _ := strconv.Atoi(port)
+	wtPort := strconv.Itoa(p + 1)
+	if got, want := srv.server.wtServer.H3.Addr, net.JoinHostPort("127.0.0.1", wtPort); got != want {
+		t.Errorf("WebTransport listens on %s, want %s", got, want)
+	}
+	tr := &webtransport.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{http3.NextProtoH3}},
+		// Every name dials the loopback listener, so the URL sets Host.
+		DialAddr: func(ctx context.Context, _ string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
+			return quic.DialAddrEarly(ctx, net.JoinHostPort("127.0.0.1", wtPort), tlsCfg, qcfg)
+		},
+	}
+	defer func() { _ = tr.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for host, want := range map[string]bool{"evil.example": false, "127.0.0.1": true, "termbox.test": true} {
+		resp, sess, err := tr.Dial(ctx, "https://"+net.JoinHostPort(host, wtPort)+"/webtransport", nil)
+		if sess != nil {
+			_ = sess.CloseWithError(0, "")
+		}
+		if got := err == nil; got != want {
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			t.Errorf("WebTransport Host %s: opened %v (status %d, err %v), want %v", host, got, status, err, want)
+		}
 	}
 }
 

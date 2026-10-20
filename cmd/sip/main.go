@@ -110,7 +110,7 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringSliceVar(&originPatterns, "origin", nil,
 		"Browser origin allowlist (path.Match glob, repeatable)")
 	rootCmd.Flags().StringSliceVar(&allowHosts, "allow-host", nil,
-		"Extra host name a loopback server answers to, such as a proxy's public name (repeatable, \"*\" turns the check off)")
+		"Extra host name a loopback or 0.0.0.0 server answers to, such as a proxy's public name (repeatable, \"*\" turns the check off)")
 	rootCmd.Flags().BoolVar(&allowFraming, "allow-framing", false,
 		"Let pages of every origin show the terminal in a frame")
 	rootCmd.Flags().StringSliceVar(&frameAncestors, "frame-ancestor", nil,
