@@ -49,15 +49,24 @@ func hostCheckMiddleware(allowed []string, anyIP bool) ConnectMiddleware {
 }
 
 // hostCheckEnabled reports whether the server checks the Host header. The
-// check runs on a loopback bind, which is the bind DNS rebinding reaches,
-// and on an unspecified bind, which listens on loopback too. A "*" entry in
+// check runs on a loopback bind, which is the bind DNS rebinding reaches.
+// It runs on an unspecified bind, which listens on loopback too, only when
+// the server has no Basic Auth: a rebinding page does not know the
+// password, and people open such a server by machine names
+// (myhost.local, a Tailscale name) that sip cannot list. A "*" entry in
 // AllowedHosts turns it off. It reads the resolved bind, so resolveBind must
 // have run.
 func (s *httpServer) hostCheckEnabled() bool {
 	if slices.Contains(s.config.AllowedHosts, "*") {
 		return false
 	}
-	return s.bind == bindLoopback || s.bind == bindUnspecified
+	switch s.bind {
+	case bindLoopback:
+		return true
+	case bindUnspecified:
+		return !s.hasBasicAuth()
+	}
+	return false
 }
 
 // hostGuard is the Host check this server runs on a session handshake, or

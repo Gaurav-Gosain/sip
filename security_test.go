@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,12 +98,18 @@ func startShellOn(t *testing.T, cfg Config, resolver hostResolver) (*Server, str
 // a command, and reports whether the shell ran it.
 func rebind(t *testing.T, port, host, origin string) (ran bool, dialErr error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	h := http.Header{}
 	if origin != "" {
 		h.Set("Origin", origin)
 	}
+	return rebindWith(t, port, host, h)
+}
+
+// rebindWith is rebind with any request headers, such as Authorization.
+func rebindWith(t *testing.T, port, host string, h http.Header) (ran bool, dialErr error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	c, _, err := websocket.Dial(ctx, "ws://127.0.0.1:"+port+"/ws", &websocket.DialOptions{HTTPHeader: h, Host: host})
 	if err != nil {
 		return false, err
@@ -195,6 +202,30 @@ func TestWildcardBindChecksHost(t *testing.T) {
 		if ran, err := rebind(t, port, host, ""); !ran {
 			t.Errorf("Host %s on 0.0.0.0: the shell did not run the command (err %v)", host, err)
 		}
+	}
+}
+
+// TestWildcardBindWithPasswordAnswersMachineNames: with Basic Auth, a
+// 0.0.0.0 bind is not Host-checked. People open it by machine name
+// (myhost.local, a Tailscale name), and a rebinding page does not know the
+// password. The password still guards the shell.
+func TestWildcardBindWithPasswordAnswersMachineNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "0.0.0.0"
+	cfg.AllowInsecureNoTLS = true
+	cfg.BasicUsername, cfg.BasicPassword = "user", "secret"
+	_, port := startShellOn(t, cfg, nil)
+
+	auth := http.Header{}
+	auth.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("user:secret")))
+	for _, host := range []string{"myhost.local:" + port, "box.tailnet.ts.net:" + port} {
+		if ran, err := rebindWith(t, port, host, auth); !ran {
+			t.Errorf("Host %s with the password: the shell did not run the command (err %v)", host, err)
+		}
+	}
+	ran, err := rebindWith(t, port, "myhost.local:"+port, http.Header{})
+	if ran || err == nil || !strings.Contains(err.Error(), "401") {
+		t.Errorf("Host myhost.local without the password: ran %v, err %v; want a 401", ran, err)
 	}
 }
 

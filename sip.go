@@ -354,10 +354,12 @@ type Config struct {
 	// reverse proxy on the same machine forwards the client's Host.
 	//
 	// An unspecified bind (0.0.0.0, ::) listens on loopback too, so it
-	// gets the same check. There, every IP address in Host also passes,
-	// because a rebinding page always sends a name. A browser that opens
-	// the server by its LAN address works with no change. Add each name
-	// that browsers use for this machine, such as myhost.local.
+	// gets the same check when the server has no Basic Auth. There, every
+	// IP address in Host also passes, because a rebinding page always
+	// sends a name. A browser that opens the server by its LAN address
+	// works with no change. Add each name that browsers use for this
+	// machine, such as myhost.local. With Basic Auth, an unspecified bind
+	// is not checked, because a rebinding page does not know the password.
 	//
 	// A "*" entry turns the check off. A bind to one network address is
 	// not checked.

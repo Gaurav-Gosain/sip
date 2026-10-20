@@ -107,6 +107,7 @@ func TestHostGuard(t *testing.T) {
 	type tc struct {
 		bind, header string
 		allowed      []string
+		password     bool
 		want         bool
 	}
 	var cases []tc
@@ -139,6 +140,18 @@ func TestHostGuard(t *testing.T) {
 			tc{bind: bind, header: "myhost.local:7681", want: false},
 		)
 	}
+	// With Basic Auth, an unspecified bind is not checked: a rebinding page
+	// does not know the password, and a machine name must work. A loopback
+	// bind is checked whatever the auth.
+	for _, bind := range []string{"0.0.0.0", "0", "::", "::%lo", "::ffff:0:0"} {
+		cases = append(cases,
+			tc{bind: bind, header: "myhost.local:7681", password: true, want: true},
+			tc{bind: bind, header: "box.tailnet.ts.net", password: true, want: true},
+		)
+	}
+	for _, bind := range []string{"127.0.0.1", "LOCALHOST", "::1%lo"} {
+		cases = append(cases, tc{bind: bind, header: "evil.example", password: true, want: false})
+	}
 	// The name as typed passes, so a server bound by name opens by name.
 	cases = append(cases,
 		tc{bind: "LOCALHOST", header: "LOCALHOST:7681", want: true},
@@ -153,6 +166,9 @@ func TestHostGuard(t *testing.T) {
 			config:   Config{Host: c.bind, Port: "7681", AllowInsecureNoTLS: true, AllowedHosts: c.allowed},
 			resolver: testResolver,
 		}
+		if c.password {
+			s.config.BasicUsername, s.config.BasicPassword = "u", "p"
+		}
 		if err := s.validateConfig(); err != nil {
 			t.Fatalf("bind %q: %v", c.bind, err)
 		}
@@ -163,7 +179,7 @@ func TestHostGuard(t *testing.T) {
 			got = mw(func(*http.Request) error { return nil })(r) == nil
 		}
 		if got != c.want {
-			t.Errorf("bind %q, allowed %q, Host %q: passed %v, want %v", c.bind, c.allowed, c.header, got, c.want)
+			t.Errorf("bind %q, allowed %q, password %v, Host %q: passed %v, want %v", c.bind, c.allowed, c.password, c.header, got, c.want)
 		}
 	}
 }
