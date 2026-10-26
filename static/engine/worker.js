@@ -538,7 +538,43 @@ function raster(n) {
 // Used when the worker has no WebGL2 (or when asked). The same wasm frame
 // builder and instance buffer; this paints dirty rows with fillText. Slower
 // per cell than the instanced draw, still entirely off the main thread.
-let mode2d = false, ctx2d = null, prevCur2d = [-1, -1];
+let mode2d = false, ctx2d = null, prevCur2d = [-1, -1], prevHover2d = -1;
+// Row hashes of the last painted frame. A scrolled frame matches the old
+// rows shifted by k: the canvas moves its own pixels by k rows and only the
+// rows that differ are painted again.
+let hashA = new Uint32Array(0), hashB = new Uint32Array(0), hashValid = false;
+let newA = new Uint32Array(0), newB = new Uint32Array(0);
+
+function hashRows(inst) {
+  if (newA.length !== rows) { newA = new Uint32Array(rows); newB = new Uint32Array(rows); }
+  const n = cols * 3;
+  for (let y = 0; y < rows; y++) {
+    let a = 0x811c9dc5 | 0, b = 0x9e3779b9 | 0;
+    for (let i = y * n, end = i + n; i < end; i++) {
+      const v = inst[i];
+      a = Math.imul(a ^ v, 0x01000193);
+      b = Math.imul(b + v, 0x85ebca6b) ^ (b >>> 13);
+    }
+    newA[y] = a; newB[y] = b;
+  }
+}
+
+// The shift k (old row y+k is new row y) that leaves the fewest rows to
+// paint, and that count. k = 0 means no shift.
+function bestShift() {
+  // Counting stops once a shift is no better than the best so far, so a
+  // shift wins only when it is strictly better.
+  let bestK = 0, best = rows + 1;
+  for (let k = -(rows - 1); k < rows; k++) {
+    let paint = 0;
+    for (let y = 0; y < rows && paint < best; y++) {
+      const o = y + k;
+      if (o < 0 || o >= rows || newA[y] !== hashA[o] || newB[y] !== hashB[o]) paint++;
+    }
+    if (paint < best) { best = paint; bestK = k; }
+  }
+  return [bestK, best];
+}
 const slot2d = new Map(); // slot -> { text, style, width }
 const images2d = new Map(); // id -> { canvas, gen, w, h }
 
@@ -655,9 +691,45 @@ function draw2d(force, t0) {
   frameNo++;
   const gfx = gfxList();
   const paint = new Set();
-  for (let y = 0; y < rows; y++) if (force || gfx || mem[dirty + y]) paint.add(y);
-  // The cursor's old and new rows, and the hovered link's row.
+  let anyDirty = force || !!gfx;
+  if (!anyDirty) for (let y = 0; y < rows; y++) if (mem[dirty + y]) { anyDirty = true; break; }
+  let shift = 0;
+  if (anyDirty) {
+    hashRows(inst);
+    if (force || gfx || !hashValid || hashA.length !== rows) {
+      for (let y = 0; y < rows; y++) paint.add(y);
+    } else {
+      const [k, n] = bestShift();
+      let plain = 0;
+      for (let y = 0; y < rows; y++) if (newA[y] !== hashA[y] || newB[y] !== hashB[y]) plain++;
+      // A blit costs about one row of painting; take it when it saves more.
+      if (k !== 0 && n + 1 < plain) {
+        shift = k;
+        const W = cols * cw, keep = (rows - Math.abs(k)) * ch;
+        if (k > 0) ctx2d.drawImage(ctx2d.canvas, 0, k * ch, W, keep, 0, 0, W, keep);
+        else ctx2d.drawImage(ctx2d.canvas, 0, 0, W, keep, 0, -k * ch, W, keep);
+        T.blits = (T.blits || 0) + 1;
+        for (let y = 0; y < rows; y++) {
+          const o = y + k;
+          if (o < 0 || o >= rows || newA[y] !== hashA[o] || newB[y] !== hashB[o]) paint.add(y);
+        }
+        // Shaped runs are drawn over their cells and are not in the hash.
+        const runs = runList();
+        if (runs) for (let i = 0; i < runs.length; i += 6) paint.add(runs[i + 1]);
+      } else for (let y = 0; y < rows; y++) if (mem[dirty + y]) paint.add(y);
+    }
+    [hashA, newA] = [newA, hashA]; [hashB, newB] = [newB, hashB];
+    hashValid = !gfx;
+  }
+  // The cursor's old and new rows, and the hovered link's row. After a
+  // blit the old cursor and hover pixels moved with their rows.
   if (prevCur2d[1] >= 0 && prevCur2d[1] < rows) paint.add(prevCur2d[1]);
+  if (shift) {
+    const moved = prevCur2d[1] - shift;
+    if (prevCur2d[1] >= 0 && moved >= 0 && moved < rows) paint.add(moved);
+    if (prevHover2d >= 0 && prevHover2d - shift >= 0 && prevHover2d - shift < rows) paint.add(prevHover2d - shift);
+  }
+  if (prevHover2d >= 0 && prevHover2d < rows) paint.add(prevHover2d);
   if (cur[1] < rows) paint.add(cur[1]);
   if (hover) paint.add(hover.row);
   if (gfx) {
@@ -669,6 +741,7 @@ function draw2d(force, t0) {
   const runs = runList();
   if (runs) for (let i = 0; i < runs.length; i += 6) if (paint.has(runs[i + 1])) paintRun2d(runs, i);
   prevCur2d = [cur[0], cur[1]];
+  prevHover2d = hover ? hover.row : -1;
   renders++;
   lastDraw = performance.now();
   if (cur[0] !== lastCur[0] || cur[1] !== lastCur[1] || cur[2] !== lastCur[2]) { lastCur = [cur[0], cur[1], cur[2]]; postCursor(); }
@@ -1181,11 +1254,13 @@ self.onmessage = async ({ data: m }) => {
       }
       case 'net': {
         // The socket lives in the network worker; this port carries its
-        // output here and our input there.
-        net = m.port;
-        net.onmessage = ({ data: d }) => {
-          if (d.type === 'output') { writeBytes(d.bytes); net.postMessage({ type: 'ack' }); afterOutput(); }
-          else if (d.type === 'open') net.postMessage({ type: 'resize', cols, rows, widthPx: cols * cw, heightPx: rows * ch });
+        // output here and our input there. With viaPage (sip's connection)
+        // input and resizes go to the page, which frames and sends them.
+        const port = m.port;
+        net = m.viaPage ? null : port;
+        port.onmessage = ({ data: d }) => {
+          if (d.type === 'output') { writeBytes(d.bytes); port.postMessage({ type: 'ack' }); afterOutput(); }
+          else if (d.type === 'open') port.postMessage({ type: 'resize', cols, rows, widthPx: cols * cw, heightPx: rows * ch });
           else if (d.type === 'options') { readOnly = !!d.options.readOnly; self.postMessage(d); }
           else self.postMessage(d); // title, closed
         };

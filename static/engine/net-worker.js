@@ -4,6 +4,7 @@
 // worker. Output buffers are transferred to the engine over a
 // MessagePort without a copy. The main thread is not involved.
 import { openTransport } from './transport.js';
+import { fallback, reconnecting, webSocketTransport, webTransportTransport } from './transports.js';
 
 let conn = null;
 let engine = null; // MessagePort to the engine worker
@@ -39,8 +40,11 @@ function ship() {
 }
 
 self.onmessage = async ({ data: m }) => {
+  if (m.type === 'send') { conn?.send(m.bytes); return; }
+  if (m.type === 'close') { conn?.close(); conn = null; return; }
   if (m.type !== 'connect') return;
   engine = m.port;
+  if (m.transport.kind === 'sip') return connectSip(m);
   engine.onmessage = ({ data: d }) => {
     if (d.type === 'ack') { inflight--; ship(); }
     else if (d.type === 'input') conn?.input(d.bytes);
@@ -70,3 +74,58 @@ self.onmessage = async ({ data: m }) => {
     self.postMessage({ type: 'result', id: m.id, error: String(err) });
   }
 };
+
+// sip's connection, as sip's xterm.js client builds it: WebTransport first
+// (with the certificate hash from /cert-hash, whose answer may also name the
+// endpoint), then WebSocket, inside webterm's reconnecting() with sip's
+// backoff. The same transports and combinators, generated from webterm's
+// source. Output goes to the engine; every other server message, and every
+// change in the connection's life, goes to the page through the engine's
+// queue, so the page sees them after the output that came before them.
+// Input comes from the page already framed (type byte and payload), because
+// the page folds the key bar's sticky modifiers into it.
+const MSG_OUTPUT = 0x31;
+function connectSip(m) {
+  const t = m.transport;
+  const ctl = (ev) => enqueue({ ctl: { type: 'sipconn', ...ev } });
+  engine.onmessage = ({ data: d }) => { if (d.type === 'ack') { inflight--; ship(); } };
+  let wtUrl = t.wtUrl;
+  const certOptions = async () => {
+    try {
+      const resp = await fetch(t.certHashUrl);
+      if (!resp.ok) return {};
+      const data = await resp.json();
+      if (data.wtUrl) wtUrl = data.wtUrl;
+      return { serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(data.hashBytes).buffer }] };
+    } catch {
+      return {};
+    }
+  };
+  const candidates = () => {
+    const list = [];
+    if (t.wantsWebTransport) list.push(webTransportTransport(() => wtUrl, { options: () => certOptions() }));
+    list.push(webSocketTransport(t.wsUrl));
+    return fallback(...list);
+  };
+  conn = reconnecting(candidates, {
+    delayMs: t.delayMs,
+    factor: t.factor,
+    maxAttempts: t.maxAttempts,
+    onOpen: (chosen) => ctl({ ev: 'open', name: chosen?.active?.name ?? chosen?.name }),
+    onRetry: (attempt, wait) => ctl({ ev: 'retry', attempt, wait }),
+    onGiveUp: () => ctl({ ev: 'giveup' }),
+  });
+  const sink = {
+    data: (bytes) => {
+      if (!bytes.length) return;
+      if (bytes[0] === MSG_OUTPUT) {
+        if (bytes.length > 1) enqueue({ bytes: bytes.subarray(1) });
+      } else ctl({ ev: 'message', bytes });
+    },
+    closed: (error) => ctl({ ev: 'closed', error: error ? String(error) : undefined }),
+  };
+  conn.start(sink).then(
+    () => self.postMessage({ type: 'result', id: m.id, value: true }),
+    (err) => self.postMessage({ type: 'result', id: m.id, error: String(err) }),
+  );
+}

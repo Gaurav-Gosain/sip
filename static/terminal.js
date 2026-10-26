@@ -1246,6 +1246,7 @@
             this.wantsWebTransport = preference === 'auto' || preference === 'webtransport';
             const W = window.WebTerm;
             const client = this.client;
+            if (client.webterm && client.webterm.isEngine) return this.startInEngine();
 
             const candidates = () => {
                 const list = [];
@@ -1278,6 +1279,49 @@
                 closed: () => client.handleDisconnect(),
             };
             this.ready = this.inner.start(sink);
+            return this.ready;
+        }
+
+        /**
+         * The worker engine's form of start. The engine's network worker
+         * holds the socket and runs the same transports, fallback and
+         * reconnect policy as above (generated from webterm's source), so
+         * output goes from the network to the parser without the page.
+         * What the page still does is the same as above: the status line,
+         * the events, every server message other than output (through
+         * handleMessage), and the input it frames and sends.
+         */
+        startInEngine() {
+            const client = this.client;
+            const term = client.webterm.term;
+            let live = null;
+            const url = (u) => new URL(u, document.baseURI).href;
+            this.inner = {
+                get active() { return live ? { active: live } : null; },
+                send: (msg) => { term.sipSend(msg); },
+                close: () => { live = null; term.sipClose(); },
+            };
+            const onEvent = (m) => {
+                switch (m.ev) {
+                    case 'open':
+                        live = { name: m.name };
+                        this.opened({ active: live });
+                        break;
+                    case 'retry': client.onRetry(m.attempt, m.wait); break;
+                    case 'giveup': client.onGiveUp(); break;
+                    case 'closed': client.handleDisconnect(); break;
+                    case 'message': client.handleMessage(m.bytes); break;
+                }
+            };
+            this.ready = term.connectSip({
+                wsUrl: url(client.urls.wsUrl),
+                wtUrl: this.wtUrl,
+                certHashUrl: url(client.urls.certHashUrl),
+                wantsWebTransport: this.wantsWebTransport,
+                delayMs: client.reconnectDelay,
+                factor: 1.5,
+                maxAttempts: client.maxReconnectAttempts,
+            }, onEvent);
             return this.ready;
         }
 

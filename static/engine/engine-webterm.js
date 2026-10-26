@@ -61,7 +61,9 @@ export class EngineWebTerm {
       theme: [num(theme.foreground, 0xd0d0d0), num(theme.background, 0x101010), num(theme.cursor || theme.foreground, 0xffffff)],
       onData: (bytes) => {
         if (this.options.input?.readOnly || !this.transport) return;
-        this.transport.send(bytes);
+        // Split as webterm does, under the server's per-message input limit.
+        const n = this.options.input?.chunkBytes || bytes.length || 1;
+        for (let o = 0; o < bytes.length; o += n) this.transport.send(bytes.subarray(o, o + n));
       },
       onTitle: (t) => this.emit('title', t),
       onBell: () => this.emit('bell'),

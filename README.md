@@ -37,7 +37,9 @@ The optional vtgl renderer is a second file, `static/webterm-vtgl.js`, which the
 page loads only when the vtgl renderer is chosen. The experimental worker
 engine is `static/engine/`: libghostty-vt and a WebGL2 renderer in Web
 Workers, loaded only when the renderer is `engine`. A browser that cannot run
-it gets the xterm.js client. `engine-vendor.json` names its webterm commit. There is no build step, no bundler and
+it gets the xterm.js client. With the engine, the connection also runs in a
+worker, with the same transports and reconnect rules, so terminal output never
+reaches the page's main thread. `engine-vendor.json` names its webterm commit. There is no build step, no bundler and
 no `node_modules` between a clone and a running server: `go:embed` bakes the
 whole client, fonts included, into one binary.
 

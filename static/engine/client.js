@@ -111,6 +111,7 @@ export class WorkerTerm {
     }
     if (m.type === 'options') { this.opts.onOptions?.(m.options); return; }
     if (m.type === 'closed') { this.opts.onClose?.(m.error); return; }
+    if (m.type === 'sipconn') { this.sipHandler?.(m); return; }
     if (m.type === 'ready') {
       this.cw = m.cw; this.ch = m.ch; this.renderer = m.renderer;
       this.canvas.style.width = `${(this.cols * m.cw) / this.dpr}px`;
@@ -241,6 +242,44 @@ export class WorkerTerm {
       };
       this.net.postMessage({ type: 'connect', transport, port: ch.port2 }, [ch.port2]);
     });
+  }
+  /**
+   * Open sip's connection in a network worker: WebTransport first, then
+   * WebSocket, reconnecting with backoff, as sip's xterm.js client does.
+   * plan: { wsUrl, wtUrl, certHashUrl, wantsWebTransport, delayMs, factor,
+   * maxAttempts }. Output goes straight to the engine. onEvent gets
+   * { ev: 'open', name } | { ev: 'retry', attempt, wait } | { ev: 'giveup' }
+   * | { ev: 'closed', error } | { ev: 'message', bytes } (any server message
+   * other than output, type byte first), each after the output before it.
+   * Terminal input then reaches onData, for the page to send with sipSend.
+   * Resolves when the first connection opens; rejects when it fails.
+   */
+  connectSip(plan, onEvent) {
+    this.sipClose();
+    this.sipHandler = onEvent;
+    const ch = new MessageChannel();
+    const net = new Worker(this.opts.netWorkerUrl ?? new URL('./net-worker.js', import.meta.url), { type: 'module' });
+    this.net = net;
+    this.worker.postMessage({ type: 'net', port: ch.port1, viaPage: true }, [ch.port1]);
+    return new Promise((resolve, reject) => {
+      net.onmessage = ({ data: m }) => {
+        if (m.type === 'result') return m.error ? reject(new Error(m.error)) : resolve(true);
+        this.onMessage(m);
+      };
+      net.postMessage({ type: 'connect', transport: { kind: 'sip', ...plan }, port: ch.port2 }, [ch.port2]);
+    });
+  }
+  /** One framed sip message (type byte and payload) for the server. */
+  sipSend(bytes) { this.net?.postMessage({ type: 'send', bytes }); }
+  /** Close sip's connection for good: no reconnect follows. */
+  sipClose() {
+    if (!this.net) return;
+    const net = this.net;
+    this.net = null;
+    this.sipHandler = null;
+    net.postMessage({ type: 'close' });
+    // Let the close frame go out before the thread ends.
+    setTimeout(() => net.terminate(), 1000);
   }
   async resize(cols, rows) {
     const ok = await this.request({ type: 'resize', cols, rows });
