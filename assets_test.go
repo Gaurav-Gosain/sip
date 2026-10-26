@@ -32,7 +32,7 @@ import (
 // again when its cursor colour rules went: they held the DOM renderer's cursor
 // on the theme colour with !important, so OSC 12 never showed there.
 var defaultAssetDigests = map[string]string{
-	"/":                    "b1316b4e9b3116d3eeffd2a5d43cc101641be6ad14615657319beb9b4931fec7",
+	"/":                    "d2c8b5ee71b0b4c07d45dff97687904a383d488f52d5ec029945ae50e87d5c4d",
 	"/static/terminal.css": "83773aab3490b6e894dcfef7d1381bd8826d049a7c4eb2bd68c2bfe8f82ac4e6",
 	"/static/webterm.css":  "511792665738142539a8e36d1cfae86b4a62f002b672918d904ede29a2f51b75",
 	"/static/xterm.css":    "4d9a1d50808997f097ccc6040a5da6f6cb06b14e5ee2402df5196a218bba838f",

@@ -823,7 +823,19 @@
 
     /** The terminal's buffer search, or null before the page's terminal exists. */
     function searcher() {
-        return sipClient && sipClient.webterm ? sipClient.webterm.search : null;
+        const wt = sipClient && sipClient.webterm;
+        if (!wt) return null;
+        if (!wt.isEngine) return wt.search;
+        // The engine searches in its worker, so its answers are promises:
+        // { index, total, length } for the selected match, or null. See the
+        // page API notes in docs/extending.md.
+        let last = '';
+        return {
+            find(q, o) { last = q; return wt.find(q, { backwards: !!(o && o.backwards) }); },
+            findNext() { return last ? wt.find(last) : Promise.resolve(null); },
+            findPrevious() { return last ? wt.find(last, { backwards: true }) : Promise.resolve(null); },
+            clear() { last = ''; wt.clearSearch(); },
+        };
     }
 
     /** Whether sip.claim has already handed the API over. */
@@ -1425,6 +1437,8 @@
             if (!this.webterm) return 'unknown';
             switch (this.webterm.renderer) {
                 case 'vtgl': return 'vtgl';
+                case 'engine': return 'Worker engine';
+                case 'engine-canvas2d': return 'Worker engine (Canvas2D)';
                 case 'webgl': return 'WebGL';
                 case 'canvas': return 'Canvas';
                 default: return 'DOM';
@@ -1550,7 +1564,9 @@
                 cursorStyle: this.appearance.cursorStyle || 'block',
                 scrollback: this.appearance.scrollback || 5000,
                 links: true,
-                renderer: { prefer: this.settings.renderer, vtgl: this.vtgl || undefined },
+                // 'engine' is not a webterm renderer: when the engine could not
+                // start, the xterm.js client takes the automatic choice.
+                renderer: { prefer: this.settings.renderer === 'engine' ? 'auto' : this.settings.renderer, vtgl: this.vtgl || undefined },
                 clipboard: { copyOnSelect: this.settings.copyOnSelect },
                 // The scrollback anchor, so an image scrolls away with the text
                 // that introduced it, which is what a shell running an image
@@ -1603,10 +1619,16 @@
                 return;
             }
 
-            if (this.settings.renderer === 'vtgl') await this.loadVtgl();
-            this.webterm = new WebTerm(this.webtermOptions());
-            await this.webterm.open(host);
-            this.installClampedFit();
+            // The worker engine is opt-in and has its own file. If it cannot
+            // start here (no OffscreenCanvas, no WebAssembly, the wasm did not
+            // load), the page keeps going on the xterm.js client below.
+            if (this.settings.renderer === 'engine') this.webterm = await this.openEngine(host);
+            if (!this.webterm) {
+                if (this.settings.renderer === 'vtgl') await this.loadVtgl();
+                this.webterm = new WebTerm(this.webtermOptions());
+                await this.webterm.open(host);
+                this.installClampedFit();
+            }
             // A page script runs before the terminal is constructed, so a
             // theme or a font size it set is waiting for this moment.
             applyPagePatch();
@@ -1616,7 +1638,9 @@
             // is input as far as the program is concerned. That also gets the
             // read-only case right for free: a session that sends no
             // keystrokes sends no replies either.
-            this.pointer = new PointerShapes(
+            // The engine reads OSC 22 itself (Ghostty tracks it) and sets the
+            // same --sip-pointer-shape property, so this layer is for xterm.js.
+            this.pointer = this.webterm.isEngine ? null : new PointerShapes(
                 this.term,
                 (reply) => { this.sendInput(reply).catch(() => {}); },
                 () => defaultPointerShape(this.appearance, this.term),
@@ -1648,6 +1672,37 @@
 
             await this.connect();
             this.webterm.focus();
+        }
+
+        /**
+         * Open the worker engine: libghostty-vt and a WebGL2 (or Canvas2D)
+         * renderer running in Web Workers, so parsing and drawing stay off
+         * the page's main thread. Opt-in with the renderer setting "engine"
+         * or ?renderer=engine. Returns null when this browser cannot run it,
+         * and the caller opens the xterm.js client instead.
+         *
+         * Its files are static/engine/, loaded only here, so a page that does
+         * not ask for the engine never downloads them.
+         */
+        async openEngine(host) {
+            try {
+                const base = new URL('static/engine/', document.baseURI);
+                const mod = await import(new URL('engine-webterm.js', base).href);
+                const support = mod.EngineWebTerm.supported();
+                if (!support.ok) throw new Error(`unsupported here: ${support.reasons.join(', ')}`);
+                const wt = new mod.EngineWebTerm(Object.assign(this.webtermOptions(), {
+                    engine: { wasmUrl: new URL('engine.wasm', base).href },
+                    // A tap on the terminal raises the phone keyboard, which the
+                    // key bar owns, as with xterm.js.
+                    onTap: () => { if (this.mobile) this.mobile.focusInput(); },
+                }));
+                await wt.open(host);
+                return wt;
+            } catch (e) {
+                console.warn('sip: the worker engine is unavailable; using xterm.js', e);
+                this.engineError = String(e && e.message || e);
+                return null;
+            }
         }
 
         /**
@@ -2186,6 +2241,9 @@
          * not.
          */
         setupTouchMouse() {
+            // The engine's input layer handles touch itself, with the same
+            // rules; this layer is built on xterm.js's gesture events.
+            if (this.webterm && this.webterm.isEngine) return;
             const el = this.webterm && this.webterm.xterm.element;
             const screen = el ? el.querySelector('.xterm-screen') : null;
             const opts = sipConfig.mobileMouse || {};

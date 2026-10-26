@@ -243,7 +243,9 @@ type Config struct {
 
 	// Renderer selects the client-side terminal renderer: "webgl",
 	// "canvas" or "dom". Empty means "auto", which prefers WebGL and
-	// falls back to canvas and then the DOM. A user's saved setting and
+	// falls back to canvas and then the DOM. "engine" is the experimental
+	// worker engine (libghostty-vt and a WebGL2 renderer in Web Workers);
+	// a browser that cannot run it gets "auto". A user's saved setting and
 	// a ?renderer= query param both override this.
 	Renderer string
 

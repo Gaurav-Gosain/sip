@@ -339,6 +339,13 @@ pattern: a regular expression from a page script is your own runtime to lose.
 Wrapped lines are searched as the line they wrapped from, which is most of what
 is on a terminal screen.
 
+With the experimental worker engine (`renderer: engine`), the search runs in
+the engine's worker. `find`, `findNext` and `findPrevious` then return a promise
+for `{index, total, length}` or null, where `index` counts matches from the
+newest. ASCII letters always compare without case there. Read
+`api.selection.get()` after a short wait if you call it right after
+`selectAll()`: the selected text arrives from the worker.
+
 ### clipboard
 
 ```js

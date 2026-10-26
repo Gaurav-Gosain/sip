@@ -134,7 +134,7 @@ The command to run must be specified after "--".`,
 	rootCmd.Flags().StringVar(&fontFamily, "font-family", "",
 		"CSS font-family for the terminal (overrides default JetBrains Mono Nerd Font)")
 	rootCmd.Flags().StringVar(&rendererChoice, "renderer", "",
-		"Client terminal renderer: \"webgl\", \"canvas\", \"dom\", or empty to prefer WebGL and fall back")
+		"Client terminal renderer: \"webgl\", \"canvas\", \"dom\", \"engine\" (experimental worker engine), or empty to prefer WebGL and fall back")
 	rootCmd.Flags().BoolVar(&ctrlVToProgram, "ctrl-v-to-program", false,
 		"Send Ctrl+V to the program as a key. By default Ctrl+V pastes")
 	rootCmd.Flags().BoolVar(&enableKitty, "enable-kitty-transcoder", false,

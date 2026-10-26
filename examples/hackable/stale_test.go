@@ -16,7 +16,7 @@ import (
 // When this fails: read sip's current index.html out of sip.Assets(), see what
 // changed, carry what matters into assets/index.html, then put the new digest
 // here. Do not just update the digest.
-const sipIndexDigest = "4db290dd08c712ddc743a0ca3beaff7e2c20ede478884aea60cd138910f0614e"
+const sipIndexDigest = "8a244a819ed4372e9624b0cd264ebcd8e690758c9b3ba04caf86fdfeae7bf41d"
 
 func TestOverrideIsStillCurrent(t *testing.T) {
 	got, err := sip.AssetDigest("index.html")

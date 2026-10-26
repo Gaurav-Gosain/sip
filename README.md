@@ -34,7 +34,10 @@ web-links, image and unicode-graphemes addons along with the kitty overlay, the
 clipboard layer, the width overrides, the transports, the buffer search and the
 touch layer. `webterm-vendor.json` names the webterm commit it was built from.
 The optional vtgl renderer is a second file, `static/webterm-vtgl.js`, which the
-page loads only when the vtgl renderer is chosen. There is no build step, no bundler and
+page loads only when the vtgl renderer is chosen. The experimental worker
+engine is `static/engine/`: libghostty-vt and a WebGL2 renderer in Web
+Workers, loaded only when the renderer is `engine`. A browser that cannot run
+it gets the xterm.js client. `engine-vendor.json` names its webterm commit. There is no build step, no bundler and
 no `node_modules` between a clone and a running server: `go:embed` bakes the
 whole client, fonts included, into one binary.
 
@@ -165,7 +168,7 @@ own flags are never read as sip's.
 | `--frame-ancestor` | an origin that may frame the terminal, repeatable |
 | `--basic-user`, `--basic-pass-file` | HTTP basic auth. Only the owner of the file may have access to it (mode 600). `$SIP_PASSWORD` is also read, and sip removes it from the environment of the program |
 | `--max-conns`, `--idle-timeout` | concurrent session limit and idle cutoff |
-| `--renderer` | `webgl`, `canvas` or `dom`; empty picks the best available |
+| `--renderer` | `webgl`, `canvas`, `dom` or `engine` (experimental); empty picks the best available |
 | `--ctrl-v-to-program` | send Ctrl+V to the program as a key; by default it pastes |
 | `--font`, `--font-family` | serve a font from disk instead of the embedded one |
 | `-d, --dir` | working directory for the wrapped command |
