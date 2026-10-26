@@ -829,13 +829,21 @@
         // The engine searches in its worker, so its answers are promises:
         // { index, total, length } for the selected match, or null. See the
         // page API notes in docs/extending.md.
-        let last = '';
+        // The query lives on the engine wrapper, so it survives between calls.
         return {
-            find(q, o) { last = q; return wt.find(q, { backwards: !!(o && o.backwards) }); },
-            findNext() { return last ? wt.find(last) : Promise.resolve(null); },
-            findPrevious() { return last ? wt.find(last, { backwards: true }) : Promise.resolve(null); },
-            clear() { last = ''; wt.clearSearch(); },
+            find(q, o) { return wt.find(q, { backwards: !!(o && o.backwards) }); },
+            findNext() { return wt.lastQuery ? wt.find(wt.lastQuery) : Promise.resolve(null); },
+            findPrevious() { return wt.lastQuery ? wt.find(wt.lastQuery, { backwards: true }) : Promise.resolve(null); },
+            clear() { wt.clearSearch(); },
         };
+    }
+
+    /**
+     * One match shape for search version 2, whatever the renderer answered
+     * with: {row, col, length}, row counting from the oldest line kept.
+     */
+    function asMatch(result) {
+        return Promise.resolve(result).then((m) => (m ? Object.freeze({ row: m.row, col: m.col, length: m.length }) : null));
     }
 
     /** Whether sip.claim has already handed the API over. */
@@ -939,8 +947,13 @@
 
     /** Reads and writes that are not on window.sip. See sip.claim. */
     const claimedApi = Object.freeze({
-        /** The shape of this API. It goes up when a call changes meaning. */
-        version: 1,
+        /**
+         * The shape of this API. It goes up when a call changes meaning or
+         * one is added. 2 added search.findAsync, findNextAsync and
+         * findPreviousAsync, which answer with a promise on every renderer;
+         * every version 1 call still means what it did.
+         */
+        version: 2,
         capabilities: () => grantedCaps,
 
         on: apiOn,
@@ -1088,6 +1101,28 @@
             },
             /** Forget the query and drop the selection. */
             clear() { need('read'); if (searcher()) searcher().clear(); },
+
+            /**
+             * Version 2: the same three calls, answering with a promise for
+             * {row, col, length} or null on every renderer. The xterm.js
+             * client finds synchronously and resolves at once; the worker
+             * engine searches in its worker. Write new code against these.
+             */
+            findAsync(query, opts) {
+                need('read');
+                const s = searcher();
+                return asMatch(s ? s.find(String(query), opts || {}) : null);
+            },
+            findNextAsync() {
+                need('read');
+                const s = searcher();
+                return asMatch(s ? s.findNext() : null);
+            },
+            findPreviousAsync() {
+                need('read');
+                const s = searcher();
+                return asMatch(s ? s.findPrevious() : null);
+            },
         }),
 
         clipboard: Object.freeze({

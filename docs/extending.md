@@ -332,6 +332,11 @@ api.search.find(query, { caseSensitive, backwards })   // {row, col, length} or 
 api.search.findNext()
 api.search.findPrevious()
 api.search.clear()
+
+// version 2, on every renderer:
+api.search.findAsync(query, { caseSensitive, backwards })   // promise: {row, col, length} or null
+api.search.findNextAsync()
+api.search.findPreviousAsync()
 ```
 
 `find` selects the match and scrolls to it. The query is plain text and never a
@@ -339,12 +344,25 @@ pattern: a regular expression from a page script is your own runtime to lose.
 Wrapped lines are searched as the line they wrapped from, which is most of what
 is on a terminal screen.
 
-With the experimental worker engine (`renderer: engine`), the search runs in
-the engine's worker. `find`, `findNext` and `findPrevious` then return a promise
-for `{index, total, length}` or null, where `index` counts matches from the
-newest. ASCII letters always compare without case there. Read
-`api.selection.get()` after a short wait if you call it right after
-`selectAll()`: the selected text arrives from the worker.
+Version 2 of the API (`api.version === 2`) adds the same three calls as
+promises, on every renderer:
+
+```js
+await api.search.findAsync(query, { caseSensitive, backwards })   // {row, col, length} or null
+await api.search.findNextAsync()
+await api.search.findPreviousAsync()
+```
+
+Write new code against these. With the xterm.js client they resolve at once
+with what `find` returns. With the experimental worker engine
+(`renderer: engine`) the search runs in the engine's worker, so only these can
+answer there: the version 1 calls also return a promise under that renderer.
+A new query selects the newest match there, where the xterm.js client starts
+from the top of the screen, so the first match can differ; both walk the same
+matches, `findNext` toward newer lines and `findPrevious` toward older ones. The engine compares ASCII letters without case
+whatever `caseSensitive` says. Read `api.selection.get()` after a short wait
+if you call it right after `selectAll()`: under the engine the selected text
+arrives from the worker.
 
 ### clipboard
 

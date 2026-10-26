@@ -996,8 +996,9 @@ function openable(uri) {
 // in bounded steps between messages so a long history never stalls output.
 let searchOpen = false, searchTimer = 0, searchFed = 0;
 function searchState(ptr) {
-  const [status, total, index] = new Uint32Array(x.memory.buffer, ptr, 3);
-  return { total, index: index === 0xFFFFFFFF ? -1 : index, done: status === 2 };
+  const [status, total, index, row, col] = new Uint32Array(x.memory.buffer, ptr, 5);
+  const none = 0xFFFFFFFF;
+  return { total, index: index === none ? -1 : index, done: status === 2, row: row === none ? -1 : row, col: col === none ? -1 : col };
 }
 function searchPump() {
   searchTimer = 0;

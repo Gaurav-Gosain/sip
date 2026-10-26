@@ -337,6 +337,33 @@ test.describe('a deployment that grants everything', () => {
     ).toBe(true);
   });
 
+  test('version 2 search answers with a promise and the version 1 match shape', async ({ page }) => {
+    await boot(page, HACK_URL);
+    await shell(page, "printf 'V2MAR''KER one\\nV2MAR''KER two\\n'");
+    await waitForOutput(page, 'V2MARKER two');
+
+    const got = await page.evaluate(async () => {
+      const api = window.hackDemo.api;
+      api.search.clear();
+      const sync = api.search.find('v2marker');
+      api.search.clear();
+      const p = api.search.findAsync('v2marker');
+      const isPromise = p instanceof Promise;
+      const first = await p;
+      const next = await api.search.findNextAsync();
+      const prev = await api.search.findPreviousAsync();
+      return { version: api.version, isPromise, sync, first, next, prev, keys: first && Object.keys(first).sort() };
+    });
+    expect(got.version).toBe(2);
+    expect(got.isPromise, 'findAsync did not return a promise').toBe(true);
+    // The xterm.js client answers the same match either way.
+    expect(got.first).toEqual({ row: got.sync.row, col: got.sync.col, length: got.sync.length });
+    expect(got.keys).toEqual(['col', 'length', 'row']);
+    expect(got.next, 'findNextAsync found nothing').not.toBeNull();
+    expect(got.next.row).not.toBe(got.first.row);
+    expect(got.prev.row).toBe(got.first.row);
+  });
+
   test('copies the selection to the system clipboard without handing it over', async ({ page }) => {
     await boot(page, HACK_URL);
     await page.evaluate(() => navigator.clipboard.writeText('CLIPBOARD_NOT_WRITTEN'));

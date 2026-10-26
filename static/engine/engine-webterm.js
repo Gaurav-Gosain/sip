@@ -169,12 +169,27 @@ export class EngineWebTerm {
     if (patch.clipboard && 'copyOnSelect' in patch.clipboard) this.term.setCopyOnSelect(!!patch.clipboard.copyOnSelect);
   }
 
-  /** Search the screen and scrollback; resolves with { row, col, length } or null. */
+  /**
+   * Search the screen and scrollback and select the match. Resolves with
+   * { row, col, length } like webterm's BufferSearch (row counts from the
+   * oldest line kept), plus index (0 = newest) and total, or null.
+   * Ghostty compares ASCII letters without case, whatever the options say.
+   */
   async find(query, { backwards = false } = {}) {
-    if (!this.term) return null;
-    if (query !== this.lastQuery) { this.lastQuery = query; await this.term.search(query); }
-    const st = await this.term.searchSelect(backwards ? 'prev' : 'next');
-    return st.index < 0 ? null : { index: st.index, total: st.total, length: query.length };
+    if (!this.term || !query) return null;
+    let fresh = false;
+    if (query !== this.lastQuery) {
+      fresh = true;
+      this.lastQuery = query;
+      let st = await this.term.search(query);
+      // A whole scrollback takes a few steps; wait for the count to settle.
+      for (let i = 0; i < 200 && !(this.term.searchState?.done ?? st.done); i++) await new Promise((r) => setTimeout(r, 5));
+    }
+    // A new query selects the newest match, the one nearest the prompt.
+    // After that, forward means newer lines (higher rows), as in webterm's
+    // BufferSearch, and backwards means older. Ghostty's "next" is older.
+    const st = await this.term.searchSelect(fresh || backwards ? 'next' : 'prev');
+    return st.index < 0 ? null : { row: st.row, col: st.col, length: query.length, index: st.index, total: st.total };
   }
 
   clearSearch() { this.lastQuery = ''; return this.term?.search(''); }
