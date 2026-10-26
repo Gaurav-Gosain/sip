@@ -3,8 +3,8 @@
 #
 # Usage: scripts/vendor-engine.sh /path/to/webterm
 #
-# The engine is webterm's engine/ directory (branch feat/worker-engine until
-# it merges). Build it there first: engine/ghostty.sh, then engine/build.sh.
+# The engine is webterm's engine/ directory, at a commit on webterm's main.
+# Build it there first: engine/ghostty.sh, then engine/build.sh.
 # Only the files the browser loads are copied, plus the NOTICE.
 set -eu
 src="${1:?usage: scripts/vendor-engine.sh /path/to/webterm}/engine"
