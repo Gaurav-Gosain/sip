@@ -1,17 +1,18 @@
 {
   "repository": "https://github.com/Gaurav-Gosain/webterm",
   "path": "engine",
-  "commit": "cf2efb9f8ef2c32c4aa289c7032684e58292117d",
+  "commit": "016f9ef5ab6a03873f7bb25d2d0d6bdb99d61787",
   "files": {
     "client.js": "a0e5753c5ee5cccae31deab8583bb19ec7d21f00a8dea33debdaf950fe677469",
+    "custom-glyphs.js": "06e433cf63f9ab18ae24201ed479dc7f165f5b1415422285e35804a20fcf6550",
     "engine.wasm": "e1105f6291520e37231a1956917bfc8a294822fce3f969a0eb15dcc89a865ca3",
     "engine-webterm.js": "a13f576f3144b7295b2f102485c433a21a1449b03fa540b0f6e604e5bb5da070",
     "input.js": "cba92a80df7a0122436cb91962d258141744ba6157b166765ffac78497f84a8c",
     "keys.js": "692c8f72c769fb563f32cdb254fed3409f72ff3de44ad47b7b8ea34cf24dc0d9",
     "net-worker.js": "64b4b2c35a3838201c6276ea4ea97eb6840cde6440d568c5c5a94c88444d649a",
-    "NOTICE": "e6d207817e29542d376c45c3c2035d158d11c9ebb1d5a498efce345d3923aec6",
+    "NOTICE": "5306b73e05bd4df4c9c6d67cbf1b5d142bb159db501834cfbad12c67498947eb",
     "transport.js": "677dbdaf6a795891615c3d9eaffc9fc79a01e0a9d7ed78041995af13fd1999d7",
     "transports.js": "6d7a7a29f366acc1127df22425e540d1a3d439af75a4af615f0346a05ccec553",
-    "worker.js": "020dbb3e4ab70f5ba2d591a8d5a60a87f884178b8a2e675a8f50681d84cf52f6"
+    "worker.js": "5141ea80e53b11f0478f0dd4a837dfdd2803fe72385de112fa8afb417c3a6f3a"
   }
 }

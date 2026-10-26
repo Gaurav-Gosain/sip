@@ -82,6 +82,8 @@ uniform int u_spr;
 uniform vec3 u_curColor;
 uniform float u_ulY;
 uniform float u_ulH;
+uniform float u_stY;
+uniform float u_stH;
 uniform int u_mode; // 0 whole cell, 1 background only, 2 foreground only (blended)
 flat in uint v_glyph;
 flat in vec3 v_fg;
@@ -110,15 +112,15 @@ void main() {
   // SGR 4:1 single, 4:2 double, 4:3 curly, 4:4 dotted, 4:5 dashed
   bool line = y >= u_ulY && y < u_ulY + u_ulH;
   if ((ul == 1u || v_link == 1) && line) over(f, fg, 1.0);
-  if (ul == 2u && (line || (y >= u_ulY + 2.0 * u_ulH && y < u_ulY + 3.0 * u_ulH))) over(f, fg, 1.0);
+  if (ul == 2u && (line || (y >= u_ulY - 2.0 * u_ulH && y < u_ulY - u_ulH))) over(f, fg, 1.0);
   if (ul == 3u) {
-    float wave = u_ulY + u_ulH + u_ulH * sin(xx / u_cell.x * 6.2831853);
+    float wave = u_ulY - u_ulH + u_ulH * sin(xx / u_cell.x * 6.2831853);
     float d = abs(y + 0.5 - wave);
     if (d < u_ulH) over(f, fg, clamp(u_ulH - d + 0.5, 0.0, 1.0));
   }
   if (ul == 4u && line && mod(floor(xx / max(u_ulH, 1.0) / 2.0), 2.0) < 1.0) over(f, fg, 1.0);
   if (ul == 5u && line && mod(floor(xx / (u_cell.x * 0.5)), 2.0) < 1.0) over(f, fg, 1.0);
-  if ((v_glyph & (1u << 25)) != 0u && abs(y - u_cell.y * 0.5) < u_ulH * 0.5 + 0.01) over(f, fg, 1.0);
+  if ((v_glyph & (1u << 25)) != 0u && y >= u_stY && y < u_stY + u_stH) over(f, fg, 1.0);
   if ((v_glyph & (1u << 26)) != 0u && y < u_ulH) over(f, fg, 1.0);
   if (v_cursor == 1 && xx < 2.0) over(f, u_curColor, 1.0);
   if (v_cursor == 3 && y >= u_cell.y - 2.0) over(f, u_curColor, 1.0);
@@ -168,9 +170,19 @@ function measure() {
   const m = c.measureText('M');
   const asc = m.fontBoundingBoxAscent ?? fontPx * 0.8;
   const desc = m.fontBoundingBoxDescent ?? fontPx * 0.2;
-  cw = Math.max(1, Math.round(m.width));
-  ch = Math.max(1, Math.round(asc + desc));
-  baseline = Math.round(asc);
+  // The cell as xterm.js sizes it: measured at the CSS font size, the width
+  // floored and the height rounded up there, then scaled to device pixels.
+  // Grids at any pixel ratio then come out the same size as sip's xterm.js
+  // client's.
+  c.font = fontString(0).replace(`${fontPx}px`, `${fontPx / dpr}px`);
+  const mc = c.measureText('W'.repeat(32));
+  const cssW = mc.width / 32;
+  const cssH = Math.ceil((mc.fontBoundingBoxAscent ?? fontPx / dpr * 0.8) + (mc.fontBoundingBoxDescent ?? fontPx / dpr * 0.2));
+  cw = Math.max(1, Math.floor(cssW * dpr));
+  ch = Math.max(1, Math.ceil(cssH * dpr));
+  // xterm.js puts the glyph's ideographic baseline on the cell's bottom
+  // edge, so any spare height goes above the text.
+  baseline = Math.max(1, ch - Math.round(desc));
 }
 
 function setupGL(canvas) {
@@ -182,7 +194,7 @@ function setupGL(canvas) {
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   gl.useProgram(prog);
-  for (const n of ['u_cell', 'u_view', 'u_cols', 'u_cursor', 'u_curColor', 'u_atlas', 'u_flags', 'u_spr', 'u_ulY', 'u_ulH', 'u_mode', 'u_link']) uni[n] = gl.getUniformLocation(prog, n);
+  for (const n of ['u_cell', 'u_view', 'u_cols', 'u_cursor', 'u_curColor', 'u_atlas', 'u_flags', 'u_spr', 'u_ulY', 'u_ulH', 'u_stY', 'u_stH', 'u_mode', 'u_link']) uni[n] = gl.getUniformLocation(prog, n);
   vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
   instBuf = gl.createBuffer();
@@ -211,9 +223,12 @@ function setupGL(canvas) {
   gl.uniform2f(uni.u_view, cols * cw, rows * ch);
   gl.uniform1i(uni.u_cols, cols);
   gl.uniform1i(uni.u_spr, spr);
-  const ulH = Math.max(1, Math.round(dpr));
-  gl.uniform1f(uni.u_ulY, Math.min(ch - ulH, baseline + ulH));
+  const [ulY, ulH] = underlineGeom();
+  gl.uniform1f(uni.u_ulY, ulY);
   gl.uniform1f(uni.u_ulH, ulH);
+  const [stY, stH] = strikeGeom();
+  gl.uniform1f(uni.u_stY, stY);
+  gl.uniform1f(uni.u_stH, stH);
   gl.viewport(0, 0, cols * cw, rows * ch);
   gl.uniform1i(uni.u_mode, 0);
   gl.bindVertexArray(vao);
@@ -460,6 +475,61 @@ function rasterRun(slot, text, width, style, rtl) {
   gl.texSubImage2D(gl.TEXTURE_2D, 0, (slot % spr) * cw, Math.floor(slot / spr) * ch, w, ch, gl.RGBA, gl.UNSIGNED_BYTE, d);
 }
 
+// xterm.js draws these code points itself (see custom-glyphs.js); the
+// ranges are a quick test before the exact lookup.
+let customGlyphs = null;
+const noLog = { error() {}, warn() {}, debug() {}, info() {}, trace() {} };
+// The underline as xterm.js draws it: a line max(1, fontPx / 15) wide
+// centred half a pixel above the cell's bottom edge, so the part inside the
+// cell is what shows. Returns [top, height] in cell pixels.
+function underlineGeom() {
+  const lw = Math.max(1, Math.floor(fontPx / 15));
+  const vis = lw % 2 ? (lw + 1) / 2 : lw / 2;
+  return [ch - vis, vis];
+}
+
+// A Nerd Font icon can be a pixel or two wider than its cell. xterm.js lets
+// it spill into the next cell; a slot here ends at the cell, so the icon
+// moves left into its own blank margin, and what is still over is squeezed
+// to fit, instead of losing its right edge.
+function fillGlyph(ctx, text, width, gx, gy) {
+  const c = text.codePointAt(0);
+  if (((c >= 0xe000 && c <= 0xf8ff) || c >= 0xf0000) && text.length <= 2) {
+    const m = ctx.measureText(text);
+    const w = width * cw, right = Math.ceil(m.actualBoundingBoxRight);
+    if (right > w) {
+      const shift = Math.min(right - w, Math.max(0, Math.floor(-m.actualBoundingBoxLeft)));
+      if (right - shift <= w) { ctx.fillText(text, gx - shift, gy); return; }
+      ctx.save();
+      ctx.translate(gx - shift, 0);
+      ctx.scale(w / (right - shift), 1);
+      ctx.fillText(text, 0, gy);
+      ctx.restore();
+      return;
+    }
+  }
+  ctx.fillText(text, gx, gy);
+}
+
+// The strikethrough as xterm.js draws it: max(1, fontPx / 10) wide, centred
+// half a pixel above the middle row. Returns the rows it covers.
+function strikeGeom() {
+  const lw = Math.max(1, Math.floor(fontPx / 10));
+  const top = Math.floor(ch / 2) - 0.5 - lw / 2;
+  return [Math.floor(top), Math.ceil(top + lw) - Math.floor(top)];
+}
+
+function isCustomGlyph(text) {
+  if (!customGlyphs || text.length > 2) return false;
+  const c = text.codePointAt(0);
+  if (!((c >= 0x2500 && c <= 0x259f) || (c >= 0x2800 && c <= 0x28ff) || (c >= 0xe0a0 && c <= 0xe0d4) || (c >= 0xee00 && c <= 0xee0b) || (c >= 0xf5d0 && c <= 0xf60d) || (c >= 0x1fb00 && c <= 0x1fbfa))) return false;
+  return String.fromCodePoint(c) === text && !!customGlyphs.customGlyphDefinitions[text];
+}
+function customGlyph(ctx, text, x0, y0, bg) {
+  if (!isCustomGlyph(text)) return false;
+  return customGlyphs.tryDrawCustomGlyph(ctx, text, x0, y0, cw, ch, cw, ch, fontPx / dpr, dpr, noLog, bg, 0);
+}
+
 function raster(n) {
   if (mode2d) return note2d(n);
   {
@@ -496,7 +566,9 @@ function raster(n) {
       ctx.beginPath();
       ctx.rect((k % STAGE_COLS) * 2 * cw, Math.floor(k / STAGE_COLS) * ch, 2 * cw, ch);
       ctx.clip();
-      ctx.fillText(decoder.decode(mem.subarray(arena + off, arena + off + len)), (k % STAGE_COLS) * 2 * cw, Math.floor(k / STAGE_COLS) * ch + baseline);
+      const text = decoder.decode(mem.subarray(arena + off, arena + off + len));
+      const gx = (k % STAGE_COLS) * 2 * cw, gy = Math.floor(k / STAGE_COLS) * ch;
+      if (!customGlyph(ctx, text, gx, gy)) fillGlyph(ctx, text, (meta >>> 16) & 0xff, gx, gy + baseline);
       ctx.restore();
     }
     const d = ctx.getImageData(0, 0, sw, usedRows * ch).data;
@@ -646,15 +718,17 @@ function paintRow2d(y, inst, cur, curColor, pass) {
         const f = fontString(g.style);
         if (f !== font) { ctx2d.font = f; font = f; }
         ctx2d.globalAlpha = w0 & (1 << 27) ? 0.5 : 1;
-        ctx2d.fillText(g.text, xx * cw, top + baseline);
+        if (g.custom === undefined) g.custom = isCustomGlyph(g.text);
+        if (g.custom) { ctx2d.save(); customGlyph(ctx2d, g.text, xx * cw, top, css(row[xx * 3 + 2])); ctx2d.restore(); }
+        else ctx2d.fillText(g.text, xx * cw, top + baseline);
         ctx2d.globalAlpha = 1;
       }
     }
-    const ul = (w0 >>> 22) & 7, ulH = Math.max(1, Math.round(dpr)), ulY = Math.min(ch - ulH, baseline + ulH);
+    const ul = (w0 >>> 22) & 7, [ulY, ulH] = underlineGeom();
     const isLink = hover && hover.row === y && xx >= hover.x0 && xx <= hover.x1;
     if (ul || isLink) ctx2d.fillRect(xx * cw, top + ulY, cw, ulH);
-    if (ul === 2) ctx2d.fillRect(xx * cw, top + ulY + 2 * ulH, cw, ulH);
-    if (w0 & (1 << 25)) ctx2d.fillRect(xx * cw, top + (ch >> 1), cw, ulH);
+    if (ul === 2) ctx2d.fillRect(xx * cw, top + ulY - 2 * ulH, cw, ulH);
+    if (w0 & (1 << 25)) { const [stY, stH] = strikeGeom(); ctx2d.fillRect(xx * cw, top + stY, cw, stH); }
     if (w0 & (1 << 26)) ctx2d.fillRect(xx * cw, top, cw, ulH);
     if (isCur && cur[3] !== 1) {
       ctx2d.fillStyle = css(curColor);
@@ -1148,9 +1222,12 @@ async function applyFont(m) {
   gl.useProgram(prog);
   gl.uniform2f(uni.u_cell, cw, ch);
   gl.uniform1i(uni.u_spr, spr);
-  const ulH = Math.max(1, Math.round(dpr));
-  gl.uniform1f(uni.u_ulY, Math.min(ch - ulH, baseline + ulH));
+  const [ulY, ulH] = underlineGeom();
+  gl.uniform1f(uni.u_ulY, ulY);
   gl.uniform1f(uni.u_ulH, ulH);
+  const [stY, stH] = strikeGeom();
+  gl.uniform1f(uni.u_stY, stY);
+  gl.uniform1f(uni.u_stH, stH);
   gl.canvas.width = cols * cw;
   gl.canvas.height = rows * ch;
   gl.uniform2f(uni.u_view, cols * cw, rows * ch);
@@ -1173,12 +1250,16 @@ self.onmessage = async ({ data: m }) => {
         await loadFonts(m.fonts);
         measure();
         const loading = WebAssembly.instantiateStreaming(fetch(m.wasmUrl), {});
+        // Box drawing, blocks, braille and powerline are drawn as shapes, as
+        // the xterm.js client draws them. The module loads beside the wasm.
+        const glyphsLoading = m.customGlyphs === false ? null : import('./custom-glyphs.js').then((mod) => { customGlyphs = mod; }, (err) => console.warn('engine: custom glyphs did not load; the font draws them', err));
         // The first glyph that needs a system fallback font (emoji, CJK,
         // braille) costs about 10 ms while the browser loads that font.
         // Pay it here, while wasm compiles on another thread, instead of in
         // the middle of the first burst of output.
         if (m.warmFonts) warmFallbackFonts();
         const res = await loading;
+        await glyphsLoading;
         x = res.instance.exports;
         e = x.eng_new(cols, rows, m.scrollback ?? 10000, cw, ch, ATLAS_W, ATLAS_H);
         if (!e) throw new Error('eng_new failed');
