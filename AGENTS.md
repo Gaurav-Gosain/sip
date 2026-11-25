@@ -491,6 +491,26 @@ as destructive or handles touch from its own page script; `LongPressMs` and
 zero value emits nothing into the page at all, which `TestRenderIndexMobileMouse`
 pins.
 
+**A tap raises the keyboard only in a shell.** `MobileMouse.TapKeyboard`
+(`tapKeyboard` in the page config) is `auto` by default: a tap raises the
+software keyboard only when the program has no mouse reporting on
+(`xterm.modes.mouseTrackingMode === 'none'`). With mouse reporting on, a tap is
+a click and nothing else, and the abc key raises the keyboard. `always` and
+`never` fix it either way. `tapRaisesKeyboard` in `terminal.js` decides it.
+
+Two places raise the keyboard, and both follow that rule. `onTap` calls
+`focusInput`. And xterm's own `_handleMouseDown` focuses its textarea on every
+mousedown, which includes the synthesized one of a tap, a long press and a
+drag. A focus inside a touch is what raises a phone keyboard. So
+`holdTouchFocus` makes the textarea's `focus` a no-op for the length of an
+untrusted mousedown on the screen when the rule says no keyboard. A trusted
+mousedown, from a real mouse, is never held. Without the hold, fixing `onTap`
+alone changes nothing on a phone. `touch.spec.mjs` checks both: each fails
+with its half removed.
+
+The worker engine (`static/engine/input.js`, vendored from webterm) focuses its
+textarea on every tap itself and does not read this setting yet.
+
 #### Two things in there that will be silently re-broken
 
 **The bar is `overflow: hidden` and pans itself.** The obvious implementation is

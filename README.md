@@ -406,7 +406,7 @@ not a cursor placed, not a selection. sip fills that in.
 
 | gesture | what the program gets |
 |---------|----------------------|
-| tap | a click, and the software keyboard |
+| tap | a click, and in a shell also the software keyboard |
 | long press | a right click |
 | press, hold, then drag | a press, motion and a release: pull a split, move a window, select a region |
 | pan | scroll, as before |
@@ -417,13 +417,24 @@ gets, and a program that asked for no mouse reporting at all gets the other
 useful thing for free: the same press-hold-drag selects text.
 
 The zero value is all of it, on, and none of it installs without a touch screen.
-`Config.MobileMouse` turns parts off and retunes the hold:
+`Config.MobileMouse` turns parts off, retunes the hold, and sets when a tap
+raises the software keyboard:
 
 ```go
 sip.Config{
     MobileMouse: sip.MobileMouse{DisableTap: true, LongPressMs: 600},
 }
 ```
+
+`TapKeyboard` has three values:
+
+| value | a tap raises the software keyboard |
+|-------|-----------------------------------|
+| `TapKeyboardAuto` (the default) | only when the program has no mouse reporting on |
+| `TapKeyboardAlways` | on every tap |
+| `TapKeyboardNever` | never; only the abc key raises it |
+
+The abc key on the key bar raises the keyboard with every value.
 
 The floating settings gear is draggable on a desktop and remembers where it was
 left, because it floats over whatever the program is drawing and there is no

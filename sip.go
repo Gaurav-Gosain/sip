@@ -575,7 +575,28 @@ type MobileMouse struct {
 	// drag, and the one-line hint shown the first time a finger pans the
 	// terminal instead. For a page that explains its gestures itself.
 	DisableHint bool
+
+	// TapKeyboard says when a tap also raises the software keyboard. The
+	// zero value is TapKeyboardAuto.
+	TapKeyboard TapKeyboard
 }
+
+// TapKeyboard says when a tap on the terminal raises the software keyboard.
+// The abc key on the key bar raises it in every mode.
+type TapKeyboard string
+
+const (
+	// TapKeyboardAuto raises the keyboard on a tap only when the program has
+	// no mouse reporting on, as a shell does. With mouse reporting on, a tap
+	// is a click and nothing else. An empty or unknown value means this.
+	TapKeyboardAuto TapKeyboard = "auto"
+	// TapKeyboardAlways raises the keyboard on every tap, also when the tap
+	// is a click for the program.
+	TapKeyboardAlways TapKeyboard = "always"
+	// TapKeyboardNever never raises the keyboard on a tap. Only the abc key
+	// raises it.
+	TapKeyboardNever TapKeyboard = "never"
+)
 
 // clientOptions is the browser-side option object, carrying only what differs
 // from the default so that a deployment that configures nothing ships nothing.
@@ -595,6 +616,9 @@ func (m MobileMouse) clientOptions() map[string]any {
 	}
 	if m.DisableHint {
 		o["hint"] = false
+	}
+	if m.TapKeyboard == TapKeyboardAlways || m.TapKeyboard == TapKeyboardNever {
+		o["tapKeyboard"] = string(m.TapKeyboard)
 	}
 	return o
 }

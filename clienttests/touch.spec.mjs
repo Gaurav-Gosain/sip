@@ -90,6 +90,46 @@ function sgrReports(text) {
   return out;
 }
 
+/** A one-finger tap through Chrome's gesture recognizer, as a finger makes it. */
+async function tapAt(page, p) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.synthesizeTapGesture', {
+    x: p.x, y: p.y, duration: 60, tapCount: 1, gestureSourceType: 'touch',
+  });
+  await cdp.detach();
+  await page.waitForTimeout(200);
+}
+
+/**
+ * Take the focus off the terminal. The page focuses it on load, which raises
+ * no keyboard, so a tap that raises one has to be seen as focus coming back.
+ */
+async function blurTerminal(page) {
+  await page.evaluate(() => window.sipTerm.webterm.xterm.textarea.blur());
+  expect(await keyboardState(page)).toEqual({ focused: false, open: false });
+}
+
+/**
+ * Whether the software keyboard is up: focus on the textarea it rides on,
+ * and the key bar's own record that a user gesture raised it.
+ */
+function keyboardState(page) {
+  return page.evaluate(() => ({
+    focused: document.activeElement === window.sipTerm.webterm.xterm.textarea,
+    open: document.body.classList.contains('sip-kb-open'),
+  }));
+}
+
+/** The centre of the key bar's abc key, in viewport pixels. */
+async function abcKey(page) {
+  return page.evaluate(() => {
+    const el = [...document.querySelectorAll('button')].find((b) => b.textContent === 'abc');
+    if (!el) throw new Error('no abc key on the bar');
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  });
+}
+
 test.describe('touch on the terminal', () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 
@@ -122,17 +162,14 @@ test.describe('touch on the terminal', () => {
     expect(text).not.toContain('NaN');
   });
 
-  test('a tap is a click, and it raises the software keyboard', async ({ page }) => {
+  test('with mouse reporting on, a tap is a click and nothing else', async ({ page }) => {
     await boot(page);
     await enableMouse(page);
+    await blurTerminal(page);
     const c = await screenCentre(page);
-    const cdp = await page.context().newCDPSession(page);
 
     await clearWire(page);
-    await cdp.send('Input.synthesizeTapGesture', {
-      x: c.x, y: c.y, duration: 60, tapCount: 1, gestureSourceType: 'touch',
-    });
-    await page.waitForTimeout(200);
+    await tapAt(page, c);
 
     const reports = sgrReports(await wireText(page));
     expect(reports).toHaveLength(2);
@@ -142,10 +179,34 @@ test.describe('touch on the terminal', () => {
     expect(reports[1].col).toBe(reports[0].col);
     expect(reports[1].row).toBe(reports[0].row);
 
-    // And the tap put the keyboard up, which means focus on xterm's textarea.
-    const focused = await page.evaluate(() =>
-      document.activeElement === window.sipTerm.webterm.xterm.textarea);
-    expect(focused).toBe(true);
+    // The program asked for the mouse, so the keyboard stays down.
+    expect(await keyboardState(page)).toEqual({ focused: false, open: false });
+
+    // The abc key on the bar still raises it.
+    await tapAt(page, await abcKey(page));
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
+  });
+
+  test('in a shell, a tap raises the software keyboard', async ({ page }) => {
+    await boot(page);
+    await blurTerminal(page);
+    await tapAt(page, await screenCentre(page));
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
+  });
+
+  test('a tap with the keyboard up leaves it up', async ({ page }) => {
+    await boot(page);
+    await blurTerminal(page);
+    const c = await screenCentre(page);
+    await tapAt(page, c);
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
+
+    // Once for a shell, once for a program that reads the mouse.
+    await tapAt(page, c);
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
+    await enableMouse(page);
+    await tapAt(page, c);
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
   });
 
   test('a tap reports the cell it landed on', async ({ page }) => {
@@ -183,6 +244,7 @@ test.describe('touch on the terminal', () => {
   test('a long press is a right click', async ({ page }) => {
     await boot(page);
     await enableMouse(page);
+    await blurTerminal(page);
     const c = await screenCentre(page);
     const cdp = await page.context().newCDPSession(page);
 
@@ -198,11 +260,14 @@ test.describe('touch on the terminal', () => {
     expect(reports).toHaveLength(2);
     expect(reports[0]).toMatchObject({ button: 2, release: false });
     expect(reports[1]).toMatchObject({ button: 2, release: true });
+    // A right click for the program raises no keyboard either.
+    expect(await keyboardState(page)).toEqual({ focused: false, open: false });
   });
 
   test('press, hold and drag is a press, motion and release', async ({ page }) => {
     await boot(page);
     await enableMouse(page);
+    await blurTerminal(page);
     const cdp = await page.context().newCDPSession(page);
     const c = await screenCentre(page);
 
@@ -241,6 +306,8 @@ test.describe('touch on the terminal', () => {
     expect(reports.some((r) => r.button === 64 || r.button === 65)).toBe(false);
     // Nor is the touch that ended the drag also a tap.
     expect(reports.filter((r) => r.button === 0).length).toBe(2);
+    // And a drag for the program raises no keyboard.
+    expect(await keyboardState(page)).toEqual({ focused: false, open: false });
   });
 
   test('a pan is still a scroll', async ({ page }) => {
@@ -331,6 +398,27 @@ test.describe('turning it off', () => {
     });
     await page.waitForTimeout(200);
     expect(await wireText(page)).toBe('');
+  });
+
+  test('TapKeyboard always raises the keyboard on a click', async ({ page }) => {
+    await withConfig(page, { tapKeyboard: 'always' });
+    await boot(page);
+    await enableMouse(page);
+    await blurTerminal(page);
+    await clearWire(page);
+    await tapAt(page, await screenCentre(page));
+    expect(sgrReports(await wireText(page))).toHaveLength(2);
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
+  });
+
+  test('TapKeyboard never leaves the keyboard down in a shell', async ({ page }) => {
+    await withConfig(page, { tapKeyboard: 'never' });
+    await boot(page);
+    await blurTerminal(page);
+    await tapAt(page, await screenCentre(page));
+    expect(await keyboardState(page)).toEqual({ focused: false, open: false });
+    await tapAt(page, await abcKey(page));
+    expect(await keyboardState(page)).toEqual({ focused: true, open: true });
   });
 
   test('DisableDrag leaves press-hold-drag as a pan', async ({ page }) => {

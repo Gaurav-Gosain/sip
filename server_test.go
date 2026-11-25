@@ -169,6 +169,17 @@ func TestRenderIndexMobileMouse(t *testing.T) {
 			want: []string{`"hint":false`},
 			skip: []string{`"tap"`, `"drag"`},
 		},
+		{
+			name: "the tap keyboard",
+			cfg:  MobileMouse{TapKeyboard: TapKeyboardNever},
+			want: []string{`"tapKeyboard":"never"`},
+			skip: []string{`"tap":`, `"drag"`, `"hint"`},
+		},
+		{
+			name: "auto is the default and ships nothing",
+			cfg:  MobileMouse{TapKeyboard: TapKeyboardAuto},
+			skip: []string{`tapKeyboard`},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

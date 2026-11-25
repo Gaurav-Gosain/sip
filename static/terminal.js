@@ -2326,13 +2326,51 @@
             const el = this.webterm && this.webterm.xterm.element;
             const screen = el ? el.querySelector('.xterm-screen') : null;
             const opts = sipConfig.mobileMouse || {};
+            this.holdTouchFocus(screen, opts.tapKeyboard);
             this.touchMouse = Mobile.installTouchMouse({
                 screen,
-                // A tap means the user wants to type here, so the software
-                // keyboard comes up with it. The bar owns that: it knows what
-                // is holding the keyboard and what it is waiting on.
-                onTap: () => this.mobile.focusInput(),
+                // A tap in a shell means the user wants to type here, so the
+                // software keyboard comes up with it. The bar owns that: it
+                // knows what is holding the keyboard and what it is waiting on.
+                onTap: () => { if (this.tapRaisesKeyboard(opts.tapKeyboard)) this.mobile.focusInput(); },
             }, Object.assign({}, opts, { namespace: MOBILE_NAMESPACE }));
+        }
+
+        /**
+         * Keep a finger's click from raising the keyboard when it should not.
+         *
+         * xterm focuses its textarea on every mousedown, and the touch layer
+         * gives a tap, a long press and a drag to xterm as a synthesized
+         * mousedown on the screen. A focus inside a touch is what raises a
+         * phone keyboard, so for the length of that event the textarea's
+         * focus does nothing. A real mouse is trusted and never held.
+         */
+        holdTouchFocus(screen, mode) {
+            const ta = this.webterm && this.webterm.xterm && this.webterm.xterm.textarea;
+            if (!screen || !ta) return;
+            let held = false;
+            const release = () => { if (held) { held = false; delete ta.focus; } };
+            window.addEventListener('mousedown', (ev) => {
+                if (ev.isTrusted || !screen.contains(ev.target) || this.tapRaisesKeyboard(mode)) return;
+                held = true;
+                ta.focus = () => {};
+                queueMicrotask(release);
+            }, true);
+            window.addEventListener('mousedown', release);
+        }
+
+        /**
+         * Whether a tap on the terminal raises the software keyboard, for
+         * MobileMouse.TapKeyboard: 'always', 'never', or by default only when
+         * the program has no mouse reporting on. A program that reads the
+         * mouse gets a tap as a click, and a keyboard that covers half the
+         * screen on every click is in the way. The abc key raises it there.
+         */
+        tapRaisesKeyboard(mode) {
+            if (mode === 'always') return true;
+            if (mode === 'never') return false;
+            const modes = this.webterm && this.webterm.xterm && this.webterm.xterm.modes;
+            return !modes || modes.mouseTrackingMode === 'none';
         }
 
         /**
